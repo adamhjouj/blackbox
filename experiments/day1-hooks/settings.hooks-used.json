@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [
+        { "type": "command", "command": "/opt/homebrew/bin/jq -c '. + {_captured_at: (now|todate)}' >> /private/tmp/claude/-Users-user-project/00000000-0000-4000-8000-000000000006/scratchpad/hooktest/events.jsonl", "timeout": 10 },
+        { "type": "http", "url": "http://127.0.0.1:7842/hook", "async": true, "timeout": 5 }
+      ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [
+        { "type": "command", "command": "/opt/homebrew/bin/jq -c '. + {_captured_at: (now|todate)}' >> /private/tmp/claude/-Users-user-project/00000000-0000-4000-8000-000000000006/scratchpad/hooktest/events.jsonl", "timeout": 10 },
+        { "type": "http", "url": "http://127.0.0.1:7842/hook", "async": true, "timeout": 5 }
+      ] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "*", "hooks": [
+        { "type": "command", "command": "/opt/homebrew/bin/jq -c '. + {_captured_at: (now|todate)}' >> /private/tmp/claude/-Users-user-project/00000000-0000-4000-8000-000000000006/scratchpad/hooktest/events.jsonl", "timeout": 10 },
+        { "type": "http", "url": "http://127.0.0.1:7842/hook", "async": true, "timeout": 5 }
+      ] }
+    ],
+    "SubagentStart": [
+      { "hooks": [
+        { "type": "command", "command": "/opt/homebrew/bin/jq -c '. + {_captured_at: (now|todate)}' >> /private/tmp/claude/-Users-user-project/00000000-0000-4000-8000-000000000006/scratchpad/hooktest/events.jsonl", "timeout": 10 }
+      ] }
+    ],
+    "SubagentStop": [
+      { "hooks": [
+        { "type": "command", "command": "/opt/homebrew/bin/jq -c '. + {_captured_at: (now|todate)}' >> /private/tmp/claude/-Users-user-project/00000000-0000-4000-8000-000000000006/scratchpad/hooktest/events.jsonl", "timeout": 10 }
+      ] }
+    ]
+  }
+}
