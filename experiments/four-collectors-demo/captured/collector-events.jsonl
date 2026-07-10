@@ -1,0 +1,34 @@
+{"collector":"process","ts":"2026-07-10T23:18:46.899Z","event":"exec_observed","pid":288,"ppid":220,"command":"/bin/sh -c ps aux | grep -E \"Visual Studio Code|Code Helper|Cursor Helper|Windsurf Helper|Devin Helper|Devin.app|IntelliJ IDEA|PyCharm|WebStorm|PhpStorm|RubyMine|CLion|GoLand|Rider|DataGrip|AppCode|DataSpell|Aqua|Gateway|Fleet|Android Studio\" | grep -v grep"}
+{"collector":"process","ts":"2026-07-10T23:18:46.900Z","event":"exec_observed","pid":292,"ppid":220,"command":"(node)"}
+{"collector":"process","ts":"2026-07-10T23:18:46.900Z","event":"exec_observed","pid":293,"ppid":288,"command":"ps aux"}
+{"collector":"process","ts":"2026-07-10T23:18:46.900Z","event":"exec_observed","pid":294,"ppid":288,"command":"grep -E Visual Studio Code|Code Helper|Cursor Helper|Windsurf Helper|Devin Helper|Devin.app|IntelliJ IDEA|PyCharm|WebStorm|PhpStorm|RubyMine|CLion|GoLand|Rider|DataGrip|AppCode|DataSpell|Aqua|Gateway|Fleet|Android Studio"}
+{"collector":"process","ts":"2026-07-10T23:18:46.900Z","event":"exec_observed","pid":295,"ppid":288,"command":"grep -v grep"}
+{"collector":"process","ts":"2026-07-10T23:18:55.611Z","event":"exec_observed","pid":661,"ppid":220,"command":"/bin/zsh -c -l SNAPSHOT_FILE=/Users/user/.claude/shell-snapshots/snapshot-zsh-1783725535523-ckv79u.sh\\012      source \"/Users/user/.zshrc\" < /dev/null\\012\\012      # First, create/clear the snapshot file\\012      echo \"# Snapshot file\" >| \"$SNAPSHOT_FILE\"\\012\\012      # When this file is sourced, we"}
+{"collector":"process","ts":"2026-07-10T23:18:55.735Z","event":"exec_observed","pid":829,"ppid":661,"command":"(zsh)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.735Z","event":"exec_observed","pid":883,"ppid":829,"command":"(zsh)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.735Z","event":"exec_observed","pid":884,"ppid":883,"command":"(zsh)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.735Z","event":"exec_observed","pid":885,"ppid":883,"command":"(tail)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.735Z","event":"exec_observed","pid":974,"ppid":884,"command":"(printf)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.855Z","event":"exec_observed","pid":1092,"ppid":661,"command":"(zsh)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.855Z","event":"exec_observed","pid":1095,"ppid":1092,"command":"(zsh)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.855Z","event":"exec_observed","pid":1096,"ppid":1095,"command":"(zsh)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.855Z","event":"exec_observed","pid":1097,"ppid":1095,"command":"(tail)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.855Z","event":"exec_observed","pid":1148,"ppid":1096,"command":"(zsh)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.855Z","event":"exec_observed","pid":1149,"ppid":1148,"command":"(zsh)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.855Z","event":"exec_observed","pid":1150,"ppid":1149,"command":"(zsh)"}
+{"collector":"process","ts":"2026-07-10T23:18:55.855Z","event":"exec_observed","pid":1152,"ppid":1149,"command":"(sed)"}
+{"collector":"process","ts":"2026-07-10T23:18:56.096Z","event":"exec_observed","pid":1253,"ppid":220,"command":"/bin/zsh -c source /Users/user/.claude/shell-snapshots/snapshot-zsh-1783725535523-ckv79u.sh 2>/dev/null || true && export VERCEL_PLUGIN_BOOTSTRAP_HINTS=\"greenfield\"\\012export VERCEL_PLUGIN_SETUP_MODE=\"1\"\\012: && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && eval 'git add notes.txt"}
+{"collector":"process","ts":"2026-07-10T23:18:56.096Z","event":"exec_observed","pid":1257,"ppid":1253,"command":"/Library/Developer/CommandLineTools/usr/bin/git commit -m add notes"}
+{"collector":"process","ts":"2026-07-10T23:18:56.096Z","event":"exec_observed","pid":1258,"ppid":1257,"command":"/bin/sh .git/hooks/reference-transaction prepared"}
+{"collector":"git","ts":"2026-07-10T23:18:56Z","state":"prepared","ref":"refs/heads/main","old":"0000000000000000000000000000000000000000","new":"e20f1294c6a45377429032332b94e4ae0d4b8d43"}
+{"collector":"git","ts":"2026-07-10T23:18:56Z","state":"committed","ref":"refs/heads/main","old":"0000000000000000000000000000000000000000","new":"e20f1294c6a45377429032332b94e4ae0d4b8d43"}
+{"collector":"git","ts":"2026-07-10T23:18:56Z","state":"aborted","ref":"AUTO_MERGE","old":"0000000000000000000000000000000000000000","new":"0000000000000000000000000000000000000000"}
+{"collector":"git","ts":"2026-07-10T23:18:56Z","state":"prepared","ref":"AUTO_MERGE","old":"0000000000000000000000000000000000000000","new":"0000000000000000000000000000000000000000"}
+{"collector":"git","ts":"2026-07-10T23:18:56Z","state":"committed","ref":"AUTO_MERGE","old":"0000000000000000000000000000000000000000","new":"0000000000000000000000000000000000000000"}
+{"collector":"process","ts":"2026-07-10T23:19:00.940Z","event":"exec_observed","pid":1355,"ppid":220,"command":"(bash)"}
+{"collector":"process","ts":"2026-07-10T23:19:00.940Z","event":"exec_observed","pid":1356,"ppid":220,"command":"(bash)"}
+{"collector":"process","ts":"2026-07-10T23:19:00.940Z","event":"exec_observed","pid":1358,"ppid":1356,"command":"(jq)"}
+{"collector":"process","ts":"2026-07-10T23:19:00.940Z","event":"exec_observed","pid":1359,"ppid":1355,"command":"(bash)"}
+{"collector":"process","ts":"2026-07-10T23:19:03.962Z","event":"exec_observed","pid":1414,"ppid":220,"command":"/bin/zsh -c source /Users/user/.claude/shell-snapshots/snapshot-zsh-1783725535523-ckv79u.sh 2>/dev/null || true && export VERCEL_PLUGIN_BOOTSTRAP_HINTS=\"greenfield\"\\012export VERCEL_PLUGIN_SETUP_MODE=\"1\"\\012: && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && eval 'curl -s -o /dev/n"}
+{"collector":"process","ts":"2026-07-10T23:19:03.963Z","event":"exec_observed","pid":1417,"ppid":1414,"command":"curl -s -o /dev/null -w %{http_code} https://speed.cloudflare.com/__down?bytes=3000000"}
+{"collector":"network","ts":"2026-07-10T23:19:04.018Z","event":"connection","pid":1417,"command":"curl","endpoint":"192.0.2.10:63997->162.159.140.220:443 (ESTABLISHED)","state":"ESTABLISHED"}

@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "/opt/homebrew/bin/jq -c '{collector:\"hook\", ts:(now|todate)} + .' >> /private/tmp/claude/-Users-user-project/00000000-0000-4000-8000-000000000006/scratchpad/demo/hook-events.jsonl", "timeout": 10 }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "/opt/homebrew/bin/jq -c '{collector:\"hook\", ts:(now|todate)} + .' >> /private/tmp/claude/-Users-user-project/00000000-0000-4000-8000-000000000006/scratchpad/demo/hook-events.jsonl", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "/opt/homebrew/bin/jq -c '{collector:\"hook\", ts:(now|todate)} + .' >> /private/tmp/claude/-Users-user-project/00000000-0000-4000-8000-000000000006/scratchpad/demo/hook-events.jsonl", "timeout": 10 }] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "/opt/homebrew/bin/jq -c '{collector:\"hook\", ts:(now|todate)} + .' >> /private/tmp/claude/-Users-user-project/00000000-0000-4000-8000-000000000006/scratchpad/demo/hook-events.jsonl", "timeout": 10 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "/opt/homebrew/bin/jq -c '{collector:\"hook\", ts:(now|todate)} + .' >> /private/tmp/claude/-Users-user-project/00000000-0000-4000-8000-000000000006/scratchpad/demo/hook-events.jsonl", "timeout": 10 }] }
+    ]
+  }
+}
