@@ -20,149 +20,180 @@
  */
 
 const PAGE_CSS = `  :root {
-    --bg:#0c0c0d; --panel:#151517; --panel-2:#1b1b1e; --line:#242427;
-    --fg:#e7e7ea; --fg-2:#9a9aa1; --fg-3:#6b6b71;
-    --accent:#e5595a;            /* the only accent: danger / flags */
-    --accent-wash:rgba(229,89,90,.09);
-    --live:#59b783;              /* recording indicator only */
-    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
-    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    --r:6px;
+    color-scheme:dark;
+    --bg:#0b0d10; --rail:#0d0f12; --surface:#131519; --surface-2:#171a1f;
+    --hover:rgba(255,255,255,.035); --selected:#1f232a;
+    --border-subtle:#1c1f25; --border:#2a2e36; --border-strong:#3a3f49;
+    --edge:rgba(255,255,255,.045);
+    --fg:#dfe1e6; --fg-hi:#f2f4f7; --fg-1:#c6c6cd; --fg-2:#9098a4; --fg-3:#7c828c; --fg-4:#565b64;
+    --accent:#e5595a; --accent-wash:rgba(229,89,90,.08); --accent-line:rgba(229,89,90,.35);
+    --live:#59b783;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,"Helvetica Neue",Arial,sans-serif;
+    --r1:4px; --r2:6px; --r3:8px;
   }
   * { box-sizing:border-box; }
   html,body { height:100%; }
   body { margin:0; overflow:hidden; display:flex; flex-direction:column;
-    background:var(--bg); color:var(--fg);
-    font:14px/1.55 var(--sans); -webkit-font-smoothing:antialiased; font-smoothing:antialiased; }
-  .mono { font-family:var(--mono); }
-  .muted { color:var(--fg-2); }
-  .faint { color:var(--fg-3); }
-  .sep { color:var(--fg-3); margin:0 7px; }
-  samp { font-family:var(--mono); user-select:all; }
+    background:radial-gradient(1100px 550px at 50% -8%, rgba(255,255,255,.022), transparent 60%), var(--bg);
+    color:var(--fg); font:13px/1.5 var(--sans);
+    -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
   ::selection { background:rgba(229,89,90,.22); }
-  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:3px; }
+  :focus-visible { outline:2px solid rgba(233,233,238,.5); outline-offset:2px; border-radius:3px; }
+  samp { font-family:var(--mono); user-select:all; }
+  .sep { color:var(--fg-4); margin:0 7px; }
+  * { scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.14) transparent; }
+  ::-webkit-scrollbar { width:11px; height:11px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,.13); border-radius:7px; border:3px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.22); background-clip:padding-box; }
 
   /* header */
   header { flex:none; display:flex; align-items:center; justify-content:space-between;
-    gap:16px; padding:0 18px; height:52px; border-bottom:1px solid var(--line); }
-  header .brand { font-weight:600; letter-spacing:-.01em; }
-  header .status { display:flex; align-items:center; font-size:12.5px; color:var(--fg-2); min-width:0; }
-  header .path { font-family:var(--mono); font-size:11.5px; max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .dot { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:7px; background:var(--fg-3); }
+    gap:16px; padding:0 18px; height:48px; border-bottom:1px solid var(--border); box-shadow:inset 0 1px 0 var(--edge); }
+  header .brand { font-weight:600; font-size:13px; letter-spacing:-.01em; color:var(--fg-1); }
+  header .status { display:flex; align-items:center; font-size:12px; color:var(--fg-3); min-width:0; }
+  header .store { font-family:var(--mono); font-size:11px; color:var(--fg-3);
+    border:1px solid var(--border); border-radius:var(--r1); padding:2px 7px;
+    max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dot { width:6px; height:6px; border-radius:50%; display:inline-block; margin-right:7px; background:var(--fg-4); }
   .dot.rec { background:var(--live); }
   .dot.link { background:var(--accent); }
 
   /* connectivity strip */
-  #alert { flex:none; display:none; padding:8px 18px; font-size:12.5px; color:var(--accent);
-    background:var(--accent-wash); border-bottom:1px solid var(--line); }
+  #alert { flex:none; display:none; padding:7px 18px; font-size:12px; color:var(--accent);
+    background:var(--accent-wash); border-bottom:1px solid var(--border-subtle); }
   #alert.on { display:block; }
 
   /* panes */
   .wrap { flex:1; min-height:0; display:flex; }
-  aside { width:288px; flex:none; min-height:0; display:flex; flex-direction:column; border-right:1px solid var(--line); }
+  aside { width:270px; flex:none; min-height:0; display:flex; flex-direction:column;
+    background:var(--rail); border-right:1px solid var(--border); }
   .railhead { flex:none; display:flex; align-items:baseline; justify-content:space-between;
-    padding:14px 18px 10px; font-size:12px; color:var(--fg-3); letter-spacing:.01em; }
-  #sessions { flex:1; overflow:auto; min-height:0; padding:0 8px 12px; }
+    padding:14px 16px 8px; font-size:11px; color:var(--fg-4); letter-spacing:.04em; text-transform:uppercase; }
+  #sessions { flex:1; overflow:auto; min-height:0; padding:2px 8px 14px; }
   main { flex:1; overflow:auto; min-width:0; }
 
   /* session rows */
-  .sess { padding:11px 12px; border-radius:var(--r); cursor:pointer; margin-bottom:1px;
-    transition:background .12s ease; }
-  .sess:hover { background:var(--panel); }
-  .sess.active { background:var(--panel-2); }
+  .sess { padding:9px 11px; border-radius:var(--r2); cursor:pointer; margin-bottom:1px;
+    border-left:2px solid transparent; transition:background .12s ease; }
+  .sess:hover { background:var(--hover); }
+  .sess.active { background:var(--selected); border-left-color:var(--accent); }
   .sess .top { display:flex; align-items:baseline; gap:8px; }
-  .sess .id { flex:1; min-width:0; font-family:var(--mono); font-size:12.5px;
+  .sess .id { flex:1; min-width:0; font-size:13px; font-weight:500; color:var(--fg-1);
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .sess .fl { font-size:12px; color:var(--accent); font-variant-numeric:tabular-nums; }
+  .sess.unnamed .id { font-family:var(--mono); font-weight:400; font-size:12px; color:var(--fg-2); }
   .sess.active .id { color:var(--fg); }
-  .sess:not(.active) .id { color:var(--fg-2); }
+  .sess .fl { flex:none; font-size:11px; color:var(--accent); font-variant-numeric:tabular-nums; }
+  .sess .ssid { margin-top:2px; font-family:var(--mono); font-size:11px; color:var(--fg-4);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .sess .meta { margin-top:3px; font-size:11.5px; color:var(--fg-3); font-variant-numeric:tabular-nums;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .sess .live { color:var(--live); }
   .sess .proj { margin-top:2px; font-size:11.5px; color:var(--fg-3);
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .sess .ssid { margin-top:1px; font-family:var(--mono); letter-spacing:.02em; opacity:.85; }
 
   /* summary */
-  .summary { padding:22px 26px 18px; border-bottom:1px solid var(--line); }
-  .summary .sid { font-family:var(--mono); font-size:13px; color:var(--fg-2); word-break:break-all; display:flex; flex-wrap:wrap; align-items:baseline; gap:10px; }
-  .summary .sid .sname { font-family:var(--macro); font-weight:800; font-size:16px; letter-spacing:.02em; color:var(--fg); }
-  .summary .sline { margin-top:8px; font-size:15px; color:var(--fg-2); font-variant-numeric:tabular-nums; }
+  .summary { padding:20px 22px 16px; border-bottom:1px solid var(--border); box-shadow:inset 0 1px 0 var(--edge); }
+  .summary .sname { font-family:var(--sans); font-weight:600; font-size:19px; letter-spacing:-.02em; color:var(--fg); }
+  .summary .sid { font-family:var(--mono); font-size:12px; color:var(--fg-3); margin-top:3px; word-break:break-all; }
+  .summary .sline { margin-top:12px; font-size:13.5px; color:var(--fg-3); font-variant-numeric:tabular-nums; }
   .summary .n { color:var(--fg); font-weight:600; }
   .summary .flag { color:var(--accent); font-weight:600; }
-  .summary .risk { color:var(--accent); }
-  .summary .combo { margin-top:6px; font-size:12.5px; color:var(--fg-3); font-family:var(--mono); }
+  .summary .risk { margin-left:2px; padding:1px 9px; border-radius:999px; font-size:11.5px; border:1px solid var(--border); color:var(--fg-3); }
+  .summary .risk.hot { border-color:var(--accent-line); color:var(--accent); }
+  .summary .combo { margin-top:8px; font-size:12px; color:var(--fg-4); font-family:var(--mono); }
 
-  /* timeline */
-  table { width:100%; border-collapse:collapse; }
-  thead th { position:sticky; top:0; z-index:1; background:var(--bg); text-align:left;
-    padding:9px 12px; border-bottom:1px solid var(--line);
-    font-weight:400; font-size:11px; color:var(--fg-3); }
-  thead th.r { text-align:right; }
-  tbody tr.row { cursor:pointer; transition:background .1s ease; }
-  tbody tr.row:hover { background:var(--panel); }
-  tbody tr.row.open { background:var(--panel-2); }
-  tbody tr.row.flag td.tgt { color:var(--fg); }
-  tbody tr.row.fail { background:var(--accent-wash); }
-  td { padding:8px 12px; vertical-align:top; border-bottom:1px solid var(--line); }
-  td.t { width:1%; white-space:nowrap; color:var(--fg-3); font-family:var(--mono); font-size:12px; font-variant-numeric:tabular-nums; }
-  td.tool { width:1%; white-space:nowrap; color:var(--fg-2); font-size:13px; }
-  td.tgt { color:var(--fg-2); font-family:var(--mono); font-size:12.5px;
-    max-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  td.dur { width:1%; text-align:right; white-space:nowrap; color:var(--fg-3); font-size:12px; font-variant-numeric:tabular-nums; }
-  td.sig { width:1%; white-space:nowrap; text-align:right; }
-  tr.turn td { border-bottom:none; padding:20px 12px 4px; color:var(--fg-3); font-size:11px; }
-  tr.turn td .tno { color:var(--fg-2); }
+  /* timeline (flex rows) */
+  .tl { padding-bottom:24px; }
+  .thead, .trow { display:flex; align-items:center; padding:6px 16px 6px 12px; border-left:2px solid transparent; }
+  .thead { position:sticky; top:0; z-index:2; background:var(--bg);
+    border-bottom:1px solid var(--border); font-size:11px; color:var(--fg-4); letter-spacing:.02em; }
+  .thead .c-tgt { color:var(--fg-4); }
+  .trow { cursor:pointer; transition:background .1s ease; }
+  .trow:hover { background:var(--hover); }
+  .trow:hover .c-tgt { color:var(--fg-hi); }
+  .trow.open { background:var(--selected); }
+  .trow.open .c-tgt { color:var(--fg-hi); }
+  .trow.flag { border-left-color:var(--fg-4); }
+  .trow.fail { border-left-color:var(--accent); background:var(--accent-wash); }
+  .c-time { flex:0 0 62px; font-family:var(--mono); font-size:12px; color:var(--fg-3); font-variant-numeric:tabular-nums; }
+  .c-tool { flex:0 0 92px; padding-right:10px; font-size:12.5px; color:var(--fg-2);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .c-tgt  { flex:0 1 auto; min-width:0; display:flex; overflow:hidden;
+    font-family:var(--mono); font-size:12.5px; color:var(--fg); }
+  .c-tgt .dir  { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .c-tgt .base { flex:0 0 auto; white-space:nowrap; }
+  .c-sig  { flex:0 0 auto; display:flex; gap:5px; margin-left:10px; }
+  .c-sig .tag { margin-left:0; }
+  .c-dur  { flex:0 0 auto; margin-left:10px; font-family:var(--mono); font-size:11.5px; color:var(--fg-3); font-variant-numeric:tabular-nums; }
+  .c-pad  { flex:1 1 0; min-width:14px; }
+  .c-chev { flex:0 0 auto; margin-left:8px; color:var(--fg-4); opacity:0; transition:opacity .1s ease; }
+  .trow:hover .c-chev { opacity:.55; }
+  .turn { padding:18px 16px 4px 14px; font-size:10.5px; color:var(--fg-4); letter-spacing:.05em; }
 
   /* signal tags */
-  .tag { display:inline-block; margin-left:5px; padding:1px 7px; border-radius:4px;
-    font-family:var(--mono); font-size:11px; color:var(--fg-2); background:var(--panel-2); }
-  .tag.alert { color:var(--accent); background:var(--accent-wash); }
+  .tag { display:inline-block; margin-left:5px; padding:1px 6px; border-radius:var(--r1);
+    font-size:11px; color:var(--fg-2); border:1px solid rgba(255,255,255,.09); }
+  .tag.alert { color:var(--accent); background:var(--accent-wash); border-color:var(--accent-line); }
 
   /* dossier */
-  .detail { background:var(--panel); border-bottom:1px solid var(--line); padding:18px 26px 22px; }
+  .detail { background:var(--surface-2); border-top:1px solid var(--border-subtle); border-bottom:1px solid var(--border);
+    box-shadow:inset 2px 0 0 var(--border-strong); padding:16px 22px 20px; }
   .detail .kv { font-size:12.5px; color:var(--fg-3); margin-bottom:14px; font-variant-numeric:tabular-nums; }
-  .detail .kv b { color:var(--fg-2); font-weight:600; }
-  .detail h4 { margin:16px 0 6px; font-size:11px; font-weight:500; color:var(--fg-3); letter-spacing:.03em; }
+  .detail .kv b { color:var(--fg-1); font-weight:600; }
+  .detail h4 { margin:14px 0 6px; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--fg-4); }
   .detail h4:first-of-type { margin-top:0; }
-  .detail pre { margin:0; padding:12px 14px; background:var(--bg); border:1px solid var(--line); border-radius:var(--r);
+  .detail pre { margin:0; padding:12px 14px; background:var(--bg); border:1px solid var(--border-subtle); border-radius:var(--r2);
     overflow:auto; max-height:300px; white-space:pre-wrap; word-break:break-word;
     font-family:var(--mono); font-size:12px; line-height:1.5; color:var(--fg); }
   .detail .redact { color:var(--accent); background:var(--accent-wash); border-radius:3px; padding:0 3px; }
-  .chain { display:flex; flex-wrap:wrap; gap:6px 14px; font-family:var(--mono); font-size:12px; color:var(--fg-2); }
-  .chain .arrow { color:var(--fg-3); }
+  .detail details summary { cursor:pointer; font-size:10.5px; font-weight:600; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--fg-4); padding:2px 0; list-style:none; }
+  .detail details summary::-webkit-details-marker { display:none; }
+  .detail details summary::before { content:"\\203A"; display:inline-block; margin-right:6px; transition:transform .12s ease; }
+  .detail details[open] summary::before { transform:rotate(90deg); }
+  .detail details[open] summary { margin-bottom:8px; }
+  .chain { display:flex; flex-wrap:wrap; gap:6px 16px; font-family:var(--mono); font-size:12px; color:var(--fg-3); }
+  .chain samp { color:var(--fg-2); }
+  .chain .arrow { color:var(--fg-4); }
   .gline { font-size:12.5px; margin:3px 0; color:var(--fg-2); font-variant-numeric:tabular-nums; }
-  .gline .gl { display:inline-block; min-width:76px; color:var(--fg-3); }
+  .gline .gl { display:inline-block; min-width:76px; color:var(--fg-4); }
   .gline .del { color:var(--accent); }
   .derr { color:var(--accent); font-size:12.5px; }
 
   /* states */
-  .empty { max-width:440px; margin:64px auto; padding:0 24px; text-align:center; color:var(--fg-3); }
-  .empty .h { color:var(--fg-2); font-size:14px; margin-bottom:8px; }
-  .empty p { margin:6px 0; font-size:12.5px; line-height:1.6; }
-  .empty code { font-family:var(--mono); color:var(--fg-2); background:var(--panel); padding:2px 6px; border-radius:4px; }
-  .skel { padding:11px 12px; }
-  .skel i { display:block; height:9px; border-radius:4px; background:var(--panel-2); }
-  .skel i:first-child { width:58%; margin-bottom:7px; }
-  .skel i:last-child { width:82%; }
+  .empty { max-width:440px; margin:60px auto; padding:0 24px; text-align:center; color:var(--fg-3); }
+  .empty .h { color:var(--fg-2); font-size:13.5px; margin-bottom:8px; }
+  .empty p { margin:6px 0; font-size:12.5px; line-height:1.6; color:var(--fg-4); }
+  .skel { padding:9px 11px; }
+  .skel i { display:block; height:9px; border-radius:4px; background:var(--surface-2); }
+  .skel i:first-child { width:52%; margin-bottom:8px; }
+  .skel i:last-child { width:78%; }
 
   @media (prefers-reduced-motion: no-preference) {
     @keyframes fade { from { opacity:0; } }
-    tr.row.enter, .sess.enter { animation:fade .18s ease both; }
-    @keyframes pulse { 50% { opacity:.45; } }
-    .skel i { animation:pulse 1.3s ease-in-out infinite; }
+    .trow.enter, .sess.enter { animation:fade .18s ease both; }
+    @keyframes dfade { from { opacity:0; transform:translateY(-3px); } }
+    .detail { animation:dfade .18s ease both; }
+    @keyframes shim { from { background-position:200% 0; } to { background-position:-200% 0; } }
+    .skel i { background-image:linear-gradient(90deg, transparent, rgba(255,255,255,.05), transparent); background-size:200% 100%; animation:shim 1.4s ease-in-out infinite; }
   }
-  @media (max-width:820px) { aside { width:220px; } header .path { display:none; } }
+  @media (max-width:820px) { aside { width:220px; } header .store { max-width:130px; } }
 `;
 
 // Consumes: GET /health → {count, head_seq, port, db}; GET /api/sessions →
 // SessionCard[] {session_id, events, started, ended, failures, verdict, score,
-// combos[], flags{id→n}, flagged, cwd}; GET /api/session/:id/events → Action[]
-// {key, seq, post_seq, ts, hook_event, type, tool, target, phase, success,
-// duration_ms, redaction_count, signals[], score, prompt_id, agent_type};
+// combos[], flags{id→n}, annotations{id→n}, flagged, cwd}; GET /api/session/:id/events →
+// Action[] {key, seq, post_seq, ts, hook_event, type, tool, target, phase, success,
+// duration_ms, redaction_count, signals[], notes[], score, prompt_id, agent_type};
 // GET /api/event/:seq → full detail incl. risk + chain hashes (see read-api.ts).
 // All fields beyond the Phase-2 set are read defensively (missing → degraded
 // display, never a crash), so this page works against older daemons too.
+//
+// signals[] are the row chips (red risk + a few muted always-show annotations);
+// notes[] are muted context (secret-touch, failed) kept OFF the row — the full
+// flag list is still in the /api/event dossier. This split is what keeps the
+// timeline quiet (secret-touch alone fired 345x pre-r2).
 //
 // Poll-safe rendering: the 3s poll compares JSON fingerprints per pane and
 // returns before ANY DOM write when nothing changed (idle polls cost zero DOM
@@ -172,9 +203,9 @@ const PAGE_CSS = `  :root {
 //
 // SECURITY: recorded strings are hostile. el()/textContent only — never
 // innerHTML/insertAdjacentHTML; class names are never derived from data.
-// ALERT is the danger set; any unknown flag id falls back to a muted tag, so
+// ALERT is the danger set; any other flag id falls back to a muted tag, so
 // risk-rules.ts may grow the FlagId union without touching this file.
-const CLIENT_JS = `const ALERT = new Set(['failed','dangerous-shell','destructive-git','external-send','injection-output','auth-edit']);
+const CLIENT_JS = `const ALERT = new Set(['dangerous-shell','destructive-git','auth-edit','mass-diff']);
 const RISKWORD = Object.assign(Object.create(null), { high:'high risk', medium:'medium risk', low:'low risk' });
 
 let current = null, expanded = new Set();
@@ -185,7 +216,6 @@ let lastPrompt = null, turnN = 0;   // turn-divider walk state (reset with rowSt
 let haveSessions = false, lastHealth = null, lastHead = null;
 const sessEls = new Map();    // session_id -> rail row element
 const cardsById = new Map();  // session_id -> latest SessionCard
-const NCOLS = 5;
 
 function el(tag, props, ...kids){ const n=document.createElement(tag); if(props) Object.assign(n,props); for(const k of kids) if(k!=null) n.append(k); return n; }
 async function api(p){ const r = await fetch(p, {headers:{'accept':'application/json'}}); if(!r.ok) throw new Error(r.status); return r.json(); }
@@ -202,7 +232,7 @@ function fmtRel(ts){ const s=Math.round((Date.now()-Date.parse(ts))/1000);
 function basename(p){ if(!p) return null; const parts=p.split(/[\\\\/]/).filter(Boolean); return parts[parts.length-1]||null; }
 
 function tag(s){ return el('span',{className:'tag'+(ALERT.has(s)?' alert':''),textContent:s}); }
-function isFail(a){ return a.success===0 || a.signals.includes('failed'); }
+function isFail(a){ return a.success===0 || (a.notes||[]).includes('failed') || a.signals.includes('failed'); }
 
 /* ── header status ───────────────────────────────────────────────── */
 function updateHud(h){
@@ -214,7 +244,7 @@ function updateHud(h){
   if(fp === fpHud) return;                                    // idle poll → zero DOM work
   fpHud = fp;
   document.getElementById('hEvents').textContent = String(h.count||0);
-  const st = document.getElementById('hStore'); st.textContent = h.db||''; st.title = h.db||'';
+  const st = document.getElementById('hStore'); const db = h.db||''; st.textContent = basename(db) || db; st.title = db;
   setRec(mode);
 }
 function setRec(mode){
@@ -296,12 +326,13 @@ function renderSessions(cards){
 function fillCard(d, c){
   const keepEnter = d.className.includes('enter');
   d.textContent = '';
-  d.className = 'sess' + (keepEnter ? ' enter' : '') + (c.session_id === current ? ' active' : '');
-  const label = c.name || c.session_id.slice(0,20);
-  const top = el('div',{className:'top'}, el('span',{className:'id',title:c.session_id + (c.name ? ' — ' + c.name : ''),textContent:label}));
-  if(c.flagged) top.append(el('span',{className:'fl',textContent:c.flagged+' flagged'}));
+  d.className = 'sess' + (keepEnter ? ' enter' : '') + (c.name ? '' : ' unnamed') + (c.session_id === current ? ' active' : '');
+  const top = el('div',{className:'top'},
+    el('span',{className:'id',title:c.name ? c.name+' · '+c.session_id : c.session_id,
+      textContent:c.name || c.session_id.slice(0,20)}));
+  if(c.flagged) top.append(el('span',{className:'fl',textContent:String(c.flagged)}));
   d.append(top);
-  if(c.name) d.append(el('div',{className:'proj ssid',textContent:c.session_id.slice(0,20),title:c.session_id}));
+  if(c.name) d.append(el('div',{className:'ssid',textContent:c.session_id.slice(0,20),title:c.session_id}));
   const rel = fmtRel(c.ended);
   const relEl = el('span',{className:rel===null?'live':'',textContent:rel===null?'live':rel});
   d._relEl = relEl; d._ended = c.ended;
@@ -347,14 +378,13 @@ function renderTimeline(main, actions){
     main.textContent='';
     fpVerdict = null; rowState = []; lastPrompt = null; turnN = 0;
     main.append(el('section',{className:'summary',id:'verdict'}));
-    const tbl = el('table');
-    tbl.setAttribute('aria-label','action timeline');
-    const thead = el('thead',{}, el('tr',{},
-      el('th',{scope:'col',textContent:'time'}), el('th',{scope:'col',textContent:'tool'}),
-      el('th',{scope:'col',textContent:'target'}), el('th',{scope:'col',className:'r',textContent:'dur'}),
-      el('th',{scope:'col',className:'r',textContent:''})));
-    tbody = el('tbody');
-    tbl.append(thead, tbody); main.append(tbl);
+    main.append(el('div',{className:'thead',role:'row'},
+      el('div',{className:'c-time',textContent:'time'}),
+      el('div',{className:'c-tool',textContent:'tool'}),
+      el('div',{className:'c-tgt'}, el('span',{className:'dir',textContent:'target'})),
+      el('div',{className:'c-pad'})));
+    tbody = el('div',{className:'tl',role:'table','aria-label':'action timeline'});
+    main.append(tbody);
   }
   updateVerdict(actions);
   for(let i=0;i<actions.length;i++){
@@ -377,29 +407,42 @@ function renderTimeline(main, actions){
 function maybeDivider(a){
   if(!a.prompt_id || a.prompt_id === lastPrompt) return;   // null never opens/closes a turn
   lastPrompt = a.prompt_id; turnN++;
-  const td = el('td',{colSpan:NCOLS}, el('span',{className:'tno',textContent:'turn '+turnN}));
-  tbody.append(el('tr',{className:'turn'}, td));
+  tbody.append(el('div',{className:'turn',textContent:'turn '+turnN}));
+}
+
+// Type-aware target: file paths keep the basename (dir ellipsizes, base pinned);
+// commands tail-ellipsize so the verb survives. Full text is in the title attr.
+function targetCell(a){
+  const c = el('div',{className:'c-tgt',title:a.target||''});
+  const t = a.target || '';
+  const isPath = a.type==='file_read' || a.type==='file_write' || a.type==='file_edit';
+  const i = t.lastIndexOf('/');
+  if(isPath && i >= 0 && i < t.length-1){
+    c.append(el('span',{className:'dir',textContent:t.slice(0,i+1)}), el('span',{className:'base',textContent:t.slice(i+1)}));
+  } else {
+    c.append(el('span',{className:'dir',textContent:t}));
+  }
+  return c;
 }
 
 function buildRowCells(a, tr, entering){
   tr.textContent='';
   const fail = isFail(a);
-  tr.className = 'row' + (fail ? ' fail' : a.signals.length ? ' flag' : '') +
+  tr.className = 'trow' + (fail ? ' fail' : a.signals.some(s=>ALERT.has(s)) ? ' flag' : '') +
     (expanded.has(a.seq) ? ' open' : '') + (entering ? ' enter' : '');
-  const sig = el('td',{className:'sig'}); a.signals.forEach(s=>sig.append(tag(s)));
-  let t = a.target || '';
-  if(t.length > 140 && (a.type==='file_read'||a.type==='file_write'||a.type==='file_edit')) t = '…'+t.slice(-139);
   tr.append(
-    el('td',{className:'t',textContent:hhmmss(a.ts)}),
-    el('td',{className:'tool',textContent:(a.tool||a.hook_event)}),
-    el('td',{className:'tgt',title:a.target||'',textContent:t}),
-    el('td',{className:'dur',textContent:fmtDur(a.duration_ms)}),
-    sig);
+    el('div',{className:'c-time',textContent:hhmmss(a.ts)}),
+    el('div',{className:'c-tool',textContent:(a.tool||a.hook_event)}),
+    targetCell(a));
+  if(a.signals.length){ const sig = el('div',{className:'c-sig'}); a.signals.forEach(s=>sig.append(tag(s))); tr.append(sig); }
+  const dur = fmtDur(a.duration_ms);
+  if(dur) tr.append(el('div',{className:'c-dur',textContent:dur}));
+  tr.append(el('div',{className:'c-pad'}), el('div',{className:'c-chev',textContent:'›'}));
 }
 
 function appendRow(a){
   maybeDivider(a);
-  const tr = el('tr',{tabIndex:0});
+  const tr = el('div',{role:'row',tabIndex:0});
   buildRowCells(a, tr, true);
   tr.onclick = ()=>toggle(a.seq, tr);
   tr.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggle(a.seq, tr); } };
@@ -413,15 +456,13 @@ function updateVerdict(actions){
   const v = document.getElementById('verdict');
   if(!v) return;
   const card = cardsById.get(current) || null;
-  const flagN = actions.reduce((n,a)=>n+a.signals.length,0);
+  const flagN = actions.reduce((n,a)=>n+a.signals.filter(s=>ALERT.has(s)).length,0);
   const fp = JSON.stringify([current, actions.length, flagN, card]);
   if(fp === fpVerdict) return;
   fpVerdict = fp;
   v.textContent = '';
-  const sid = el('div',{className:'sid'});
-  if(card && card.name) sid.append(el('span',{className:'sname',textContent:card.name}), el('samp',{textContent:current}));
-  else sid.append(el('samp',{textContent:current}));
-  v.append(sid);
+  if(card && card.name) v.append(el('div',{className:'sname',textContent:card.name}));
+  v.append(el('div',{className:'sid'}, el('samp',{textContent:current})));
 
   const line = el('div',{className:'sline'});
   line.append(el('span',{className:'n',textContent:String(actions.length)}), ' actions');
@@ -431,8 +472,11 @@ function updateVerdict(actions){
   if(span){ line.append(el('span',{className:'sep',textContent:'·'}), span); }
   const proj = card && basename(card.cwd);
   if(proj){ line.append(el('span',{className:'sep',textContent:'·'}), proj); }
-  if(card && RISKWORD[card.verdict]){ line.append(el('span',{className:'sep',textContent:'·'}),
-    el('span',{className:'risk',textContent:RISKWORD[card.verdict]})); }
+  if(card && RISKWORD[card.verdict]){
+    const hot = card.verdict === 'medium' || card.verdict === 'high';
+    line.append(el('span',{className:'sep',textContent:'·'}),
+      el('span',{className:'risk'+(hot?' hot':''),textContent:RISKWORD[card.verdict]}));
+  }
   v.append(line);
 
   if(card && Array.isArray(card.combos)){
@@ -479,8 +523,8 @@ async function insertDetail(seq, row){
   catch {
     if(stale()) return;
     removeDetail(row);
-    row.after(el('tr',{className:'detailrow'}, el('td',{colSpan:NCOLS},
-      el('div',{className:'detail'}, el('span',{className:'derr',textContent:'Could not load event '+seq+'.'})))));
+    row.after(el('div',{className:'detailrow'},
+      el('div',{className:'detail'}, el('span',{className:'derr',textContent:'Could not load event '+seq+'.'}))));
     return;
   }
   if(stale()) return;
@@ -492,6 +536,14 @@ async function insertDetail(seq, row){
   if(d.redaction_count) idbits.push(d.redaction_count+' redacted');
   box.append(el('div',{className:'kv'},
     el('b',{textContent:(d.tool_name||d.hook_event)}), ' · '+idbits.filter(Boolean).join(' · ')));
+
+  // risk first: it answers "why is this flagged"
+  if(d.risk && (d.risk.score || (d.risk.flags||[]).length)){
+    box.append(secLabel('risk'));
+    const r = gline('score', String(d.risk.score||0));
+    (d.risk.flags||[]).forEach(f=>r.append(tag(f)));
+    box.append(r);
+  }
 
   const input = d.raw && typeof d.raw === 'object' ? d.raw.tool_input : undefined;
   if(input !== undefined){
@@ -524,12 +576,6 @@ async function insertDetail(seq, row){
       gline('cause', String(corr.confidence||'none'),
         corr.session_id ? ' · '+String(corr.session_id).slice(0,20) : ''));
   }
-  if(d.risk && (d.risk.score || (d.risk.flags||[]).length)){
-    box.append(secLabel('risk'));
-    const r = gline('score', String(d.risk.score||0));
-    (d.risk.flags||[]).forEach(f=>r.append(tag(f)));
-    box.append(r);
-  }
   const reds = d.detail && d.detail.redactions;
   if(Array.isArray(reds) && reds.length){
     box.append(secLabel('redactions'));
@@ -545,9 +591,10 @@ async function insertDetail(seq, row){
   chain.append(el('span',{}, 'hash ', el('samp',{title:d.hash||'',textContent:(d.hash||'').slice(0,12)+'…'})));
   box.append(chain);
 
-  box.append(secLabel('raw'), el('pre',{textContent:JSON.stringify(d.raw,null,2)}));
+  // raw: the full redacted record, collapsed (it re-prints the input shown above)
+  box.append(el('details',{}, el('summary',{textContent:'raw'}), el('pre',{textContent:JSON.stringify(d.raw,null,2)})));
 
-  row.after(el('tr',{className:'detailrow'}, el('td',{colSpan:NCOLS}, box)));
+  row.after(el('div',{className:'detailrow'}, box));
 }
 
 /* ── poll loop ───────────────────────────────────────────────────── */
@@ -579,7 +626,7 @@ ${PAGE_CSS}</style>
   <div class="status">
     <span id="recDot" class="dot"></span><span id="recLabel">idle</span>
     <span class="sep">·</span><span id="hEvents">0</span>&nbsp;events
-    <span class="sep">·</span><span id="hStore" class="path"></span>
+    <span class="sep">·</span><span id="hStore" class="store"></span>
   </div>
 </header>
 <div id="alert" role="status" aria-live="polite"></div>
