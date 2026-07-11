@@ -60,26 +60,53 @@ function writeSettings(path: string, settings: Settings): void {
   writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
 }
 
+/** One blackbox hook handler. `timeout` is in SECONDS (Claude Code's unit) and
+ *  `async: true` keeps the hook off the agent's critical path. */
+function blackboxHandler(port: number): HookHandler {
+  return { type: 'http', url: hookUrl(port), async: true, timeout: 5 };
+}
+
+/**
+ * The blackbox hook block, keyed by event — pure, no filesystem. Tool events get
+ * a "*" matcher (to catch every tool, MCP included); the rest are matcher-less.
+ * Single source of truth for what `init` writes and what the tests assert.
+ */
+export function buildHookConfig(port: number): Record<string, HookGroup[]> {
+  const out: Record<string, HookGroup[]> = {};
+  for (const event of TOOL_EVENTS) out[event] = [{ matcher: '*', hooks: [blackboxHandler(port)] }];
+  for (const event of OTHER_EVENTS) out[event] = [{ hooks: [blackboxHandler(port)] }];
+  return out;
+}
+
+/**
+ * Merge the blackbox hook block into an existing settings object — pure (returns
+ * a new object, touches no disk) and idempotent: an event that already carries a
+ * blackbox http hook is left untouched, so merging twice equals merging once and
+ * pre-existing user hooks are never clobbered.
+ */
+export function mergeHooks(existing: Settings, port: number): { settings: Settings; addedEvents: string[] } {
+  const hooks: Record<string, HookGroup[]> = { ...(existing.hooks ?? {}) };
+  const added: string[] = [];
+  for (const [event, groups] of Object.entries(buildHookConfig(port))) {
+    const cur = hooks[event];
+    const current = Array.isArray(cur) ? cur : [];
+    if (current.some((g) => g.hooks?.some(isBlackboxHttpHook))) {
+      hooks[event] = current;
+      continue;
+    }
+    hooks[event] = [...current, ...groups];
+    added.push(event);
+  }
+  return { settings: { ...existing, hooks }, addedEvents: added };
+}
+
 /** Merge blackbox http hooks into ~/.claude/settings.json, idempotently, never clobbering. */
 export function init(port: number): { settingsPath: string; addedEvents: string[]; token: string } {
   const path = claudeSettingsPath();
-  const settings = readSettings(path);
-  settings.hooks ??= {};
-  const url = hookUrl(port);
-  const added: string[] = [];
-
-  for (const event of [...TOOL_EVENTS, ...OTHER_EVENTS]) {
-    const groups = (settings.hooks[event] ??= []);
-    const already = groups.some((g) => g.hooks?.some(isBlackboxHttpHook));
-    if (already) continue;
-    const handler: HookHandler = { type: 'http', url, async: true, timeout: 5 };
-    groups.push(TOOL_EVENTS.includes(event) ? { matcher: '*', hooks: [handler] } : { hooks: [handler] });
-    added.push(event);
-  }
-
+  const { settings, addedEvents } = mergeHooks(readSettings(path), port);
   writeSettings(path, settings);
   const token = ensureConfig(port);
-  return { settingsPath: path, addedEvents: added, token };
+  return { settingsPath: path, addedEvents, token };
 }
 
 /** Remove blackbox http hooks; leave every other hook untouched. */

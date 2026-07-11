@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import { disableAutostart, enableAutostart } from './autostart';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { canonical } from './hash';
 import { init, uninit, versionWarning } from './init';
@@ -26,6 +27,7 @@ interface Args {
   check?: boolean;
   prune?: string;
   out?: string;
+  off?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -42,6 +44,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--check') out.check = true;
     else if (a === '--prune') out.prune = argv[++i];
     else if (a === '--out') out.out = argv[++i];
+    else if (a === '--off') out.off = true;
     else if (a === '-h' || a === '--help') out._.push('help');
     else out._.push(a as string);
   }
@@ -126,7 +129,7 @@ async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> 
 const HELP = `blackbox — forensic recorder for AI coding agents (Phase 0)
 
 Usage:
-  blackbox init                  Register blackbox hooks in ~/.claude/settings.json
+  blackbox init                  Install hooks, start the daemon, and begin recording (one command; alias: setup)
   blackbox uninit                Remove blackbox hooks from ~/.claude/settings.json
   blackbox watch [repo]          Install git forensics hooks in a repo (--global for all repos)
   blackbox unwatch [repo]        Remove git forensics hooks (--global to disable global)
@@ -134,6 +137,7 @@ Usage:
   blackbox stop                  Stop the daemon
   blackbox status                Show daemon status
   blackbox ui                    Open the timeline UI in your browser (http://127.0.0.1:7842)
+  blackbox autostart             Keep the daemon running across reboots (macOS LaunchAgent; --off to disable)
   blackbox ingest <file.jsonl>   Normalize raw hook payloads into the chained store
   blackbox verify                Verify the hash chain; report the first break
   blackbox rescore               Recompute the risk layer (--session, --ruleset, --check, --prune <v>)
@@ -282,7 +286,7 @@ function cmdUnwatch(args: Args): number {
   return 0;
 }
 
-function cmdInit(args: Args): number {
+async function cmdInit(args: Args): Promise<number> {
   const port = args.port ?? DEFAULT_PORT;
   const warn = versionWarning();
   if (warn) console.error(`warning: ${warn}`);
@@ -293,14 +297,42 @@ function cmdInit(args: Args): number {
   } else {
     console.log(`blackbox hooks already registered in ${settingsPath} (nothing to do)`);
   }
-  console.log(`\nNext: 'blackbox start' to run the daemon on 127.0.0.1:${port}.`);
-  console.log('New Claude Code sessions will be recorded automatically.');
+  // Bring the daemon up (idempotent: a healthy daemon is left as-is) and confirm /health.
+  const code = await cmdStart(args);
+  if (code !== 0) {
+    console.error("hooks are registered, but the daemon isn't up — run 'blackbox start' and check the log.");
+    return code;
+  }
+  console.log(`\n✓ you are recording — open the timeline UI at http://127.0.0.1:${port}/`);
+  console.log('  New Claude Code sessions record automatically.');
+  console.log("  Stop the daemon with 'blackbox stop'; remove hooks with 'blackbox uninit'.");
   return 0;
 }
 
 function cmdUninit(_args: Args): number {
   const { settingsPath, removed } = uninit();
   console.log(`removed ${removed} blackbox hook(s) from ${settingsPath}`);
+  return 0;
+}
+
+function cmdAutostart(args: Args): number {
+  if (args.off) {
+    const r = disableAutostart();
+    if (!r.supported) {
+      console.error('autostart is macOS-only (LaunchAgent)');
+      return 2;
+    }
+    console.log(r.action === 'removed' ? `autostart disabled (removed ${r.path})` : 'autostart was not enabled');
+    return 0;
+  }
+  const port = args.port ?? DEFAULT_PORT;
+  const r = enableAutostart({ nodePath: process.execPath, cliPath: process.argv[1] as string, port, db: args.db });
+  if (!r.supported) {
+    console.error('autostart is macOS-only (LaunchAgent)');
+    return 2;
+  }
+  console.log(`autostart enabled — the daemon starts at login (${r.path})`);
+  console.log("Disable it with 'blackbox autostart --off'.");
   return 0;
 }
 
@@ -584,9 +616,12 @@ async function main(): Promise<number> {
   const cmd = args._[0];
   switch (cmd) {
     case 'init':
+    case 'setup':
       return cmdInit(args);
     case 'uninit':
       return cmdUninit(args);
+    case 'autostart':
+      return cmdAutostart(args);
     case 'watch':
       return cmdWatch(args);
     case 'unwatch':

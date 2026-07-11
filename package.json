@@ -5,6 +5,9 @@
   "description": "Forensic black-box recorder for AI coding agents (Claude Code first)",
   "license": "MIT",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
   "bin": {
     "blackbox": "dist/cli.js"
   },
@@ -13,6 +16,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "start": "node dist/cli.js",
     "verify": "node dist/cli.js verify",
     "test": "npm run build && node --test test/*.test.js"
