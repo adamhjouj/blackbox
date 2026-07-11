@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -20,13 +21,21 @@ interface Config {
   token: string;
   port: number;
 }
+/** Load config, generating+persisting a token if none exists, so installed
+ *  git hooks always carry a token that the daemon requires on /git. */
 function loadConfig(): Config {
+  let c: Record<string, unknown> = {};
   try {
-    const c = JSON.parse(readFileSync(configPath(), 'utf8')) as Partial<Config>;
-    return { token: c.token ?? '', port: c.port ?? 7842 };
+    c = JSON.parse(readFileSync(configPath(), 'utf8')) as Record<string, unknown>;
   } catch {
-    return { token: '', port: 7842 };
+    /* no config yet */
   }
+  if (typeof c.token !== 'string' || !c.token) {
+    ensureBlackboxDir();
+    c = { ...c, token: randomBytes(16).toString('hex'), port: (c.port as number) ?? 7842 };
+    writeFileSync(configPath(), JSON.stringify(c, null, 2) + '\n');
+  }
+  return { token: c.token as string, port: (c.port as number) ?? 7842 };
 }
 
 function git(cwd: string, args: string[]): string {
@@ -175,10 +184,12 @@ export function watchGlobal(): { hooksDir: string; priorHooksPath: string } {
     writeFileSync(file, globalShim(name, cfg, prior));
     chmodSync(file, 0o755);
   }
-  // persist prior so uninstall can restore it
+  // persist prior so uninstall can restore it — but never overwrite an already-saved
+  // real prior with '' (would lose the user's original hooksPath on a second run).
   const cfgPath = configPath();
-  const merged = { ...(existsSafe(cfgPath) ? JSON.parse(readFileSync(cfgPath, 'utf8')) : {}), priorHooksPath: prior };
-  writeFileSync(cfgPath, JSON.stringify(merged, null, 2) + '\n');
+  const existing = existsSafe(cfgPath) ? (JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>) : {};
+  const savedPrior = typeof existing.priorHooksPath === 'string' && existing.priorHooksPath ? existing.priorHooksPath : prior;
+  writeFileSync(cfgPath, JSON.stringify({ ...existing, priorHooksPath: savedPrior }, null, 2) + '\n');
   execFileSync('git', ['config', '--global', 'core.hooksPath', dir]);
   return { hooksDir: dir, priorHooksPath: prior };
 }

@@ -43,18 +43,37 @@ function readBody(req: http.IncomingMessage, maxBody: number): Promise<{ body: s
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    let truncated = false;
+    let truncated = Number(req.headers['content-length'] ?? 0) > maxBody;
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
     req.on('data', (c: Buffer) => {
       size += c.length;
       if (size > maxBody) {
         truncated = true;
         return; // stop accumulating; keep draining so the socket closes cleanly
       }
-      chunks.push(c);
+      if (!truncated) chunks.push(c);
     });
-    req.on('end', () => resolve({ body: Buffer.concat(chunks).toString('utf8'), truncated }));
-    req.on('error', reject);
+    req.on('end', () => settle(() => resolve({ body: Buffer.concat(chunks).toString('utf8'), truncated })));
+    // A client abort/half-open body must settle the promise so the handler never leaks.
+    req.on('aborted', () => settle(() => resolve({ body: '', truncated: false })));
+    req.on('close', () => settle(() => resolve({ body: Buffer.concat(chunks).toString('utf8'), truncated })));
+    req.on('error', (err) => settle(() => reject(err)));
   });
+}
+
+/** A browser CSRF from any website could POST a "simple request" to localhost.
+ *  Claude's hook client (axios/node) never sets Origin/Sec-Fetch-Site; a browser
+ *  always does on a cross-site request. Reject anything that smells browser-driven. */
+function isBrowserForged(headers: http.IncomingHttpHeaders): boolean {
+  if (headers.origin) return true;
+  const site = headers['sec-fetch-site'];
+  const s = Array.isArray(site) ? site[0] : site;
+  return !!s && s !== 'same-origin' && s !== 'none';
 }
 
 /**
@@ -174,7 +193,20 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           });
           return;
         }
+        // Reject browser-forged writes to both recording routes (CSRF to localhost).
+        if (req.method === 'POST' && (path === '/hook' || path === '/git') && isBrowserForged(req.headers)) {
+          log(`rejected browser-forged POST ${path}`);
+          sendJson(res, 403, { ok: false, error: 'forbidden' });
+          return;
+        }
         if (req.method === 'POST' && path === '/hook') {
+          const ct = hdr(req.headers, 'content-type');
+          if (!ct.includes('application/json')) {
+            // Claude sends application/json; requiring it blocks text/plain CSRF simple-requests.
+            log('rejected /hook with non-JSON content-type');
+            sendJson(res, 415, { ok: false, error: 'expected application/json' });
+            return;
+          }
           const { body, truncated } = await readBody(req, maxBody);
           try {
             recordHook(body, truncated);
@@ -206,6 +238,11 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
       }
     })();
   });
+
+  // Bound resource use so a local flood can't exhaust memory / event loop.
+  server.maxConnections = 64;
+  server.requestTimeout = 10_000;
+  server.headersTimeout = 8_000;
 
   return new Promise<Daemon>((resolve, reject) => {
     const onError = (err: NodeJS.ErrnoException): void => reject(err);

@@ -19,6 +19,8 @@ export type SecretType =
   | 'npm-token'
   | 'jwt'
   | 'pem-private-key'
+  | 'aws-secret-key'
+  | 'assigned-secret'
   | 'high-entropy'
   | 'path-sensitive-content'
   | 'redactor-error';

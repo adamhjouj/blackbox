@@ -45,7 +45,11 @@ export function classify(repo: string, d: RefDelta): GitClass {
   const rewind = gitOk(repo, ['merge-base', '--is-ancestor', d.new, d.old]);
   let amend = false;
   try {
-    amend = git(repo, ['rev-parse', `${d.old}^`]) === git(repo, ['rev-parse', `${d.new}^`]);
+    // amend = old and new are both single-parent commits sharing the same parent
+    // (a sibling rewrite), not merely equal first-parents.
+    const op = git(repo, ['rev-list', '--parents', '-n', '1', d.old]).split(/\s+/).slice(1);
+    const np = git(repo, ['rev-list', '--parents', '-n', '1', d.new]).split(/\s+/).slice(1);
+    amend = op.length === 1 && np.length === 1 && op[0] === np[0];
   } catch {
     /* root commit or missing object */
   }
@@ -131,14 +135,16 @@ interface GitBashCall {
   t: number;
 }
 
-/** Does a Bash git command look like it would produce this ref change? */
+/** Does a Bash git command look like it would produce this ref change? Verbs must
+ *  appear as a git subcommand (after `git`, before any quote) to avoid matching a
+ *  word inside a commit message like `git commit -m "reset the counter"`. */
 function shapeConsistent(command: string, cls: GitClass): boolean {
-  const c = command;
-  if (cls.is_delete) return /\b(branch|tag)\s+-[dD]\b/.test(c) || /\bpush\b[^\n]*(--delete|:\s*\S|:\S)/.test(c);
-  if (cls.is_reset) return /\breset\b/.test(c) || /\brebase\b/.test(c);
-  if (cls.is_force) return /\bpush\b[^\n]*(--force|-f)\b/.test(c) || /\brebase\b/.test(c) || /\bcommit\b[^\n]*--amend/.test(c) || /\breset\b/.test(c);
-  if (cls.kind === 'create') return /\b(checkout\s+-b|switch\s+-c|branch\b|tag\b|commit\b|merge\b)/.test(c);
-  return /\b(commit|merge|pull|cherry-pick|revert)\b/.test(c);
+  const verb = (v: string): boolean => new RegExp(`\\bgit\\b[^"']*\\b${v}\\b`).test(command);
+  if (cls.is_delete) return /\bgit\b[^"']*\b(branch|tag)\b[^"']*-[dD]\b/.test(command) || /\bgit\b[^"']*\bpush\b[^"']*(--delete|:\S)/.test(command);
+  if (cls.is_reset) return verb('reset') || verb('rebase');
+  if (cls.is_force) return /\bgit\b[^"']*\bpush\b[^"']*(--force|-f)\b/.test(command) || verb('rebase') || /\bgit\b[^"']*\bcommit\b[^"']*--amend/.test(command) || verb('reset');
+  if (cls.kind === 'create') return verb('checkout') || verb('switch') || verb('branch') || verb('tag') || verb('commit') || verb('merge');
+  return verb('commit') || verb('merge') || verb('pull') || verb('cherry-pick') || verb('revert');
 }
 
 /**
@@ -197,8 +203,10 @@ export class Correlator {
       return { confidence: 'exact', session_id: c.session_id, tool_use_id: c.tool_use_id, candidates };
     }
     if (candidates.length === 1) return { confidence: 'session', session_id: candidates[0]!, tool_use_id: null, candidates };
+    // Multiple sessions active in the same repo → do NOT fabricate a single
+    // attribution; record all candidates and leave session_id unknown.
     if (candidates.length > 1)
-      return { confidence: 'ambiguous', session_id: candidates[candidates.length - 1]!, tool_use_id: null, candidates };
+      return { confidence: 'ambiguous', session_id: 'unknown', tool_use_id: null, candidates };
     return { confidence: 'none', session_id: 'unknown', tool_use_id: null, candidates: [] };
   }
 }
@@ -264,13 +272,20 @@ export function normalizeGit(params: {
   };
 }
 
-/** Parse "old new ref" lines and drop synthetic/noise refs. */
+const SHA_RE = /^([0-9a-f]{40}|[0-9a-f]{64})$/i;
+const MAX_DELTAS = 100;
+
+/** Parse "old new ref" lines and drop synthetic/noise refs. Validates that old/new
+ *  are real object names — a non-SHA value could otherwise inject arguments into the
+ *  `git` plumbing calls (e.g. `--output=…`). Caps the batch to bound request work. */
 export function parseRefLines(body: string): RefDelta[] {
   const out: RefDelta[] = [];
   for (const line of body.split('\n')) {
+    if (out.length >= MAX_DELTAS) break;
     const parts = line.trim().split(/\s+/);
     if (parts.length < 3) continue;
     const [old, nw, ...rest] = parts;
+    if (!SHA_RE.test(old!) || !SHA_RE.test(nw!)) continue; // reject non-SHA → blocks arg injection
     const ref = rest.join(' ');
     if (/^(AUTO_MERGE|ORIG_HEAD)$/.test(ref) || ref.startsWith('refs/stash')) continue;
     if (ZERO.test(old!) && ZERO.test(nw!)) continue;

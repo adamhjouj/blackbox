@@ -26,7 +26,22 @@ export interface RedactionResult {
 
 /** Only these subtrees are walked. Top-level IDs (session_id, tool_use_id, …) are
  *  deliberately left untouched — entropy detection would wreck columns and joins. */
-const WALK_FIELDS = ['tool_input', 'tool_response', 'tool_output', 'error', 'last_assistant_message'];
+const WALK_FIELDS = ['tool_input', 'tool_response', 'tool_output', 'error', 'last_assistant_message', 'prompt', 'message'];
+
+/** key = value / key: value where the key names a credential — catches even
+ *  low-entropy secrets (e.g. `DB_PASSWORD=hunter2`) and slash-bearing values. */
+const ASSIGNMENT_RE =
+  /(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|credential)s?[a-z0-9_]*["'`]?\s*[:=]\s*["'`]?([^\s"'`,;)]{6,})/gi;
+
+/** Base64/base64url secrets often contain '/', which the path-safe entropy pass
+ *  excludes. Distinguish a base64 blob from a real filesystem path. */
+function isPathLike(tok: string): boolean {
+  if (tok.startsWith('/') || tok.includes('./')) return true;
+  const segs = tok.split('/').filter(Boolean);
+  if (segs.length < 2) return false;
+  const wordish = segs.filter((s) => /^[a-z][a-z0-9_]*$/.test(s)).length;
+  return wordish >= Math.ceil(segs.length / 2);
+}
 
 const PLACEHOLDER = (t: SecretType) => `[REDACTED:${t}]`;
 
@@ -56,7 +71,7 @@ function isLikelySecret(tok: string, minLen: number, minBits: number): boolean {
   return shannonBits(tok) >= minBits;
 }
 
-/** Redact one string: known prefixes first, then an entropy sweep of the residual. */
+/** Redact one string: known prefixes, credential assignments, then entropy sweeps. */
 function redactString(s: string, path: string, hits: RedactionHit[], opts: RedactOptions): string {
   let out = s;
   for (const rule of PREFIX_RULES) {
@@ -65,15 +80,26 @@ function redactString(s: string, path: string, hits: RedactionHit[], opts: Redac
       return PLACEHOLDER(rule.type);
     });
   }
+  // Credential-keyword assignments — catches low-entropy and slash-bearing values
+  // that the entropy net alone would miss (e.g. DB_PASSWORD=hunter2, aws_secret_access_key=...).
+  out = out.replace(ASSIGNMENT_RE, (m, val: string) => {
+    record(hits, 'assigned-secret', path, val);
+    return m.slice(0, m.length - val.length) + PLACEHOLDER('assigned-secret');
+  });
+
   const minLen = opts.entropyMinLen ?? 24;
   const minBits = opts.entropyMinBits ?? 3.5;
-  // Token charset excludes the path/URL separators '/', '.', and '-' so
-  // slash/dot/dash-delimited paths (incl. macOS's dash-encoded scratch paths)
-  // are never mistaken for base64 blobs; a contiguous secret still leaves a long
-  // run. Trade-off: an unknown secret split by one of those chars may only be
-  // partially caught by the entropy net — prefix + path rules cover the high-value cases.
+  // Pass 1: path-safe charset (no / . -) so dash/slash/dot-delimited paths are
+  // never mistaken for base64 blobs.
   out = out.replace(/[A-Za-z0-9+_=]{24,}/g, (tok) => {
     if (!isLikelySecret(tok, minLen, minBits)) return tok;
+    record(hits, 'high-entropy', path, tok);
+    return PLACEHOLDER('high-entropy');
+  });
+  // Pass 2: base64 secrets that contain '/' (e.g. ~half of AWS secret keys),
+  // guarded so real filesystem paths are spared.
+  out = out.replace(/[A-Za-z0-9+/=]{24,}/g, (tok) => {
+    if (!tok.includes('/') || isPathLike(tok) || !isLikelySecret(tok, minLen, minBits)) return tok;
     record(hits, 'high-entropy', path, tok);
     return PLACEHOLDER('high-entropy');
   });
@@ -95,19 +121,34 @@ function walk(value: unknown, path: string, hits: RedactionHit[], opts: RedactOp
 /** Drop the CONTENT of a sensitive-path read/write to a hash, regardless of entropy. */
 function applyPathRules(payload: Record<string, unknown>, hits: RedactionHit[]): void {
   const input = payload.tool_input as Record<string, unknown> | undefined;
-  const filePath = input && typeof input.file_path === 'string' ? input.file_path : null;
-  if (filePath && isSensitivePath(filePath) && typeof input!.content === 'string') {
-    record(hits, 'path-sensitive-content', 'tool_input.content', input!.content as string);
-    input!.content = PLACEHOLDER('path-sensitive-content');
+  const dropStr = (obj: Record<string, unknown>, key: string, path: string): void => {
+    if (typeof obj[key] === 'string') {
+      record(hits, 'path-sensitive-content', path, obj[key] as string);
+      obj[key] = PLACEHOLDER('path-sensitive-content');
+    }
+  };
+
+  if (input) {
+    // Write/Edit/MultiEdit/NotebookEdit target a sensitive file → drop ALL written
+    // text (content, old_string/new_string, edits[].*, new_source), regardless of entropy.
+    const p = typeof input.file_path === 'string' ? input.file_path : typeof input.notebook_path === 'string' ? (input.notebook_path as string) : null;
+    if (p && isSensitivePath(p)) {
+      for (const k of ['content', 'old_string', 'new_string', 'new_source']) dropStr(input, k, `tool_input.${k}`);
+      if (Array.isArray(input.edits)) {
+        (input.edits as unknown[]).forEach((e, i) => {
+          if (e && typeof e === 'object') {
+            for (const k of ['old_string', 'new_string']) dropStr(e as Record<string, unknown>, k, `tool_input.edits[${i}].${k}`);
+          }
+        });
+      }
+    }
   }
+
   // Read result: tool_response.file.content with a sensitive filePath.
   const resp = payload.tool_response as Record<string, unknown> | undefined;
   const file = resp && typeof resp.file === 'object' ? (resp.file as Record<string, unknown>) : null;
   const respPath = file && typeof file.filePath === 'string' ? (file.filePath as string) : null;
-  if (respPath && isSensitivePath(respPath) && typeof file!.content === 'string') {
-    record(hits, 'path-sensitive-content', 'tool_response.file.content', file!.content as string);
-    file!.content = PLACEHOLDER('path-sensitive-content');
-  }
+  if (respPath && isSensitivePath(respPath)) dropStr(file!, 'content', 'tool_response.file.content');
 }
 
 /**

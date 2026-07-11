@@ -292,10 +292,14 @@ async function cmdStart(args: Args): Promise<number> {
   const port = args.port ?? DEFAULT_PORT;
   const existing = readPid();
   if (existing && isAlive(existing.pid)) {
-    console.log(`blackbox daemon already running (pid ${existing.pid}, port ${existing.port})`);
-    return 0;
+    // Confirm the PID is actually our daemon (not a recycled PID) via /health.
+    const h = await getHealth(existing.port);
+    if (h?.ok && h.pid === existing.pid) {
+      console.log(`blackbox daemon already running (pid ${existing.pid}, port ${existing.port})`);
+      return 0;
+    }
   }
-  if (existing) removePid(); // stale pid
+  if (existing) removePid(); // stale or recycled pid
 
   if (args.foreground) {
     ensureBlackboxDir();
@@ -345,6 +349,13 @@ async function cmdStop(_args: Args): Promise<number> {
   if (!isAlive(p.pid)) {
     removePid();
     console.log('blackbox daemon not running (removed stale pid)');
+    return 0;
+  }
+  // Only signal a PID we've confirmed is our daemon — never a recycled PID.
+  const h = await getHealth(p.port);
+  if (!h?.ok || h.pid !== p.pid) {
+    removePid();
+    console.log('blackbox daemon not running (pid was recycled; removed stale pid)');
     return 0;
   }
   try {
