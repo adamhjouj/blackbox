@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { DEFAULT_PORT, startDaemon } from './daemon';
+import { init, uninit, versionWarning } from './init';
 import { normalize } from './normalize';
 import { ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
 import { Store } from './store';
@@ -110,6 +111,8 @@ async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> 
 const HELP = `blackbox — forensic recorder for AI coding agents (Phase 0)
 
 Usage:
+  blackbox init                  Register blackbox hooks in ~/.claude/settings.json
+  blackbox uninit                Remove blackbox hooks from ~/.claude/settings.json
   blackbox start                 Start the localhost hook-receiver daemon (background)
   blackbox stop                  Stop the daemon
   blackbox status                Show daemon status
@@ -227,6 +230,28 @@ function cmdHead(args: Args): number {
     return 0;
   }
   console.log(`seq ${meta.head_seq}  count ${meta.count}  head ${meta.head_hash}`);
+  return 0;
+}
+
+function cmdInit(args: Args): number {
+  const port = args.port ?? DEFAULT_PORT;
+  const warn = versionWarning();
+  if (warn) console.error(`warning: ${warn}`);
+  const { settingsPath, addedEvents } = init(port);
+  if (addedEvents.length) {
+    console.log(`registered blackbox hooks for ${addedEvents.length} event(s) in ${settingsPath}`);
+    console.log(`  ${addedEvents.join(', ')}`);
+  } else {
+    console.log(`blackbox hooks already registered in ${settingsPath} (nothing to do)`);
+  }
+  console.log(`\nNext: 'blackbox start' to run the daemon on 127.0.0.1:${port}.`);
+  console.log('New Claude Code sessions will be recorded automatically.');
+  return 0;
+}
+
+function cmdUninit(_args: Args): number {
+  const { settingsPath, removed } = uninit();
+  console.log(`removed ${removed} blackbox hook(s) from ${settingsPath}`);
   return 0;
 }
 
@@ -381,6 +406,10 @@ async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0];
   switch (cmd) {
+    case 'init':
+      return cmdInit(args);
+    case 'uninit':
+      return cmdUninit(args);
     case 'start':
       return cmdStart(args);
     case 'stop':
