@@ -106,8 +106,27 @@ const PAGE_CSS = `  :root {
   /* timeline (flex rows) */
   .tl { padding-bottom:24px; }
   .thead, .trow { display:flex; align-items:center; padding:6px 16px 6px 12px; border-left:2px solid transparent; }
-  .thead { position:sticky; top:0; z-index:2; background:var(--bg);
-    border-bottom:1px solid var(--border); font-size:11px; color:var(--fg-4); letter-spacing:.02em; }
+  .thead { border-bottom:1px solid var(--border); font-size:11px; color:var(--fg-4); letter-spacing:.02em; }
+
+  /* filter bar — sticky over the timeline; the column labels ride under it */
+  .tlhead { position:sticky; top:0; z-index:3; background:var(--bg); }
+  .filterbar { display:flex; align-items:center; gap:8px; padding:8px 16px 8px 12px; border-bottom:1px solid var(--border-subtle); }
+  .filterbar button, .filterbar select, .filterbar input {
+    font:12.5px var(--sans); color:var(--fg-1); background:var(--surface); border:1px solid var(--border); border-radius:var(--r2); }
+  .filterbar :focus { border-color:var(--border-strong); }
+  .filterbar :focus:not(:focus-visible) { outline:none; }
+  .fb-toggle { padding:5px 11px; color:var(--fg-2); cursor:pointer; white-space:nowrap;
+    transition:color .1s ease, border-color .1s ease, background .1s ease; }
+  .fb-toggle:hover { color:var(--fg-1); border-color:var(--border-strong); }
+  .fb-toggle.on { color:var(--accent); background:var(--accent-wash); border-color:var(--accent-line); }
+  .fb-tool { padding:5px 8px; cursor:pointer; max-width:160px; }
+  .fb-search { flex:1 1 auto; min-width:90px; padding:5px 10px; color:var(--fg); }
+  .fb-search::placeholder { color:var(--fg-4); }
+  .fb-jump { padding:5px 11px; color:var(--fg-2); cursor:pointer; white-space:nowrap;
+    transition:color .1s ease, border-color .1s ease; }
+  .fb-jump:hover:not(:disabled) { color:var(--fg-1); border-color:var(--border-strong); }
+  .fb-jump:disabled { opacity:.4; cursor:default; }
+  .fb-count { flex:none; margin-left:2px; color:var(--fg-4); font-size:11.5px; font-variant-numeric:tabular-nums; white-space:nowrap; }
   .thead .c-tgt { color:var(--fg-4); }
   .trow { cursor:pointer; transition:background .1s ease; }
   .trow:hover { background:var(--hover); }
@@ -188,6 +207,8 @@ const PAGE_CSS = `  :root {
     .detail { animation:dfade .18s ease both; }
     @keyframes shim { from { background-position:200% 0; } to { background-position:-200% 0; } }
     .skel i { background-image:linear-gradient(90deg, transparent, rgba(255,255,255,.05), transparent); background-size:200% 100%; animation:shim 1.4s ease-in-out infinite; }
+    @keyframes rowflash { from { background:rgba(229,89,90,.20); } }
+    .trow.flash { animation:rowflash 1s ease; }
   }
   @media (max-width:820px) { aside { width:220px; } header .store { max-width:130px; } }
 `;
@@ -229,6 +250,11 @@ let lastPrompt = null, turnN = 0;   // turn-divider walk state (reset with rowSt
 let haveSessions = false, lastHealth = null, lastHead = null;
 const sessEls = new Map();    // session_id -> rail row element
 const cardsById = new Map();  // session_id -> latest SessionCard
+
+// timeline filter state — module-level, so it survives the 3s poll untouched.
+let fltFlagged = false, fltTool = '', fltText = '';   // flagged-only · tool key · search text (lowercased)
+let toolSel = null, searchBox = null, flaggedBtn = null, jumpBtn = null, shownCount = null;
+let toolOpts = new Set();     // tool keys currently offered in the dropdown
 
 function el(tag, props, ...kids){ const n=document.createElement(tag); if(props) Object.assign(n,props); for(const k of kids) if(k!=null) n.append(k); return n; }
 async function api(p){ const r = await fetch(p, {headers:{'accept':'application/json'}}); if(!r.ok) throw new Error(r.status); return r.json(); }
@@ -391,11 +417,7 @@ function renderTimeline(main, actions){
     main.textContent='';
     fpVerdict = null; rowState = []; lastPrompt = null; turnN = 0;
     main.append(el('section',{className:'summary',id:'verdict'}));
-    main.append(el('div',{className:'thead',role:'row'},
-      el('div',{className:'c-time',textContent:'time'}),
-      el('div',{className:'c-tool',textContent:'tool'}),
-      el('div',{className:'c-tgt'}, el('span',{className:'dir',textContent:'target'})),
-      el('div',{className:'c-pad'})));
+    buildFilterBar(main);   // filter bar + column labels, sticky over the rows
     tbody = el('div',{className:'tl',role:'table','aria-label':'action timeline'});
     main.append(tbody);
   }
@@ -415,6 +437,8 @@ function renderTimeline(main, actions){
       appendRow(a);
     }
   }
+  refreshTools(actions);   // fold any newly-seen tools into the dropdown
+  applyFilter();           // re-apply the active filter to new/patched rows
 }
 
 function maybeDivider(a){
@@ -445,6 +469,7 @@ function targetCell(a){
 
 function buildRowCells(a, tr, entering){
   tr.textContent='';
+  tr._a = a;                    // stash for the filter pass (rowMatches / empty-divider hiding)
   const fail = isFail(a);
   tr.className = 'trow' + (fail ? ' fail' : a.signals.some(s=>ALERT.has(s)) ? ' flag' : '') +
     (expanded.has(a.seq) ? ' open' : '') + (entering ? ' enter' : '');
@@ -468,6 +493,125 @@ function appendRow(a){
   rowState.push({fp: JSON.stringify(a), tr, a});
   if(expanded.has(a.seq)) insertDetail(a.seq, tr);
 }
+
+/* ── filters ─────────────────────────────────────────────────────── */
+// A presentation layer over the poll-safe rows: rowMatches() decides per action,
+// applyFilter() toggles display only (never rebuilds), so the 3s reconcile and the
+// selection/expansion state are untouched. Filter state lives at module scope, so it
+// persists across every poll; an idle poll never calls renderTimeline → zero churn.
+function toolKey(a){
+  const t = a.tool || a.hook_event || '';
+  return t.slice(0,5) === 'mcp__' ? 'mcp' : (t || '—');   // collapse mcp__server__tool → mcp
+}
+function isFlagged(a){ return isFail(a) || a.signals.some(s=>ALERT.has(s)); }
+function rowMatches(a){
+  if(!a) return true;
+  if(fltFlagged && !isFlagged(a)) return false;
+  if(fltTool && toolKey(a) !== fltTool) return false;
+  if(fltText && ((a.summary||'')+' '+(a.target||'')).toLowerCase().indexOf(fltText) < 0) return false;
+  return true;
+}
+function setDisp(n, vis){ const d = vis ? '' : 'none'; if(n.style.display !== d) n.style.display = d; }
+
+// Walk tbody once: hide non-matching rows (and their open dossier), hide a turn
+// divider whose whole group filtered out, then refresh the "N of M shown" count.
+function applyFilter(){
+  if(!tbody) return;
+  let shown = 0, total = 0, flaggedVis = 0, div = null, divVis = false;
+  const kids = tbody.children;
+  for(let i=0;i<kids.length;i++){
+    const n = kids[i], cl = n.classList;
+    if(cl.contains('turn')){ if(div) setDisp(div, divVis); div = n; divVis = false; continue; }
+    if(cl.contains('detailrow')) continue;   // mirrors its row, set alongside it below
+    total++;
+    const a = n._a, vis = rowMatches(a);
+    if(vis){ shown++; divVis = true; if(a && isFlagged(a)) flaggedVis++; }
+    setDisp(n, vis);
+    const nx = n.nextSibling;
+    if(nx && nx.classList && nx.classList.contains('detailrow')) setDisp(nx, vis);
+  }
+  if(div) setDisp(div, divVis);
+  if(shownCount){ const txt = shown+' of '+total+' shown'; if(shownCount.textContent !== txt) shownCount.textContent = txt; }
+  if(jumpBtn) jumpBtn.disabled = flaggedVis === 0;
+}
+
+function syncFlagged(){
+  if(!flaggedBtn) return;
+  flaggedBtn.classList.toggle('on', fltFlagged);
+  flaggedBtn.setAttribute('aria-pressed', String(fltFlagged));
+}
+
+// Fold newly-seen tools into the dropdown (a live session can grow new tools between
+// polls) without disturbing the selection; drop a stale pick left by a session switch.
+function refreshTools(actions){
+  if(!toolSel) return;
+  for(const a of actions){
+    const k = toolKey(a);
+    if(k && !toolOpts.has(k)){ toolOpts.add(k); toolSel.append(el('option',{value:k,textContent:k})); }
+  }
+  if(fltTool && !toolOpts.has(fltTool)) fltTool = '';
+  if(toolSel.value !== fltTool) toolSel.value = fltTool;
+}
+
+function buildFilterBar(main){
+  const head = el('div',{className:'tlhead'});
+  const bar = el('div',{className:'filterbar',role:'search'});
+
+  flaggedBtn = el('button',{type:'button',className:'fb-toggle',title:'show only flagged actions',
+    textContent:'flagged', onclick:()=>{ fltFlagged = !fltFlagged; syncFlagged(); applyFilter(); }});
+  bar.append(flaggedBtn);
+
+  toolOpts = new Set(['']);
+  toolSel = el('select',{className:'fb-tool',title:'filter by tool',
+    onchange:()=>{ fltTool = toolSel.value; applyFilter(); }});
+  toolSel.append(el('option',{value:'',textContent:'all tools'}));
+  bar.append(toolSel);
+
+  searchBox = el('input',{type:'search',className:'fb-search',placeholder:'search summary or target…',
+    value:fltText, spellcheck:false,
+    oninput:()=>{ fltText = searchBox.value.trim().toLowerCase(); applyFilter(); }});
+  bar.append(searchBox);
+
+  jumpBtn = el('button',{type:'button',className:'fb-jump',title:'jump to next flagged action · press n',
+    textContent:'next flag ↓', onclick:jumpNext});
+  bar.append(jumpBtn);
+
+  shownCount = el('div',{className:'fb-count'});
+  bar.append(shownCount);
+
+  head.append(bar);
+  head.append(el('div',{className:'thead',role:'row'},
+    el('div',{className:'c-time',textContent:'time'}),
+    el('div',{className:'c-tool',textContent:'tool'}),
+    el('div',{className:'c-tgt'}, el('span',{className:'dir',textContent:'target'})),
+    el('div',{className:'c-pad'})));
+  main.append(head);
+  syncFlagged();
+}
+
+// Scroll the next flagged row below the fold into view (wraps at the end); counts
+// only rows the filter leaves visible. Bound to the button and the 'n' key.
+function jumpNext(){
+  if(!tbody) return;
+  const vis = rowState.filter(s=> isFlagged(s.a) && s.tr.style.display !== 'none');
+  if(!vis.length) return;
+  const main = document.getElementById('timeline'), head = document.querySelector('.tlhead');
+  const fold = main.getBoundingClientRect().top + (head ? head.getBoundingClientRect().height : 0) + 4;
+  let target = null;
+  for(const s of vis){ if(s.tr.getBoundingClientRect().top > fold){ target = s.tr; break; } }
+  if(!target) target = vis[0].tr;   // past the last flagged row → wrap to the first
+  target.scrollIntoView({block:'center', behavior:'smooth'});
+  flashRow(target);
+}
+function flashRow(tr){ tr.classList.remove('flash'); void tr.offsetWidth; tr.classList.add('flash'); }
+
+// 'n' jumps to the next flagged row — unless focus sits in the filter's own inputs.
+document.addEventListener('keydown', (e)=>{
+  if(e.key !== 'n' || e.metaKey || e.ctrlKey || e.altKey) return;
+  const tn = document.activeElement && document.activeElement.tagName;
+  if(tn === 'INPUT' || tn === 'SELECT' || tn === 'TEXTAREA') return;
+  e.preventDefault(); jumpNext();
+});
 
 /* ── summary ─────────────────────────────────────────────────────── */
 function updateVerdict(actions){
