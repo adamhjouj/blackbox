@@ -210,6 +210,11 @@ export class Store {
     return (this.db.prepare('SELECT COUNT(*) AS c FROM events').get() as { c: number }).c;
   }
 
+  /** One event by its chain position, or null. */
+  get(seq: number): BlackboxEvent | null {
+    return (this.db.prepare('SELECT * FROM events WHERE seq = ?').get(seq) as BlackboxEvent | undefined) ?? null;
+  }
+
   events(sessionId?: string): BlackboxEvent[] {
     if (sessionId) {
       return this.db

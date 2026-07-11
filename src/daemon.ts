@@ -11,7 +11,9 @@ import {
 } from './git-collector';
 import { normalize } from './normalize';
 import { configPath } from './paths';
+import { eventDetail, sessionActions, sessionCards } from './read-api';
 import { Store } from './store';
+import { renderPage } from './ui-page';
 
 export interface DaemonOptions {
   db: string;
@@ -179,7 +181,7 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     void (async () => {
       try {
         const url = req.url ?? '';
-        const path = url.split('?')[0];
+        const path = url.split('?')[0] ?? '';
         if (req.method === 'GET' && (path === '/health' || path === '/healthz')) {
           const meta = store.chainMeta();
           sendJson(res, 200, {
@@ -191,6 +193,42 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             port,
             db: opts.db,
           });
+          return;
+        }
+        // The timeline UI (served to the local browser). No framing allowed.
+        if (req.method === 'GET' && path === '/') {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-frame-options': 'DENY', 'cache-control': 'no-store' });
+          res.end(renderPage());
+          return;
+        }
+        // Read API. Reject cross-origin so a website you visit cannot read your
+        // forensic data; the same-origin page the daemon serves reaches it fine.
+        // No permissive CORS headers are ever sent.
+        if (req.method === 'GET' && path.startsWith('/api/')) {
+          if (isBrowserForged(req.headers)) {
+            sendJson(res, 403, { ok: false, error: 'forbidden' });
+            return;
+          }
+          if (path === '/api/sessions') {
+            sendJson(res, 200, sessionCards(store));
+            return;
+          }
+          const ms = path.match(/^\/api\/session\/(.+)\/events$/);
+          if (ms) {
+            sendJson(res, 200, sessionActions(store, decodeURIComponent(ms[1]!)));
+            return;
+          }
+          const me = path.match(/^\/api\/event\/(\d+)$/);
+          if (me) {
+            const d = eventDetail(store, Number(me[1]));
+            if (!d) {
+              sendJson(res, 404, { ok: false, error: 'no such event' });
+              return;
+            }
+            sendJson(res, 200, d);
+            return;
+          }
+          sendJson(res, 404, { ok: false, error: 'not found' });
           return;
         }
         // Reject browser-forged writes to both recording routes (CSRF to localhost).

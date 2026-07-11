@@ -121,6 +121,7 @@ Usage:
   blackbox start                 Start the localhost hook-receiver daemon (background)
   blackbox stop                  Stop the daemon
   blackbox status                Show daemon status
+  blackbox ui                    Open the timeline UI in your browser (http://127.0.0.1:7842)
   blackbox ingest <file.jsonl>   Normalize raw hook payloads into the chained store
   blackbox verify                Verify the hash chain; report the first break
   blackbox head                  Print the current head anchor (seq, count, hash)
@@ -396,6 +397,25 @@ async function cmdStatus(_args: Args): Promise<number> {
   return 0;
 }
 
+async function cmdUi(args: Args): Promise<number> {
+  const p = readPid();
+  const port = args.port ?? p?.port ?? DEFAULT_PORT;
+  const h = await getHealth(port);
+  if (!h?.ok) {
+    console.error(`daemon not running on port ${port} — run 'blackbox start' first`);
+    return 3;
+  }
+  const url = `http://127.0.0.1:${port}/`;
+  console.log(`opening ${url}`);
+  const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+  try {
+    spawn(opener, [url], { detached: true, stdio: 'ignore' }).unref();
+  } catch {
+    console.log(`(open it manually: ${url})`);
+  }
+  return 0;
+}
+
 function cmdAudit(args: Args): number {
   const store = new Store(resolveDb(args.db));
   const rows = store.events(args.session);
@@ -463,6 +483,8 @@ async function main(): Promise<number> {
       return cmdStop(args);
     case 'status':
       return cmdStatus(args);
+    case 'ui':
+      return cmdUi(args);
     case 'ingest':
       return cmdIngest(args);
     case 'verify':
