@@ -5,6 +5,8 @@ import http from 'node:http';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { init, uninit, versionWarning } from './init';
 import { normalize } from './normalize';
+import { backfill, computeSession, rescoreSession } from './risk-engine';
+import { RULESET_VERSION } from './risk-rules';
 import { unwatchGlobal, unwatchRepo, watchGlobal, watchRepo } from './watch';
 import { ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
 import { Store } from './store';
@@ -18,6 +20,9 @@ interface Args {
   foreground?: boolean;
   captureOutput?: boolean;
   global?: boolean;
+  ruleset?: string;
+  check?: boolean;
+  prune?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -30,6 +35,9 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--foreground') out.foreground = true;
     else if (a === '--capture-output') out.captureOutput = true;
     else if (a === '--global') out.global = true;
+    else if (a === '--ruleset') out.ruleset = argv[++i];
+    else if (a === '--check') out.check = true;
+    else if (a === '--prune') out.prune = argv[++i];
     else if (a === '-h' || a === '--help') out._.push('help');
     else out._.push(a as string);
   }
@@ -124,6 +132,7 @@ Usage:
   blackbox ui                    Open the timeline UI in your browser (http://127.0.0.1:7842)
   blackbox ingest <file.jsonl>   Normalize raw hook payloads into the chained store
   blackbox verify                Verify the hash chain; report the first break
+  blackbox rescore               Recompute the risk layer (--session, --ruleset, --check, --prune <v>)
   blackbox head                  Print the current head anchor (seq, count, hash)
   blackbox list                  List recorded events (--session <id> to filter)
   blackbox audit                 Show what was redacted (type + path, never the secret)
@@ -199,6 +208,7 @@ function cmdIngest(args: Args): number {
         console.error(`ingest: failed to record a line: ${(err as Error).message}`);
       }
     }
+    if (n) backfill(store); // score the ingested events (risk interpretation layer)
   } finally {
     store.close();
   }
@@ -465,6 +475,42 @@ function cmdSessions(args: Args): number {
   return 0;
 }
 
+function cmdRescore(args: Args): number {
+  const store = new Store(resolveDb(args.db));
+  const ruleset = args.ruleset ?? RULESET_VERSION;
+  try {
+    if (args.prune) {
+      store.riskDelete(args.prune);
+      console.log(`pruned risk rows for ruleset ${args.prune}`);
+      return 0;
+    }
+    const sessionIds = args.session ? [args.session] : store.sessions().map((s) => s.session_id);
+    if (args.check) {
+      let mismatches = 0;
+      for (const sid of sessionIds) {
+        const { verdict } = computeSession(store, sid);
+        const stored = store.sessionRisk(sid, ruleset);
+        const storedCombos = stored?.combos ? (JSON.parse(stored.combos) as unknown[]).length : 0;
+        if (!stored || stored.verdict !== verdict.verdict || stored.score !== verdict.score || storedCombos !== verdict.combos.length) {
+          mismatches++;
+          console.error(`  ✗ ${sid.slice(0, 18)}: stored ${stored?.verdict ?? '(none)'} vs recomputed ${verdict.verdict}`);
+        }
+      }
+      console.log(mismatches ? `✗ ${mismatches}/${sessionIds.length} session(s) differ from recomputation` : `✓ all ${sessionIds.length} session(s) match recomputation`);
+      return mismatches ? 1 : 0;
+    }
+    let n = 0;
+    for (const sid of sessionIds) {
+      rescoreSession(store, sid, ruleset);
+      n++;
+    }
+    console.log(`rescored ${n} session(s) under ruleset ${ruleset}`);
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0];
@@ -489,6 +535,8 @@ async function main(): Promise<number> {
       return cmdIngest(args);
     case 'verify':
       return cmdVerify(args);
+    case 'rescore':
+      return cmdRescore(args);
     case 'head':
       return cmdHead(args);
     case 'list':

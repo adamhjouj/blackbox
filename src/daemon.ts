@@ -12,7 +12,10 @@ import {
 import { normalize } from './normalize';
 import { configPath } from './paths';
 import { eventDetail, sessionActions, sessionCards } from './read-api';
+import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
+import { RULESET_VERSION } from './risk-rules';
 import { Store } from './store';
+import type { BlackboxEvent } from './types';
 import { renderPage } from './ui-page';
 
 export interface DaemonOptions {
@@ -105,6 +108,7 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   const store = new Store(opts.db);
   const startedAt = Date.now();
   const correlator = new Correlator();
+  const riskEngine = new RiskEngine((sid) => store.eventsLight(sid));
 
   let configToken = '';
   try {
@@ -131,12 +135,25 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     }
   };
 
+  // Score an appended event and persist its risk (separate interpretation layer,
+  // separate transactions from append). Must never fail a hook — try/catch.
+  const scoreAndPersist = (e: BlackboxEvent): void => {
+    try {
+      const now = new Date().toISOString();
+      const r = riskEngine.score(e);
+      if (r.risk) store.riskUpsert(riskRowFrom(r.risk, RULESET_VERSION, now));
+      store.sessionRiskUpsert(sessionRiskRowFrom(r.verdict, RULESET_VERSION, now));
+    } catch (err) {
+      log(`risk scoring failed: ${(err as Error).message}`);
+    }
+  };
+
   const recordHook = (body: string, truncated: boolean): void => {
     const capturedAt = new Date().toISOString();
     if (truncated) {
       // Record, don't drop: a marker so the timeline shows a gap, not silence.
-      store.append(
-        normalize({ hook_event_name: 'OversizedHook', session_id: 'unknown', _truncated: true }, capturedAt),
+      scoreAndPersist(
+        store.append(normalize({ hook_event_name: 'OversizedHook', session_id: 'unknown', _truncated: true }, capturedAt)),
       );
       log('recorded oversized/truncated hook as marker');
       return;
@@ -158,7 +175,7 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     } catch {
       /* correlation is best-effort */
     }
-    store.append(normalize(payload, capturedAt, { captureOutput: opts.captureOutput }));
+    scoreAndPersist(store.append(normalize(payload, capturedAt, { captureOutput: opts.captureOutput })));
   };
 
   const recordGit = (headers: http.IncomingHttpHeaders, body: string): void => {
@@ -184,7 +201,7 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
         const diff = diffstat(repoTop, delta);
         const commit = cls.is_delete ? null : commitMeta(repoTop, delta.new);
         const correlation = correlator.correlate(repoTop, cls, now);
-        store.append(normalizeGit({ repoTop, delta, cls, diff, commit, correlation, rawBody: body, capturedAt }));
+        scoreAndPersist(store.append(normalizeGit({ repoTop, delta, cls, diff, commit, correlation, rawBody: body, capturedAt })));
       } catch (err) {
         // enrichment failure degrades a column, never drops the collector
         log(`git: enrichment failed for ${delta.ref}: ${(err as Error).message}`);
@@ -323,6 +340,16 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     server.listen(port, '127.0.0.1', () => {
       server.removeListener('error', onError);
       log(`listening on 127.0.0.1:${port} (db ${opts.db})`);
+      // Best-effort: score any sessions recorded before Phase 3 (or while a
+      // non-scoring binary ran). Deferred off the startup path.
+      setImmediate(() => {
+        try {
+          const r = backfill(store);
+          if (r.sessions) log(`risk backfill: scored ${r.sessions} session(s)`);
+        } catch (err) {
+          log(`risk backfill failed: ${(err as Error).message}`);
+        }
+      });
       resolve({
         port,
         close: () =>

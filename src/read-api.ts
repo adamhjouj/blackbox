@@ -1,4 +1,4 @@
-import { eventSignals, newCtx, type SignalKey } from './signals';
+import { RULESET_VERSION, type FlagId } from './risk-rules';
 import type { Store } from './store';
 import type { BlackboxEvent } from './types';
 
@@ -17,7 +17,18 @@ export interface Action {
   success: 0 | 1 | null;
   duration_ms: number | null;
   redaction_count: number;
-  signals: SignalKey[];
+  signals: FlagId[];
+  score: number;
+  prompt_id: string | null;
+  agent_type: string | null;
+}
+
+export interface ComboEvidence {
+  id: string;
+  severity: string;
+  antecedent_seq: number;
+  consequent_seq: number;
+  note: string;
 }
 
 export interface SessionCard {
@@ -26,57 +37,95 @@ export interface SessionCard {
   started: string;
   ended: string;
   failures: number;
-  flags: Partial<Record<SignalKey, number>>;
+  verdict: string; // none | low | medium | high | unscored
+  score: number;
+  ruleset_version: string;
+  combos: ComboEvidence[];
+  flags: Record<string, number>;
   flagged: number;
+  cwd: string | null;
 }
 
 const isPre = (e: BlackboxEvent): boolean => e.hook_event === 'PreToolUse';
 const isPost = (e: BlackboxEvent): boolean => e.hook_event === 'PostToolUse' || e.hook_event === 'PostToolUseFailure';
 
-// The store is append-only, so any result is valid until head_seq advances. The
-// UI polls every few seconds; without this each poll re-scans the whole store
-// synchronously and can starve the /hook recording path. Caching by head_seq
-// makes an idle poll O(1).
+const VERDICT_RANK: Record<string, number> = { high: 0, medium: 1, low: 2, none: 3, unscored: 4 };
+
+function safeParse<T>(s: string | null, fallback: T): T {
+  if (!s) return fallback;
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+// Cache keyed on chain head_seq: the store is append-only and the daemon writes
+// risk right after each append, so a result is valid until head_seq advances.
 let cardsCache: { head: number; cards: SessionCard[] } | null = null;
 const actionsCache = new Map<string, { head: number; actions: Action[] }>();
 const headSeq = (store: Store): number => store.chainMeta()?.head_seq ?? 0;
 
-/** Sessions with per-session signal counts, newest activity first. */
+// A session's first non-null cwd is immutable (append-only store), so cache it
+// forever once found — this avoids re-scanning every session's events on each
+// head advance just to label the rail with a project path.
+const cwdCache = new Map<string, string | null>();
+function sessionCwd(store: Store, sessionId: string): string | null {
+  const hit = cwdCache.get(sessionId);
+  if (hit !== undefined && hit !== null) return hit;
+  if (cwdCache.size > 4096) cwdCache.clear();
+  const cwd = store.eventsLight(sessionId).find((e) => e.cwd)?.cwd ?? null;
+  cwdCache.set(sessionId, cwd);
+  return cwd;
+}
+
+/** Sessions with their persisted risk verdict, highest-risk first. */
 export function sessionCards(store: Store): SessionCard[] {
   const head = headSeq(store);
   if (cardsCache && cardsCache.head === head) return cardsCache.cards;
 
-  const cards = store.sessions().map((s) => {
-    const events = store.eventsLight(s.session_id);
-    const ctx = newCtx();
-    const flags: Partial<Record<SignalKey, number>> = {};
-    let flagged = 0;
-    for (const e of events) {
-      for (const sig of eventSignals(e, ctx)) {
-        flags[sig] = (flags[sig] ?? 0) + 1;
-        flagged++;
-      }
+  const risk = new Map(store.sessionRiskAll(RULESET_VERSION).map((r) => [r.session_id, r]));
+  const cards: SessionCard[] = store.sessions().map((s) => {
+    const r = risk.get(s.session_id);
+    // First non-null cwd in the session — the UI shows the project a session ran in.
+    const cwd = sessionCwd(store, s.session_id);
+    if (!r) {
+      return { ...s, verdict: 'unscored', score: 0, ruleset_version: RULESET_VERSION, combos: [], flags: {}, flagged: 0, cwd };
     }
-    return { ...s, flags, flagged };
+    const flags = safeParse<Record<string, number>>(r.rule_counts, {});
+    const flagged = Object.values(flags).reduce((a, b) => a + b, 0);
+    return {
+      ...s,
+      verdict: r.verdict,
+      score: r.score,
+      ruleset_version: r.ruleset_version,
+      combos: safeParse<ComboEvidence[]>(r.combos, []),
+      flags,
+      flagged,
+      cwd,
+    };
   });
-  cards.sort((a, b) => (a.ended < b.ended ? 1 : -1));
+  cards.sort((a, b) => (VERDICT_RANK[a.verdict] ?? 5) - (VERDICT_RANK[b.verdict] ?? 5) || (a.ended < b.ended ? 1 : -1));
   cardsCache = { head, cards };
   return cards;
 }
 
-/** The paired, signal-annotated timeline for one session. */
+/** The Pre/Post-paired timeline for one session, annotated with persisted risk. */
 export function sessionActions(store: Store, sessionId: string): Action[] {
   const head = headSeq(store);
   const cached = actionsCache.get(sessionId);
   if (cached && cached.head === head) return cached.actions;
 
   const events = store.eventsLight(sessionId);
-  const ctx = newCtx();
+  const riskBySeq = new Map(store.riskForSession(sessionId, RULESET_VERSION).map((r) => [r.seq, r]));
+  const flagsFor = (seq: number): FlagId[] => safeParse<FlagId[]>(riskBySeq.get(seq)?.flags ?? null, []);
+  const scoreFor = (seq: number): number => riskBySeq.get(seq)?.score ?? 0;
+
   const open = new Map<string, Action>();
   const actions: Action[] = [];
 
   for (const e of events) {
-    const sig = eventSignals(e, ctx);
+    const flags = flagsFor(e.seq);
     if (isPre(e) && e.tool_use_id) {
       const a: Action = {
         key: e.tool_use_id,
@@ -91,7 +140,10 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
         success: null,
         duration_ms: null,
         redaction_count: e.redaction_count,
-        signals: [...sig],
+        signals: [...flags],
+        score: scoreFor(e.seq),
+        prompt_id: e.prompt_id,
+        agent_type: e.agent_type,
       };
       open.set(e.tool_use_id, a);
       actions.push(a);
@@ -102,10 +154,10 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
       a.duration_ms = e.duration_ms;
       a.phase = e.phase;
       a.redaction_count += e.redaction_count;
-      for (const s of sig) if (!a.signals.includes(s)) a.signals.push(s);
+      a.score = Math.max(a.score, scoreFor(e.seq));
+      for (const s of flags) if (!a.signals.includes(s)) a.signals.push(s);
       open.delete(e.tool_use_id);
     } else {
-      // Standalone: SessionStart/Stop/SessionEnd, git_action, or an orphan Post.
       actions.push({
         key: `seq:${e.seq}`,
         seq: e.seq,
@@ -119,11 +171,14 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
         success: e.success,
         duration_ms: e.duration_ms,
         redaction_count: e.redaction_count,
-        signals: sig,
+        signals: flags,
+        score: scoreFor(e.seq),
+        prompt_id: e.prompt_id,
+        agent_type: e.agent_type,
       });
     }
   }
-  // Bound the per-session cache so many sessions don't leak memory.
+
   if (actionsCache.size > 64) actionsCache.clear();
   actionsCache.set(sessionId, { head, actions });
   return actions;
@@ -148,6 +203,7 @@ export function eventDetail(store: Store, seq: number): Record<string, unknown> 
       detail = e.detail;
     }
   }
+  const risk = store.riskForSession(e.session_id, RULESET_VERSION).find((r) => r.seq === seq);
   return {
     seq: e.seq,
     event_id: e.event_id,
@@ -165,6 +221,7 @@ export function eventDetail(store: Store, seq: number): Record<string, unknown> 
     redaction_count: e.redaction_count,
     raw,
     detail,
+    risk: risk ? { score: risk.score, flags: safeParse<string[]>(risk.flags, []), evidence: safeParse<unknown>(risk.evidence, null) } : null,
     prev_hash: e.prev_hash,
     hash: e.hash,
   };

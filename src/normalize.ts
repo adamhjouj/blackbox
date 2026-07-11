@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { canonical, hashString } from './hash';
+import { outputToText, scanOutputForInjection } from './injection';
 import { redact, type RedactOptions } from './redact';
 import type { ActionType, NormalizedEvent, Phase } from './types';
 
@@ -127,6 +128,10 @@ export function normalize(
     output_hash = hashString(s);
     output_size_bytes = Buffer.byteLength(s, 'utf8');
   }
+
+  // Capture-time fact: scan the ORIGINAL output for injection markers before it
+  // is elided (it can't be recomputed later). Stored in the hashed `detail`.
+  const injection = outputVal !== undefined ? scanOutputForInjection(outputToText(outputVal)) : null;
 
   const { redacted, hits } = redact(payload, opts);
 

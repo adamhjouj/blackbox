@@ -81,10 +81,65 @@ CREATE TABLE IF NOT EXISTS chain_meta (
 );
 `;
 
+/**
+ * Phase 3 risk = a SEPARATE interpretation layer, NOT part of the hash chain.
+ * Its integrity comes from being fully re-derivable from the immutable events
+ * (blackbox rescore --check). Editing/rescoring never touches events/chain_meta,
+ * so verify() is byte-identical before and after.
+ */
+const RISK_SCHEMA = `
+CREATE TABLE IF NOT EXISTS risk (
+  seq             INTEGER NOT NULL,
+  ruleset_version TEXT    NOT NULL,
+  session_id      TEXT    NOT NULL,
+  score           INTEGER NOT NULL,
+  flags           TEXT    NOT NULL,
+  evidence        TEXT,
+  computed_at     TEXT    NOT NULL,
+  PRIMARY KEY (seq, ruleset_version)
+);
+CREATE INDEX IF NOT EXISTS idx_risk_session ON risk(session_id, ruleset_version, seq);
+
+CREATE TABLE IF NOT EXISTS session_risk (
+  session_id      TEXT    NOT NULL,
+  ruleset_version TEXT    NOT NULL,
+  verdict         TEXT    NOT NULL,
+  score           INTEGER NOT NULL,
+  combos          TEXT,
+  rule_counts     TEXT    NOT NULL,
+  last_scored_seq INTEGER NOT NULL,
+  rules_hash      TEXT    NOT NULL,
+  computed_at     TEXT    NOT NULL,
+  PRIMARY KEY (session_id, ruleset_version)
+);
+`;
+
 export interface ChainMeta {
   count: number;
   head_seq: number;
   head_hash: string;
+}
+
+export interface RiskRow {
+  seq: number;
+  ruleset_version: string;
+  session_id: string;
+  score: number;
+  flags: string;
+  evidence: string | null;
+  computed_at: string;
+}
+
+export interface SessionRiskRow {
+  session_id: string;
+  ruleset_version: string;
+  verdict: string;
+  score: number;
+  combos: string | null;
+  rule_counts: string;
+  last_scored_seq: number;
+  rules_hash: string;
+  computed_at: string;
 }
 
 export interface SessionSummary {
@@ -134,6 +189,7 @@ export class Store {
     this.db.pragma('busy_timeout = 5000');
     this.db.exec(SCHEMA);
     this.ensureColumns();
+    this.db.exec(RISK_SCHEMA);
     this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -240,6 +296,80 @@ export class Store {
         .all(sessionId) as BlackboxEvent[];
     }
     return this.db.prepare(`SELECT ${cols} FROM events ORDER BY seq ASC`).all() as BlackboxEvent[];
+  }
+
+  // ---- risk interpretation layer (Phase 3) -------------------------------
+
+  riskUpsert(r: RiskRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO risk (seq, ruleset_version, session_id, score, flags, evidence, computed_at)
+         VALUES (@seq, @ruleset_version, @session_id, @score, @flags, @evidence, @computed_at)
+         ON CONFLICT(seq, ruleset_version) DO UPDATE SET
+           score=@score, flags=@flags, evidence=@evidence, computed_at=@computed_at`,
+      )
+      .run(r);
+  }
+
+  riskForSession(sessionId: string, ruleset: string): RiskRow[] {
+    return this.db
+      .prepare('SELECT * FROM risk WHERE session_id = ? AND ruleset_version = ? ORDER BY seq ASC')
+      .all(sessionId, ruleset) as RiskRow[];
+  }
+
+  sessionRiskUpsert(r: SessionRiskRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO session_risk
+           (session_id, ruleset_version, verdict, score, combos, rule_counts, last_scored_seq, rules_hash, computed_at)
+         VALUES
+           (@session_id, @ruleset_version, @verdict, @score, @combos, @rule_counts, @last_scored_seq, @rules_hash, @computed_at)
+         ON CONFLICT(session_id, ruleset_version) DO UPDATE SET
+           verdict=@verdict, score=@score, combos=@combos, rule_counts=@rule_counts,
+           last_scored_seq=@last_scored_seq, rules_hash=@rules_hash, computed_at=@computed_at`,
+      )
+      .run(r);
+  }
+
+  sessionRisk(sessionId: string, ruleset: string): SessionRiskRow | null {
+    return (
+      (this.db
+        .prepare('SELECT * FROM session_risk WHERE session_id = ? AND ruleset_version = ?')
+        .get(sessionId, ruleset) as SessionRiskRow | undefined) ?? null
+    );
+  }
+
+  sessionRiskAll(ruleset: string): SessionRiskRow[] {
+    return this.db.prepare('SELECT * FROM session_risk WHERE ruleset_version = ?').all(ruleset) as SessionRiskRow[];
+  }
+
+  /** Delete a ruleset's risk rows (whole ruleset, or one session of it). */
+  riskDelete(ruleset: string, sessionId?: string): void {
+    const tx = this.db.transaction((rs: string, sid?: string) => {
+      if (sid) {
+        this.db.prepare('DELETE FROM risk WHERE ruleset_version = ? AND session_id = ?').run(rs, sid);
+        this.db.prepare('DELETE FROM session_risk WHERE ruleset_version = ? AND session_id = ?').run(rs, sid);
+      } else {
+        this.db.prepare('DELETE FROM risk WHERE ruleset_version = ?').run(rs);
+        this.db.prepare('DELETE FROM session_risk WHERE ruleset_version = ?').run(rs);
+      }
+    });
+    tx(ruleset, sessionId);
+  }
+
+  /** Session ids that have events but no up-to-date verdict for `ruleset`. */
+  unscoredSessions(ruleset: string): string[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT e.session_id AS session_id, MAX(e.seq) AS max_seq
+             FROM events e
+             LEFT JOIN session_risk r ON r.session_id = e.session_id AND r.ruleset_version = ?
+            GROUP BY e.session_id
+           HAVING r.last_scored_seq IS NULL OR r.last_scored_seq < MAX(e.seq)`,
+        )
+        .all(ruleset) as { session_id: string }[]
+    ).map((r) => r.session_id);
   }
 
   sessions(): SessionSummary[] {

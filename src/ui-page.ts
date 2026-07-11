@@ -31,6 +31,9 @@ const PAGE_CSS = `  :root {
   .sess .meta { color:var(--dim); font-size:12px; margin-top:2px; }
   .verdict { padding:12px 16px; border-bottom:1px solid var(--line); color:var(--dim); }
   .verdict .flags { margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; }
+  .verdict .combos { margin-top:8px; display:flex; flex-direction:column; gap:5px; }
+  .combo { color:var(--fg); font-size:12px; }
+  .verdict .chip { margin-left:0; }
   table { width:100%; border-collapse:collapse; }
   tr.row { border-bottom:1px solid var(--line); cursor:pointer; }
   tr.row:hover { background:var(--panel); }
@@ -68,14 +71,18 @@ const PAGE_CSS = `  :root {
 const CLIENT_JS = `const SIG = {
   'failed':{t:'failed',c:'red'}, 'secret-touch':{t:'secret',c:'amber'},
   'destructive-git':{t:'destructive-git',c:'red'}, 'dangerous-shell':{t:'dangerous-shell',c:'red'},
-  'new-mcp-server':{t:'new-mcp',c:'blue'},
+  'new-mcp-server':{t:'new-mcp',c:'blue'}, 'auth-edit':{t:'auth-edit',c:'red'},
+  'mass-diff':{t:'mass-diff',c:'red'}, 'external-send':{t:'external-send',c:'amber'},
+  'injection-output':{t:'injection',c:'amber'},
 };
+const VC = { high:'red', medium:'amber', low:'blue', none:'', unscored:'' };
 let current = null, expanded = new Set();
 let fpSessions = null, fpTimeline = null;
 let rowState = [];            // [{fp, tr, a}] parallel to the rendered action list
 let tbody = null;
 const sessEls = new Map();    // session_id -> rail card element
-const verdict = { root:null, id:null, mid:null, flags:null };
+const cardsById = new Map();  // session_id -> latest SessionCard (verdict/combos)
+const verdict = { root:null, id:null, pill:null, mid:null, combos:null };
 
 function el(tag, props, ...kids){ const n=document.createElement(tag); if(props) Object.assign(n,props); for(const k of kids) if(k!=null) n.append(k); return n; }
 async function api(p){ const r = await fetch(p, {headers:{'accept':'application/json'}}); if(!r.ok) throw new Error(r.status); return r.json(); }
@@ -93,6 +100,7 @@ function select(id){
 
 async function loadSessions(){
   let cards; try { cards = await api('/api/sessions'); } catch { return; }
+  cardsById.clear(); for(const c of cards) cardsById.set(c.session_id, c);
   const fp = JSON.stringify(cards);
   if(fp === fpSessions) return;
   fpSessions = fp;
@@ -118,7 +126,7 @@ function renderSessions(cards){
       d.onclick = ()=>select(c.session_id);
       sessEls.set(c.session_id, d);
     }
-    const flagStr = c.flagged ? c.flagged+'⚠' : 'clean';
+    const flagStr = (c.verdict && c.verdict!=='none' && c.verdict!=='unscored') ? c.verdict.toUpperCase() : (c.flagged ? c.flagged+'⚠' : 'clean');
     const idText = c.session_id.slice(0,18);
     const metaText = c.events+' events · '+flagStr+' · '+shortTime(c.started);
     if(d.firstChild.textContent !== idText) d.firstChild.textContent = idText;
@@ -175,21 +183,34 @@ function renderTimeline(main, actions){
 
 function ensureVerdict(main){
   verdict.id = el('b',{});
+  verdict.pill = el('span',{className:'chip'});
   verdict.mid = document.createTextNode('');
-  verdict.flags = el('span',{});
-  verdict.root = el('div',{className:'verdict'}, el('div',{}, verdict.id, verdict.mid, verdict.flags));
+  verdict.combos = el('div',{className:'combos'});
+  verdict.root = el('div',{className:'verdict'}, el('div',{}, verdict.id, ' ', verdict.pill, verdict.mid), verdict.combos);
   main.append(verdict.root);
 }
 
 function updateVerdict(actions){
-  const flagN = actions.reduce((n,a)=>n+a.signals.length,0);
-  if(verdict.id.textContent !== current) verdict.id.textContent = current;
-  const mid = ' · '+actions.length+' actions · ';
+  const card = cardsById.get(current) || {};
+  const v = card.verdict || 'unscored';
+  if(verdict.id.textContent !== current.slice(0,18)) verdict.id.textContent = current.slice(0,18);
+  const pillText = v.toUpperCase() + (card.ruleset_version ? ' · '+card.ruleset_version : '');
+  if(verdict.pill.textContent !== pillText) verdict.pill.textContent = pillText;
+  const pc = 'chip' + (VC[v] ? ' '+VC[v] : '');
+  if(verdict.pill.className !== pc) verdict.pill.className = pc;
+  const mid = ' · '+actions.length+' actions'+(card.score ? ' · score '+card.score : '');
   if(verdict.mid.data !== mid) verdict.mid.data = mid;
-  const ft = flagN ? flagN+' flags' : 'no flags';
-  const fc = flagN ? 'warn' : 'ok';
-  if(verdict.flags.textContent !== ft) verdict.flags.textContent = ft;
-  if(verdict.flags.className !== fc) verdict.flags.className = fc;
+  const combos = card.combos || [];
+  const cfp = JSON.stringify(combos);
+  if(verdict.combos.__fp !== cfp){
+    verdict.combos.__fp = cfp;
+    verdict.combos.textContent='';
+    for(const c of combos){
+      verdict.combos.append(el('div',{className:'combo'},
+        el('span',{className:'chip red',textContent:c.id}),
+        ' '+c.note+' (#'+c.antecedent_seq+' → #'+c.consequent_seq+')'));
+    }
+  }
 }
 
 function buildRowCells(a, tr){
@@ -237,6 +258,7 @@ async function insertDetail(seq, row){
   if(d.output_hash){ box.append(el('h4',{textContent:'output'}), el('pre',{textContent:'elided · '+d.output_hash+'\\n'+(d.output_size_bytes||0)+' bytes'})); }
   if(d.detail && d.detail.git){ box.append(el('h4',{textContent:'git'}), el('pre',{textContent:JSON.stringify(d.detail.git,null,2)})); }
   if(d.detail && d.detail.correlation){ box.append(el('h4',{textContent:'correlation'}), el('pre',{textContent:JSON.stringify(d.detail.correlation,null,2)})); }
+  if(d.risk){ box.append(el('h4',{textContent:'risk'}), el('pre',{textContent:'score '+d.risk.score+' · ['+d.risk.flags.join(', ')+']'+(d.risk.evidence?'\\n'+JSON.stringify(d.risk.evidence,null,2):'')})); }
   box.append(el('h4',{textContent:'chain'}), el('pre',{textContent:'seq '+d.seq+'\\nprev '+d.prev_hash+'\\nhash '+d.hash}));
   const dr = el('tr',{className:'detailrow'}, el('td',{colSpan:5}, box));
   row.after(dr);
