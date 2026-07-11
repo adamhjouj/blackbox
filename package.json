@@ -1,0 +1,27 @@
+{
+  "name": "blackbox-recorder",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Forensic black-box recorder for AI coding agents (Claude Code first)",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "blackbox": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "verify": "node dist/cli.js verify"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3"
+  }
+}

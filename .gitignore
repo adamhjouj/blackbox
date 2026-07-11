@@ -1,0 +1,12 @@
+node_modules/
+dist/
+
+# local recorder databases (never commit captured session data)
+*.db
+*.db-wal
+*.db-shm
+.blackbox/
+
+# os / editor
+.DS_Store
+*.log
