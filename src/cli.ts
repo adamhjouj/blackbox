@@ -30,6 +30,7 @@ Usage:
   blackbox verify                Verify the hash chain; report the first break
   blackbox head                  Print the current head anchor (seq, count, hash)
   blackbox list                  List recorded events (--session <id> to filter)
+  blackbox audit                 Show what was redacted (type + path, never the secret)
   blackbox sessions              Summarize recorded sessions
 
 Options:
@@ -89,7 +90,7 @@ function cmdIngest(args: Args): number {
         continue;
       }
       try {
-        const stored = store.append(normalize(payload, trimmed, capturedAt));
+        const stored = store.append(normalize(payload, capturedAt));
         if (!firstSeq) firstSeq = stored.seq;
         lastSeq = stored.seq;
         n++;
@@ -139,6 +140,27 @@ function cmdHead(args: Args): number {
   return 0;
 }
 
+function cmdAudit(args: Args): number {
+  const store = new Store(resolveDb(args.db));
+  const rows = store.events(args.session);
+  store.close();
+  let total = 0;
+  for (const e of rows) {
+    if (!e.redaction_count) continue;
+    total += e.redaction_count;
+    let hits: { type: string; path: string; bytes: number }[] = [];
+    try {
+      hits = (JSON.parse(e.detail ?? '{}').redaction ?? []) as typeof hits;
+    } catch {
+      /* detail is best-effort display */
+    }
+    console.log(`seq ${e.seq}  ${e.tool_name ?? e.hook_event}  — ${e.redaction_count} redaction(s):`);
+    for (const h of hits) console.log(`    [REDACTED:${h.type}] at ${h.path} (${h.bytes} bytes)`);
+  }
+  console.log(`\n${total} redaction(s) across ${rows.length} event(s)`);
+  return 0;
+}
+
 function cmdList(args: Args): number {
   const store = new Store(resolveDb(args.db));
   const rows = store.events(args.session);
@@ -179,6 +201,8 @@ function main(): number {
       return cmdHead(args);
     case 'list':
       return cmdList(args);
+    case 'audit':
+      return cmdAudit(args);
     case 'sessions':
       return cmdSessions(args);
     case undefined:

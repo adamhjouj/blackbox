@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { canonical, hashString } from './hash';
+import { redact, type RedactOptions } from './redact';
 import type { ActionType, NormalizedEvent, Phase } from './types';
 
 /** Map a raw hook_event_name to our coarse phase. */
@@ -98,23 +100,50 @@ function toSuccess(phase: Phase): 0 | 1 | null {
 }
 
 /**
- * Normalize one raw hook payload into a NormalizedEvent. `rawLine` is stored
- * verbatim as the `raw` column so nothing is lost even if a field is renamed
- * upstream. `capturedAt` is the ingest time (ISO).
+ * Normalize one raw hook payload into a NormalizedEvent.
+ *
+ * Redaction runs FIRST: `raw` stores the REDACTED payload (never verbatim — a
+ * security tool must not write secrets to disk), tool output is elided to a hash
+ * (`output_hash`/`output_size_bytes`) unless `opts.captureOutput`, and `target`
+ * is derived from the redacted input so a secret in a command/path can't leak
+ * into a plain column. `capturedAt` is the ingest time (ISO).
  */
 export function normalize(
   payload: Record<string, unknown>,
-  rawLine: string,
   capturedAt: string,
+  opts: RedactOptions = {},
 ): NormalizedEvent {
   const hookEvent = typeof payload.hook_event_name === 'string' ? payload.hook_event_name : 'Unknown';
   const phase = toPhase(hookEvent);
   const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : null;
-  const input =
-    payload.tool_input && typeof payload.tool_input === 'object'
-      ? (payload.tool_input as Record<string, unknown>)
+
+  // Hash the ORIGINAL output before anything is redacted/elided, so we can prove
+  // "this is what the agent saw" without storing the body.
+  const outputVal = payload.tool_response ?? payload.tool_output;
+  let output_hash: string | null = null;
+  let output_size_bytes: number | null = null;
+  if (outputVal !== undefined) {
+    const s = canonical(outputVal);
+    output_hash = hashString(s);
+    output_size_bytes = Buffer.byteLength(s, 'utf8');
+  }
+
+  const { redacted, hits } = redact(payload, opts);
+
+  // Default: elide the output body entirely (keep only the hash). Opt-in keeps
+  // the already-secret-scrubbed body.
+  if (!opts.captureOutput) {
+    if ('tool_response' in redacted)
+      redacted.tool_response = { _blackbox: 'elided', hash: output_hash, bytes: output_size_bytes };
+    if ('tool_output' in redacted)
+      redacted.tool_output = { _blackbox: 'elided', hash: output_hash, bytes: output_size_bytes };
+  }
+
+  const redactedInput =
+    redacted.tool_input && typeof redacted.tool_input === 'object'
+      ? (redacted.tool_input as Record<string, unknown>)
       : {};
-  const action = toActionType(toolName, input);
+  const action = toActionType(toolName, redactedInput);
 
   const str = (k: string) => (typeof payload[k] === 'string' ? (payload[k] as string) : null);
 
@@ -127,7 +156,7 @@ export function normalize(
     hook_event: hookEvent,
     tool_name: toolName,
     action_type: action,
-    target: toTarget(action, input),
+    target: toTarget(action, redactedInput),
     agent_id: str('agent_id'),
     agent_type: str('agent_type') ?? (str('agent_id') ? 'unknown' : 'main'),
     cwd: str('cwd'),
@@ -138,11 +167,10 @@ export function normalize(
     // real HTTP hooks have none, so fall back to ingest time.
     ts: str('_captured_at') ?? capturedAt,
     captured_at: capturedAt,
-    raw: rawLine,
-    // Populated by the redaction subsystem in Phase 1 Step 2; null/0 until then.
-    output_hash: null,
-    output_size_bytes: null,
-    redaction_count: 0,
-    detail: null,
+    raw: JSON.stringify(redacted),
+    output_hash,
+    output_size_bytes,
+    redaction_count: hits.length,
+    detail: hits.length ? JSON.stringify({ redaction: hits.map(({ type, path, bytes }) => ({ type, path, bytes })) }) : null,
   };
 }
