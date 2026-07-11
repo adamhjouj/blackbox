@@ -6,6 +6,7 @@ import { DEFAULT_PORT, startDaemon } from './daemon';
 import { canonical } from './hash';
 import { init, uninit, versionWarning } from './init';
 import { normalize } from './normalize';
+import { buildReport, defaultReportSession } from './report';
 import { backfill, computeSession, rescoreSession } from './risk-engine';
 import { isKnownRuleset, KNOWN_RULESETS, RULESET_VERSION, rulesFingerprint, type RulesetVersion } from './risk-rules';
 import { unwatchGlobal, unwatchRepo, watchGlobal, watchRepo } from './watch';
@@ -24,6 +25,7 @@ interface Args {
   ruleset?: string;
   check?: boolean;
   prune?: string;
+  out?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -39,6 +41,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--ruleset') out.ruleset = argv[++i];
     else if (a === '--check') out.check = true;
     else if (a === '--prune') out.prune = argv[++i];
+    else if (a === '--out') out.out = argv[++i];
     else if (a === '-h' || a === '--help') out._.push('help');
     else out._.push(a as string);
   }
@@ -134,6 +137,7 @@ Usage:
   blackbox ingest <file.jsonl>   Normalize raw hook payloads into the chained store
   blackbox verify                Verify the hash chain; report the first break
   blackbox rescore               Recompute the risk layer (--session, --ruleset, --check, --prune <v>)
+  blackbox report                Export a shareable Markdown session report (--session, --ruleset, --out <file>)
   blackbox head                  Print the current head anchor (seq, count, hash)
   blackbox list                  List recorded events (--session <id> to filter)
   blackbox audit                 Show what was redacted (type + path, never the secret)
@@ -144,7 +148,8 @@ Options:
   --port <n>           Daemon port (default: 7842)
   --foreground         Run the daemon in the foreground (start)
   --capture-output     Store tool output bodies (still redacted) instead of eliding to a hash
-  --session <id>       Filter to one session (list/audit)
+  --session <id>       Filter to one session (list/audit/report)
+  --out <file>         Write the report to a file instead of stdout (report)
   -h, --help           Show this help
 
 Exit codes:
@@ -543,6 +548,37 @@ function cmdRescore(args: Args): number {
   }
 }
 
+function cmdReport(args: Args): number {
+  const store = new Store(resolveDb(args.db));
+  try {
+    // An explicit --ruleset must be a known one (mirrors cmdRescore); otherwise the
+    // report resolves r2→r1 per session, so the flag is left undefined here.
+    let ruleset: RulesetVersion | undefined;
+    if (args.ruleset !== undefined) {
+      if (!isKnownRuleset(args.ruleset)) {
+        console.error(`unknown ruleset "${args.ruleset}" (known: ${KNOWN_RULESETS.join(', ')})`);
+        return 2;
+      }
+      ruleset = args.ruleset;
+    }
+    const sessionId = args.session ?? defaultReportSession(store);
+    if (!sessionId) {
+      console.error('report: no sessions recorded');
+      return 2;
+    }
+    const md = buildReport(store, sessionId, ruleset);
+    if (args.out) {
+      writeFileSync(args.out, md);
+      console.log(`wrote report for session ${sessionId} to ${args.out}`);
+    } else {
+      console.log(md);
+    }
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0];
@@ -569,6 +605,8 @@ async function main(): Promise<number> {
       return cmdVerify(args);
     case 'rescore':
       return cmdRescore(args);
+    case 'report':
+      return cmdReport(args);
     case 'head':
       return cmdHead(args);
     case 'list':
