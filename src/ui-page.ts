@@ -58,12 +58,24 @@ const PAGE_CSS = `  :root {
 // failures, flags, flagged}; GET /api/session/:id/events → Action[] {key, seq,
 // post_seq, ts, hook_event, type, tool, target, phase, success, duration_ms,
 // redaction_count, signals[]}; GET /api/event/:seq → full detail (see read-api.ts).
+//
+// Poll-safe rendering: the 3s poll compares JSON fingerprints per pane and
+// returns before ANY DOM write when nothing changed (idle polls cost zero DOM
+// work — no scroll jump, no selection loss, no animation replay). When a live
+// session grows, rows reconcile by index against the append-only action list:
+// changed rows (a Pre paired by its Post — read-api mutates in place) patch
+// their cells; new rows append. Expanded dossiers persist across polls.
 const CLIENT_JS = `const SIG = {
   'failed':{t:'failed',c:'red'}, 'secret-touch':{t:'secret',c:'amber'},
   'destructive-git':{t:'destructive-git',c:'red'}, 'dangerous-shell':{t:'dangerous-shell',c:'red'},
   'new-mcp-server':{t:'new-mcp',c:'blue'},
 };
 let current = null, expanded = new Set();
+let fpSessions = null, fpTimeline = null;
+let rowState = [];            // [{fp, tr, a}] parallel to the rendered action list
+let tbody = null;
+const sessEls = new Map();    // session_id -> rail card element
+const verdict = { root:null, id:null, mid:null, flags:null };
 
 function el(tag, props, ...kids){ const n=document.createElement(tag); if(props) Object.assign(n,props); for(const k of kids) if(k!=null) n.append(k); return n; }
 async function api(p){ const r = await fetch(p, {headers:{'accept':'application/json'}}); if(!r.ok) throw new Error(r.status); return r.json(); }
@@ -71,55 +83,152 @@ function shortTime(ts){ return (ts||'').replace('T',' ').replace(/\\.\\d+Z$/,'')
 
 function chip(s){ const m=SIG[s]||{t:s,c:'amber'}; return el('span',{className:'chip '+m.c,textContent:m.t}); }
 
+function select(id){
+  if(current === id) return;
+  current = id; expanded = new Set();
+  fpTimeline = null; rowState = []; tbody = null; verdict.root = null;
+  for(const [sid, d] of sessEls) d.classList.toggle('active', sid === current);
+  loadTimeline();
+}
+
 async function loadSessions(){
   let cards; try { cards = await api('/api/sessions'); } catch { return; }
-  const box = document.getElementById('sessions'); box.textContent='';
-  if(!cards.length){ box.append(el('div',{className:'empty',textContent:'no sessions recorded yet'})); return; }
-  for(const c of cards){
-    const flagStr = c.flagged ? c.flagged+'⚠' : 'clean';
-    const div = el('div',{className:'sess'+(c.session_id===current?' active':'')},
-      el('div',{className:'id',textContent:c.session_id.slice(0,18)}),
-      el('div',{className:'meta',textContent:c.events+' events · '+flagStr+' · '+shortTime(c.started)}));
-    div.onclick = ()=>{ current=c.session_id; expanded=new Set(); render(); };
-    box.append(div);
+  const fp = JSON.stringify(cards);
+  if(fp === fpSessions) return;
+  fpSessions = fp;
+  renderSessions(cards);
+}
+
+function renderSessions(cards){
+  const box = document.getElementById('sessions');
+  if(!cards.length){
+    sessEls.clear(); box.textContent='';
+    box.append(el('div',{className:'empty',textContent:'no sessions recorded yet'}));
+    return;
   }
-  if(!current && cards.length){ current=cards[0].session_id; }
+  if(!current) current = cards[0].session_id;
+  if(!sessEls.size) box.textContent='';                       // clear loading/empty placeholder
+  const live = new Set(cards.map(c=>c.session_id));
+  for(const [sid, d] of sessEls) if(!live.has(sid)){ d.remove(); sessEls.delete(sid); }
+  let prev = null;
+  for(const c of cards){
+    let d = sessEls.get(c.session_id);
+    if(!d){
+      d = el('div',{className:'sess'}, el('div',{className:'id'}), el('div',{className:'meta'}));
+      d.onclick = ()=>select(c.session_id);
+      sessEls.set(c.session_id, d);
+    }
+    const flagStr = c.flagged ? c.flagged+'⚠' : 'clean';
+    const idText = c.session_id.slice(0,18);
+    const metaText = c.events+' events · '+flagStr+' · '+shortTime(c.started);
+    if(d.firstChild.textContent !== idText) d.firstChild.textContent = idText;
+    if(d.lastChild.textContent !== metaText) d.lastChild.textContent = metaText;
+    d.classList.toggle('active', c.session_id === current);
+    const want = prev ? prev.nextSibling : box.firstChild;    // reposition only on real reorder
+    if(want !== d) box.insertBefore(d, want);
+    prev = d;
+  }
 }
 
 async function loadTimeline(){
   const main = document.getElementById('timeline');
-  if(!current){ main.textContent=''; main.append(el('div',{className:'empty',textContent:'select a session'})); return; }
-  let actions; try { actions = await api('/api/session/'+encodeURIComponent(current)+'/events'); } catch { return; }
-  main.textContent='';
-  const flagN = actions.reduce((n,a)=>n+a.signals.length,0);
-  main.append(el('div',{className:'verdict'},
-    el('div',{},el('b',{textContent:current}), ' · '+actions.length+' actions · ', el('span',{className:flagN?'warn':'ok',textContent:flagN?flagN+' flags':'no flags'}))));
-  const tbl = el('table'); const tb = el('tbody');
-  for(const a of actions){
-    const failed = a.signals.includes('failed') || a.success===0;
-    const flagged = a.signals.length>0;
-    const icon = failed ? el('span',{className:'fail',textContent:'✗'}) : flagged ? el('span',{className:'warn',textContent:'⚠'}) : el('span',{textContent:' '});
-    const tgtCls = 'tgt'+(a.type==='git_action'?' git':'');
-    const chips = el('td',{className:'chips'}); a.signals.forEach(s=>chips.append(chip(s)));
-    const row = el('tr',{className:'row'},
-      el('td',{className:'t',textContent:shortTime(a.ts)}),
-      el('td',{className:'ic'},icon),
-      el('td',{className:'tool',textContent:(a.tool||a.hook_event)}),
-      el('td',{className:tgtCls,title:a.target||'',textContent:a.target||''}),
-      chips);
-    row.onclick = ()=>toggle(a.seq, row, tb);
-    tb.append(row);
-    if(expanded.has(a.seq)) insertDetail(a.seq, row, tb);
+  if(!current){
+    if(fpTimeline !== ''){ fpTimeline=''; main.textContent=''; main.append(el('div',{className:'empty',textContent:'select a session'})); }
+    return;
   }
-  tbl.append(tb); main.append(tbl);
+  let actions; try { actions = await api('/api/session/'+encodeURIComponent(current)+'/events'); } catch { return; }
+  const fp = JSON.stringify([current, actions]);
+  if(fp === fpTimeline) return;
+  fpTimeline = fp;
+  renderTimeline(main, actions);
 }
 
-async function toggle(seq, row, tb){
-  if(expanded.has(seq)){ expanded.delete(seq); const n=row.nextSibling; if(n&&n.classList&&n.classList.contains('detailrow')) n.remove(); return; }
-  expanded.add(seq); insertDetail(seq, row, tb);
+function renderTimeline(main, actions){
+  // Incremental only when the rendered prefix still matches the append-only list;
+  // anything else (session switch, db swap/shrink) is a full rebuild.
+  const incremental = tbody && tbody.isConnected && rowState.length > 0 &&
+    rowState.length <= actions.length &&
+    rowState[0].a.key === actions[0].key;
+  if(!incremental){
+    main.textContent='';
+    verdict.root = null; rowState = [];
+    ensureVerdict(main);
+    const tbl = el('table'); tbody = el('tbody'); tbl.append(tbody); main.append(tbl);
+  }
+  updateVerdict(actions);
+  for(let i=0;i<actions.length;i++){
+    const a = actions[i];
+    if(i < rowState.length){
+      const st = rowState[i];
+      const afp = JSON.stringify(a);
+      if(st.fp !== afp){
+        if(st.a.key !== a.key){ fpTimeline = null; rowState = []; tbody = null; renderTimeline(main, actions); return; }
+        buildRowCells(a, st.tr);
+        st.fp = afp; st.a = a;
+        if(expanded.has(a.seq)){ removeDetail(st.tr); insertDetail(a.seq, st.tr); }  // refresh once on Pre→Post pairing
+      }
+    } else {
+      appendRow(a);
+    }
+  }
 }
-async function insertDetail(seq, row, tb){
+
+function ensureVerdict(main){
+  verdict.id = el('b',{});
+  verdict.mid = document.createTextNode('');
+  verdict.flags = el('span',{});
+  verdict.root = el('div',{className:'verdict'}, el('div',{}, verdict.id, verdict.mid, verdict.flags));
+  main.append(verdict.root);
+}
+
+function updateVerdict(actions){
+  const flagN = actions.reduce((n,a)=>n+a.signals.length,0);
+  if(verdict.id.textContent !== current) verdict.id.textContent = current;
+  const mid = ' · '+actions.length+' actions · ';
+  if(verdict.mid.data !== mid) verdict.mid.data = mid;
+  const ft = flagN ? flagN+' flags' : 'no flags';
+  const fc = flagN ? 'warn' : 'ok';
+  if(verdict.flags.textContent !== ft) verdict.flags.textContent = ft;
+  if(verdict.flags.className !== fc) verdict.flags.className = fc;
+}
+
+function buildRowCells(a, tr){
+  tr.textContent='';
+  const failed = a.signals.includes('failed') || a.success===0;
+  const flagged = a.signals.length>0;
+  const icon = failed ? el('span',{className:'fail',textContent:'✗'}) : flagged ? el('span',{className:'warn',textContent:'⚠'}) : el('span',{textContent:' '});
+  const tgtCls = 'tgt'+(a.type==='git_action'?' git':'');
+  const chips = el('td',{className:'chips'}); a.signals.forEach(s=>chips.append(chip(s)));
+  tr.append(
+    el('td',{className:'t',textContent:shortTime(a.ts)}),
+    el('td',{className:'ic'},icon),
+    el('td',{className:'tool',textContent:(a.tool||a.hook_event)}),
+    el('td',{className:tgtCls,title:a.target||'',textContent:a.target||''}),
+    chips);
+}
+
+function appendRow(a){
+  const tr = el('tr',{className:'row'});
+  buildRowCells(a, tr);
+  tr.onclick = ()=>toggle(a.seq, tr);
+  tbody.append(tr);
+  rowState.push({fp: JSON.stringify(a), tr, a});
+  if(expanded.has(a.seq)) insertDetail(a.seq, tr);
+}
+
+function removeDetail(row){
+  const n = row.nextSibling;
+  if(n && n.classList && n.classList.contains('detailrow')) n.remove();
+}
+
+async function toggle(seq, row){
+  if(expanded.has(seq)){ expanded.delete(seq); removeDetail(row); return; }
+  expanded.add(seq); insertDetail(seq, row);
+}
+async function insertDetail(seq, row){
   let d; try { d = await api('/api/event/'+seq); } catch { return; }
+  if(!expanded.has(seq) || !row.isConnected) return;  // collapsed or replaced while fetching
+  removeDetail(row);                                  // never double-insert
   const box = el('div',{className:'detail'});
   const input = d.raw && d.raw.tool_input;
   box.append(el('div',{className:'kv'},
@@ -134,8 +243,8 @@ async function insertDetail(seq, row, tb){
 }
 
 async function render(){ await loadSessions(); await loadTimeline(); }
-render();
-setInterval(render, 3000);  // auto-refresh so a live session fills in
+function tick(){ render().catch(()=>{}).finally(()=>setTimeout(tick, 3000)); }  // self-scheduling: a slow fetch can't overlap the next poll
+tick();
 `;
 
 export function renderPage(): string {
