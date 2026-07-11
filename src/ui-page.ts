@@ -236,7 +236,10 @@ const PAGE_CSS = `  :root {
 // innerHTML/insertAdjacentHTML; class names are never derived from data.
 // The tag map falls back to a neutral tag for unknown flag ids (risk-rules.ts
 // may grow the FlagId union without touching this file).
-const CLIENT_JS = `const SIG = {
+// Null-prototype so a flag/type/verdict named like a builtin ('constructor',
+// 'toString', '__proto__') can't resolve to an inherited member and skip the
+// fallback path.
+const CLIENT_JS = `const SIG = Object.assign(Object.create(null), {
   'failed':           {t:'FAIL',      c:'outline'},
   'secret-touch':     {t:'SECRET',    c:'inverse'},
   'destructive-git':  {t:'DESTR-GIT', c:'solid'},
@@ -246,15 +249,15 @@ const CLIENT_JS = `const SIG = {
   'auth-edit':        {t:'AUTH-EDIT', c:'outline'},
   'mass-diff':        {t:'MASS-DIFF', c:'outline'},
   'new-mcp-server':   {t:'NEW-MCP',   c:'neutral'},
-};
+});
 const SOLID = ['destructive-git','dangerous-shell','external-send','injection-output'];
-const TYPE = { shell_command:'SHELL', git_action:'GIT', file_read:'READ', file_write:'WRITE',
-  file_edit:'EDIT', mcp_call:'MCP', web_fetch:'FETCH', task_control:'TASK', session:'SESS', other:'—' };
-const STAMP = { high:['[ HIGH RISK ]','solid'], medium:['[ MEDIUM RISK ]','outline'],
-  low:['[ LOW RISK ]','neutral'], none:['[ CLEAN ]','neutral'] };
+const TYPE = Object.assign(Object.create(null), { shell_command:'SHELL', git_action:'GIT', file_read:'READ', file_write:'WRITE',
+  file_edit:'EDIT', mcp_call:'MCP', web_fetch:'FETCH', task_control:'TASK', session:'SESS', other:'—' });
+const STAMP = Object.assign(Object.create(null), { high:['[ HIGH RISK ]','solid'], medium:['[ MEDIUM RISK ]','outline'],
+  low:['[ LOW RISK ]','neutral'], none:['[ CLEAN ]','neutral'] });
 
 let current = null, expanded = new Set();
-let fpSessions = null, fpTimeline = null, fpVerdict = null;
+let fpSessions = null, fpTimeline = null, fpVerdict = null, fpHud = null;
 let rowState = [];            // [{fp, tr, a}] parallel to the rendered action list
 let tbody = null, thead = null;
 let lastPrompt = null, turnN = 0;   // turn-divider walk state (reset with rowState)
@@ -269,9 +272,11 @@ function pad(n,w){ return String(n).padStart(w,'0'); }
 function hhmmss(ts){ return (ts||'').slice(11,19) || '—'; }
 function fmtDur(ms){ if(ms==null) return '—'; return ms < 1000 ? ms+'ms' : (ms/1000).toFixed(1)+'s'; }
 function fmtSpan(a,b){ const s=Math.max(0,Math.round((Date.parse(b)-Date.parse(a))/1000));
+  if(!isFinite(s)) return '—';
   const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), r=s%60;
   return h ? h+'H'+pad(m,2)+'M' : m ? m+'M'+pad(r,2)+'S' : r+'S'; }
 function fmtRel(ts){ const s=Math.round((Date.now()-Date.parse(ts))/1000);
+  if(!isFinite(s)) return '—';   // malformed ts renders a dash, never a false LIVE
   if(s<10) return null; if(s<60) return s+'S AGO'; if(s<3600) return Math.floor(s/60)+'M AGO';
   if(s<86400) return Math.floor(s/3600)+'H AGO'; return Math.floor(s/86400)+'D AGO'; }
 function basename(p){ if(!p) return null; const parts=p.split(/[\\\\/]/).filter(Boolean); return parts[parts.length-1]||null; }
@@ -286,13 +291,17 @@ function rowTier(a){
 /* ── HUD ─────────────────────────────────────────────────────────── */
 function updateHud(h){
   lastHealth = h;
+  const grew = lastHead !== null && h.head_seq > lastHead;   // track head even on gated ticks
+  lastHead = h.head_seq;
+  const mode = grew ? 'rec' : 'idle';
+  const fp = JSON.stringify([h.count, h.head_seq, h.db, h.port, mode]);
+  if(fp === fpHud) return;                                    // idle poll → zero DOM work
+  fpHud = fp;
   document.getElementById('hEvents').textContent = pad(h.count||0,6);
   document.getElementById('hHead').textContent = pad(h.head_seq||0,6);
   const st = document.getElementById('hStore'); st.textContent = h.db||''; st.title = h.db||'';
   document.getElementById('hHost').textContent = '127.0.0.1:'+(h.port||'');
-  const grew = lastHead !== null && h.head_seq > lastHead;
-  lastHead = h.head_seq;
-  setRec(grew ? 'rec' : 'idle');
+  setRec(mode);
 }
 function setRec(mode){
   const dot = document.getElementById('recDot'), lab = document.getElementById('recLabel');
@@ -306,6 +315,7 @@ function setLink(ok){
   a.textContent = '/// LINK DOWN — DAEMON UNREACHABLE · RETRYING EVERY 3S';
   a.classList.add('on');
   setRec('link');
+  fpHud = null;   // force the next good health poll to re-render the REC dot off 'link'
 }
 
 /* ── session manifest ────────────────────────────────────────────── */
@@ -322,8 +332,20 @@ async function loadSessions(){
   const cards = await api('/api/sessions');
   const fp = JSON.stringify(cards);
   if(fp === fpSessions) return;
-  fpSessions = fp;
   renderSessions(cards);
+  fpSessions = fp;   // commit only after a successful render, so a mid-render throw retries
+}
+
+// Relative-age labels ('12S AGO', 'LIVE') depend on wall-clock, but the cards
+// JSON is fingerprint-gated — an idle daemon would freeze them. Refresh them
+// every poll outside the gate, writing only when the text actually changes.
+function refreshRel(){
+  for(const d of sessEls.values()){
+    if(!d._relEl) continue;
+    const rel = fmtRel(d._ended);
+    const txt = rel === null ? 'LIVE' : rel;
+    if(d._relEl.textContent !== txt){ d._relEl.textContent = txt; d._relEl.className = rel === null ? 'live' : ''; }
+  }
 }
 
 function renderSessions(cards){
@@ -347,6 +369,10 @@ function renderSessions(cards){
     if(!d){
       d = el('div',{className:'sess enter',tabIndex:0});
       d.style.animationDelay = Math.min(i,20)*25+'ms';
+      // Strip 'enter' once the entrance finishes so a later insertBefore reorder
+      // can't replay it. (Under reduced-motion the animation is disabled, so the
+      // event never fires and never needs to — 'enter' stays inert.)
+      d.addEventListener('animationend', ()=>{ d.classList.remove('enter'); d.style.animationDelay=''; }, {once:true});
       d.onclick = ()=>select(c.session_id);
       d.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); select(c.session_id); } };
       sessEls.set(c.session_id, d);
@@ -373,10 +399,9 @@ function fillCard(d, c, i){
     el('span',{className:'id',title:c.session_id}, el('span',{className:'sel',textContent:'▸ '}), c.session_id.slice(0,18)),
     fl));
   const rel = fmtRel(c.ended);
-  const meta = el('div',{className:'meta'},
-    pad(c.events,4)+' EV · '+fmtSpan(c.started,c.ended)+' · ');
-  meta.append(rel === null ? el('span',{className:'live',textContent:'LIVE'}) : rel);
-  d.append(meta);
+  const relEl = el('span',{className:rel===null?'live':'',textContent:rel===null?'LIVE':rel});
+  d._relEl = relEl; d._ended = c.ended;   // refreshRel() keeps this current between data polls
+  d.append(el('div',{className:'meta'}, pad(c.events,4)+' EV · '+fmtSpan(c.started,c.ended)+' · ', relEl));
   const proj = basename(c.cwd);
   if(proj) d.append(el('div',{className:'proj',textContent:proj,title:c.cwd||''}));
 }
@@ -389,11 +414,18 @@ async function loadTimeline(){
     if(fpTimeline !== key){ fpTimeline = key; main.textContent=''; main.append(emptyState(key)); }
     return;
   }
-  const actions = await api('/api/session/'+encodeURIComponent(current)+'/events');
-  const fp = JSON.stringify([current, actions]);
-  if(fp === fpTimeline) return;
-  fpTimeline = fp;
+  const sid = current;
+  const actions = await api('/api/session/'+encodeURIComponent(sid)+'/events');
+  if(current !== sid) return;   // selection changed while this fetch was in flight — discard
+  const fp = JSON.stringify([sid, actions]);
+  if(fp === fpTimeline){
+    // Events unchanged but the SessionCard (risk verdict/score/combos) may have
+    // advanced — refresh the verdict bar, which self-gates and does nothing if equal.
+    if(tbody && tbody.isConnected) updateVerdict(actions);
+    return;
+  }
   renderTimeline(main, actions);
+  fpTimeline = fp;   // commit only after a successful render
 }
 
 function emptyState(kind){
@@ -443,7 +475,7 @@ function renderTimeline(main, actions){
         if(st.a.key !== a.key){ fpTimeline = null; rowState = []; tbody = null; renderTimeline(main, actions); return; }
         buildRowCells(a, st.tr, false);
         st.fp = afp; st.a = a;
-        if(expanded.has(a.seq)){ removeDetail(st.tr); insertDetail(a.seq, st.tr); }  // refresh once on Pre→Post pairing
+        if(expanded.has(a.seq)) insertDetail(a.seq, st.tr);  // refresh on Pre→Post pairing; insertDetail swaps atomically (no blank frame)
       }
     } else {
       appendRow(a, batch++);
@@ -499,13 +531,14 @@ function appendRow(a, batchIdx){
 
 /* ── verdict bar ─────────────────────────────────────────────────── */
 function updateVerdict(actions){
+  const v = document.getElementById('verdict');
+  if(!v) return;
   const card = cardsById.get(current) || null;
   const flagN = actions.reduce((n,a)=>n+a.signals.length,0);
   const failN = actions.filter(a=>a.success===0 || a.signals.includes('failed')).length;
   const fp = JSON.stringify([current, actions.length, flagN, failN, card]);
   if(fp === fpVerdict) return;
   fpVerdict = fp;
-  const v = document.getElementById('verdict');
   v.textContent = '';
 
   v.append(el('div',{className:'vframe'},
@@ -554,7 +587,7 @@ function updateVerdict(actions){
   const sig = el('div',{className:'vsig'});
   const counts = (card && card.flags && Object.keys(card.flags).length)
     ? Object.entries(card.flags)
-    : Object.entries(actions.reduce((m,a)=>{ a.signals.forEach(s=>m[s]=(m[s]||0)+1); return m; },{}));
+    : Object.entries(actions.reduce((m,a)=>{ a.signals.forEach(s=>m[s]=(m[s]||0)+1); return m; }, Object.create(null)));
   counts.sort((x,y)=>y[1]-x[1]);
   if(counts.length){
     for(const kn of counts){
@@ -604,16 +637,20 @@ function redactedPre(text){
 function gline(label, ...kids){ return el('div',{className:'gline'}, el('span',{className:'gl',textContent:label}), ...kids); }
 
 async function insertDetail(seq, row){
+  // Per-row generation token: two in-flight detail fetches for the same row
+  // (a toggle + a Pre→Post pairing refresh) must not race — only the newest wins.
+  const gen = row._dgen = (row._dgen || 0) + 1;
+  const stale = ()=> row._dgen !== gen || !expanded.has(seq) || !row.isConnected;
   let d;
   try { d = await api('/api/event/'+seq); }
   catch {
-    if(!expanded.has(seq) || !row.isConnected) return;
+    if(stale()) return;
     removeDetail(row);
     row.after(el('tr',{className:'detailrow'}, el('td',{colSpan:NCOLS},
       el('div',{className:'detail'}, el('span',{className:'derr',textContent:'▲ RECORD FETCH FAILED — SEQ '+pad(seq,4)})))));
     return;
   }
-  if(!expanded.has(seq) || !row.isConnected) return;  // collapsed or replaced while fetching
+  if(stale()) return;                                 // superseded / collapsed / replaced while fetching
   removeDetail(row);                                  // never double-insert
   const box = el('div',{className:'detail'});
 
@@ -695,11 +732,15 @@ async function insertDetail(seq, row){
 
 /* ── poll loop ───────────────────────────────────────────────────── */
 async function render(){
-  let ok = true;
-  try { updateHud(await api('/health')); } catch { ok = false; }
-  try { await loadSessions(); } catch { ok = false; }
-  try { await loadTimeline(); } catch { ok = false; }
-  setLink(ok);
+  // The LINK banner tracks reachability, which is exactly what /health probes.
+  // A single endpoint returning non-2xx must not read as 'daemon unreachable';
+  // each pane degrades to its last-good DOM on its own error.
+  let linkOk = true;
+  try { updateHud(await api('/health')); } catch { linkOk = false; }
+  try { await loadSessions(); } catch {}
+  try { await loadTimeline(); } catch {}
+  refreshRel();
+  setLink(linkOk);
 }
 function tick(){ render().catch(()=>{}).finally(()=>setTimeout(tick, 3000)); }  // self-scheduling: a slow fetch can't overlap the next poll
 tick();
