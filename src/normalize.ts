@@ -139,5 +139,10 @@ export function normalize(
     ts: str('_captured_at') ?? capturedAt,
     captured_at: capturedAt,
     raw: rawLine,
+    // Populated by the redaction subsystem in Phase 1 Step 2; null/0 until then.
+    output_hash: null,
+    output_size_bytes: null,
+    redaction_count: 0,
+    detail: null,
   };
 }

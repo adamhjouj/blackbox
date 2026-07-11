@@ -60,8 +60,24 @@ export interface BlackboxEvent {
   ts: string;
   /** When blackbox ingested the event (ISO). */
   captured_at: string;
-  /** The verbatim payload, exactly as received. */
+  /**
+   * The payload as stored. In Phase 0 (fixture replay) this is verbatim; in
+   * Phase 1 (live capture) it is the REDACTED payload with tool output elided
+   * to a hash — a security tool must never write secrets to disk.
+   */
   raw: string;
+  /** sha256 of the ORIGINAL (unredacted) tool output; null when there is none. */
+  output_hash: string | null;
+  /** Byte size of the original output that was elided; null when none. */
+  output_size_bytes: number | null;
+  /** Number of secrets redacted on this event (0 when none). */
+  redaction_count: number;
+  /**
+   * Extensible JSON bag for collector-specific structured data: the redaction
+   * summary `[{type,path,bytes}]` and git enrichment `{refs, diffstat, ...}`.
+   * null keeps the column hash-neutral (see canonical() null-omission).
+   */
+  detail: string | null;
   /** Hash of the previous event (GENESIS for the first). */
   prev_hash: string;
   /** sha256 over all columns except this one. */
@@ -95,6 +111,10 @@ export const EVENT_COLUMNS = [
   'ts',
   'captured_at',
   'raw',
+  'output_hash',
+  'output_size_bytes',
+  'redaction_count',
+  'detail',
   'prev_hash',
   'hash',
 ] as const;

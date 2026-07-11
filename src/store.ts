@@ -1,6 +1,38 @@
 import Database from 'better-sqlite3';
 import { GENESIS, hashEvent } from './hash';
-import type { BlackboxEvent, NormalizedEvent } from './types';
+import { EVENT_COLUMNS, type BlackboxEvent, type NormalizedEvent } from './types';
+
+/** Current schema/hash-format version. Bump on any breaking hash-format change. */
+const SCHEMA_VERSION = 1;
+
+/** SQLite column type for each event column (used by ensureColumns migration). */
+const COLUMN_TYPES: Record<string, string> = {
+  seq: 'INTEGER',
+  event_id: 'TEXT',
+  session_id: 'TEXT',
+  tool_use_id: 'TEXT',
+  prompt_id: 'TEXT',
+  phase: 'TEXT',
+  hook_event: 'TEXT',
+  tool_name: 'TEXT',
+  action_type: 'TEXT',
+  target: 'TEXT',
+  agent_id: 'TEXT',
+  agent_type: 'TEXT',
+  cwd: 'TEXT',
+  permission_mode: 'TEXT',
+  success: 'INTEGER',
+  duration_ms: 'INTEGER',
+  ts: 'TEXT',
+  captured_at: 'TEXT',
+  raw: 'TEXT',
+  output_hash: 'TEXT',
+  output_size_bytes: 'INTEGER',
+  redaction_count: 'INTEGER',
+  detail: 'TEXT',
+  prev_hash: 'TEXT',
+  hash: 'TEXT',
+};
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS events (
@@ -23,6 +55,10 @@ CREATE TABLE IF NOT EXISTS events (
   ts              TEXT NOT NULL,
   captured_at     TEXT NOT NULL,
   raw             TEXT NOT NULL,
+  output_hash        TEXT,
+  output_size_bytes  INTEGER,
+  redaction_count    INTEGER NOT NULL DEFAULT 0,
+  detail             TEXT,
   prev_hash       TEXT NOT NULL,
   hash            TEXT NOT NULL
 );
@@ -94,6 +130,25 @@ export class Store {
     this.db.pragma('foreign_keys = ON');
     this.db.pragma('busy_timeout = 5000');
     this.db.exec(SCHEMA);
+    this.ensureColumns();
+    this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
+  }
+
+  /**
+   * Additively migrate an older store: add any expected column that a
+   * previously-created DB is missing. SQLite ADD COLUMN is O(1) metadata-only.
+   * Safe for the hash chain because canonical() omits null keys, so a column
+   * that is null on old rows does not change their hash.
+   */
+  private ensureColumns(): void {
+    const existing = new Set(
+      (this.db.prepare('PRAGMA table_info(events)').all() as { name: string }[]).map((c) => c.name),
+    );
+    for (const col of EVENT_COLUMNS) {
+      if (existing.has(col)) continue;
+      const type = COLUMN_TYPES[col] ?? 'TEXT';
+      this.db.exec(`ALTER TABLE events ADD COLUMN ${col} ${type}`);
+    }
   }
 
   /** The last event in the chain, or null if empty. */
@@ -118,15 +173,11 @@ export class Store {
    * insert, and the anchor update are atomic even under concurrent writers.
    */
   append(e: NormalizedEvent): BlackboxEvent {
+    // INSERT column list is derived from EVENT_COLUMNS so it can never drift
+    // from the schema / hashed column set.
     const insertEvent = this.db.prepare(
-      `INSERT INTO events
-         (seq, event_id, session_id, tool_use_id, prompt_id, phase, hook_event,
-          tool_name, action_type, target, agent_id, agent_type, cwd, permission_mode,
-          success, duration_ms, ts, captured_at, raw, prev_hash, hash)
-       VALUES
-         (@seq, @event_id, @session_id, @tool_use_id, @prompt_id, @phase, @hook_event,
-          @tool_name, @action_type, @target, @agent_id, @agent_type, @cwd, @permission_mode,
-          @success, @duration_ms, @ts, @captured_at, @raw, @prev_hash, @hash)`,
+      `INSERT INTO events (${EVENT_COLUMNS.join(', ')})
+       VALUES (${EVENT_COLUMNS.map((c) => '@' + c).join(', ')})`,
     );
     const upsertMeta = this.db.prepare(
       `INSERT INTO chain_meta (id, count, head_seq, head_hash) VALUES (1, @count, @seq, @hash)

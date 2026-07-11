@@ -1,19 +1,18 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
 import { normalize } from './normalize';
+import { resolveDb } from './paths';
 import { Store } from './store';
 import { verify } from './verify';
 
-const DEFAULT_DB = process.env.BLACKBOX_DB ?? 'blackbox.db';
-
 interface Args {
   _: string[];
-  db: string;
+  db?: string;
   session?: string;
 }
 
 function parseArgs(argv: string[]): Args {
-  const out: Args = { _: [], db: DEFAULT_DB };
+  const out: Args = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--db') out.db = argv[++i] ?? out.db;
@@ -66,7 +65,7 @@ function cmdIngest(args: Args): number {
   }
 
   const capturedAt = new Date().toISOString();
-  const store = new Store(args.db);
+  const store = new Store(resolveDb(args.db));
   let n = 0;
   let firstSeq = 0;
   let lastSeq = 0;
@@ -113,7 +112,7 @@ function cmdIngest(args: Args): number {
 }
 
 function cmdVerify(args: Args): number {
-  const store = new Store(args.db);
+  const store = new Store(resolveDb(args.db));
   const r = verify(store);
   store.close();
   if (r.ok) {
@@ -129,7 +128,7 @@ function cmdVerify(args: Args): number {
 }
 
 function cmdHead(args: Args): number {
-  const store = new Store(args.db);
+  const store = new Store(resolveDb(args.db));
   const meta = store.chainMeta();
   store.close();
   if (!meta) {
@@ -141,7 +140,7 @@ function cmdHead(args: Args): number {
 }
 
 function cmdList(args: Args): number {
-  const store = new Store(args.db);
+  const store = new Store(resolveDb(args.db));
   const rows = store.events(args.session);
   store.close();
   for (const e of rows) {
@@ -156,7 +155,7 @@ function cmdList(args: Args): number {
 }
 
 function cmdSessions(args: Args): number {
-  const store = new Store(args.db);
+  const store = new Store(resolveDb(args.db));
   const sessions = store.sessions();
   store.close();
   for (const s of sessions) {
