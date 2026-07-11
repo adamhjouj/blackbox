@@ -3,8 +3,25 @@ import { isSensitivePath } from './redact-rules';
 import type { BlackboxEvent } from './types';
 
 /** Ruleset version. Bump when rules/scores/thresholds change; old versions stay
- *  scoreable/reproducible via `blackbox rescore --ruleset`. */
-export const RULESET_VERSION = 'r1';
+ *  scoreable/reproducible via `blackbox rescore --ruleset`. r1 tables are FROZEN;
+ *  r2 recalibrates scores (secret-touch/new-mcp → 0) and adds the injected-* and
+ *  tool-poisoning combos. */
+export type RulesetVersion = 'r1' | 'r2';
+export const RULESET_VERSION: RulesetVersion = 'r2';
+
+/** Numeric ruleset compare — a string compare gets 'r10' < 'r2' wrong. */
+export function rulesetNum(v: string): number {
+  const m = /^r(\d+)$/.exec(v);
+  return m ? Number(m[1]) : 0;
+}
+
+/** The rulesets this build can compute. Anything else must be rejected before
+ *  scoring (an unknown ruleset has no score table → a crash, and its fingerprint
+ *  would silently collide with r2). */
+export const KNOWN_RULESETS: RulesetVersion[] = ['r1', 'r2'];
+export function isKnownRuleset(v: string): v is RulesetVersion {
+  return (KNOWN_RULESETS as string[]).includes(v);
+}
 
 export type FlagId =
   | 'secret-touch'
@@ -22,6 +39,32 @@ export interface RuleHit {
   score: number;
   evidence?: Record<string, unknown>;
 }
+
+/** Two flag classes drive presentation + scoring under r2. RISK_FLAGS paint the
+ *  timeline red and score >0; ANNOTATION_FLAGS are combo fuel / muted context
+ *  (score 0). This split is what kills the per-event chip noise (secret-touch
+ *  fired 345x) while keeping every combo antecedent fully intact. */
+export const RISK_FLAGS = new Set<FlagId>(['dangerous-shell', 'auth-edit', 'mass-diff', 'destructive-git']);
+export const ANNOTATION_FLAGS = new Set<FlagId>(['secret-touch', 'external-send', 'new-mcp-server', 'injection-output', 'failed']);
+/** Annotations that stay visible as a MUTED (non-red) chip even off a combo seq —
+ *  an outbound send or a detected injection is never silently invisible. */
+export const ALWAYS_SHOW_ANNOTATIONS = new Set<FlagId>(['external-send', 'new-mcp-server', 'injection-output']);
+export const isAnnotation = (f: FlagId): boolean => ANNOTATION_FLAGS.has(f);
+
+/** Version-dispatched scores. r1 is frozen; r2 demotes secret-touch and
+ *  new-mcp-server to 0 (annotations) — combos key off flag PRESENCE, so firing is
+ *  unaffected. The 'auth-edit-test'/'mass-diff-bulk' keys are score variants
+ *  selected inside evaluateEvent. */
+type ScoreKey = FlagId | 'auth-edit-test' | 'mass-diff-bulk';
+const SCORES_R1: Record<ScoreKey, number> = {
+  'secret-touch': 30, 'dangerous-shell': 60, 'auth-edit': 50, 'auth-edit-test': 25,
+  'mass-diff': 50, 'mass-diff-bulk': 60, 'new-mcp-server': 20, 'destructive-git': 25,
+  'external-send': 0, 'injection-output': 0, failed: 0,
+};
+const SCORES: Record<RulesetVersion, Record<ScoreKey, number>> = {
+  r1: SCORES_R1,
+  r2: { ...SCORES_R1, 'secret-touch': 0, 'new-mcp-server': 0 },
+};
 
 /** Per-session state a rule needs (superset of Phase-2 SignalCtx). */
 export interface SessionRuleCtx {
@@ -72,9 +115,71 @@ function rmDestructive(cmd: string): boolean {
   const seg = stop > -1 ? rest.slice(0, stop) : rest;
   return (/(^|\s)-{1,2}[a-z]*r|--recursive\b/i.test(seg)) && (/(^|\s)-{1,2}[a-z]*f|--force\b/i.test(seg));
 }
-function isDangerousShell(cmd: string): boolean {
-  const c = stripQuotes(cmd); // ignore dangerous literals that are only quoted data
-  return PIPE_TO_SHELL.some((re) => re.test(c)) || CHMOD_OPEN.test(c) || rmDestructive(c);
+
+// r2 rm: same recursive+force detection, but fire ONLY on catastrophic targets —
+// bare root/home/cwd wipes, shallow (<=2 segment) absolute system/home roots,
+// sensitive ~ / $HOME children, and VCS dirs. Deep project/cache/build paths and
+// /tmp scratchpads are safe (this clears all 84 observed dangerous-shell FPs).
+function blankQuotes(s: string): string {
+  return s.replace(/'[^']*'|"[^"]*"/g, (m) => ' '.repeat(m.length)); // length-preserving
+}
+const TMP_ROOT = /^\/(private\/)?(tmp|var\/folders|var\/tmp)(\/|$)/i;
+const REL_CATASTROPHIC = new Set(['.git', '.svn', '.hg']);
+const SENSITIVE_HOME_CHILD = new Set(['.ssh', '.aws', '.gnupg', '.kube', '.docker', '.gcloud', '.azure', '.netrc', '.npmrc']);
+const HOME_ROOT = /^(~|\$\{?HOME\}?|\$\{?PWD\}?)(\/(.*))?$/i;
+const RM_RECURSIVE = /(^|\s)-{1,2}[a-z]*r|--recursive\b/i;
+const RM_FORCE = /(^|\s)-{1,2}[a-z]*f|--force\b/i;
+// First path segment of an absolute target that is system- or home-owned — a
+// shallow recursive wipe of one of these is catastrophic. A first segment NOT in
+// this set (e.g. /app, /data) is treated as an app dir: a deep wipe like
+// `rm -rf /app/node_modules` is routine and must NOT fire.
+const SYSTEM_ROOT_SEG = new Set(['etc', 'usr', 'bin', 'sbin', 'lib', 'lib64', 'boot', 'dev', 'sys', 'proc', 'root', 'var', 'opt', 'srv', 'private', 'system', 'library', 'applications', 'volumes', 'users', 'home']);
+// Deep-but-catastrophic prefixes: a wipe anywhere beneath them fires at any depth.
+const CATASTROPHIC_PREFIX = ['var/lib', 'usr/local', 'var/www'];
+
+function rmTokenDangerous(rawTok: string): boolean {
+  const t = rawTok.replace(/^['"]|['"]$/g, '');
+  if (!t) return false;
+  if (/^(\/|~|~\/|\*|\.|\.\/|\.\/\*|\.\.|\.\.\/|\.\.\/\*|\/\*)$/.test(t)) return true; // bare root/home/cwd/glob
+  const rel = t.replace(/^\.\//, '').replace(/\/+$/, '');
+  if (REL_CATASTROPHIC.has(rel)) return true; // rm -rf .git
+  const hm = HOME_ROOT.exec(t);
+  if (hm) {
+    const sub = (hm[3] ?? '').replace(/\/+$/, '');
+    return sub === '' || SENSITIVE_HOME_CHILD.has(sub.split('/')[0] ?? '');
+  }
+  if (t.startsWith('/')) {
+    if (TMP_ROOT.test(t)) return false; // scratch dirs, any depth
+    const segs = t.replace(/\/+$/, '').replace(/\/\*$/, '').split('/').filter(Boolean);
+    if (segs.length <= 1) return true; // bare top-level dir wipe (/, /app, /data …)
+    if (CATASTROPHIC_PREFIX.includes(segs.slice(0, 2).join('/').toLowerCase())) return true; // /var/lib/mysql, /usr/local/bin …
+    return segs.length <= 2 && SYSTEM_ROOT_SEG.has((segs[0] ?? '').toLowerCase()); // shallow system/home root
+  }
+  return false;
+}
+function rmDangerous(cmd: string): boolean {
+  const blanked = blankQuotes(cmd);
+  const re = /\brm\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(blanked)) !== null) {
+    const start = m.index;
+    const stopRel = blanked.slice(start).search(/[|&;\n]/);
+    const end = stopRel > -1 ? start + stopRel : blanked.length;
+    if (!RM_RECURSIVE.test(blanked.slice(start, end)) || !RM_FORCE.test(blanked.slice(start, end))) continue;
+    // read the target from the ORIGINAL span so a quoted REAL target survives
+    const toks = cmd.slice(start, end).split(/\s+/).slice(1).filter((x) => x && !x.startsWith('-'));
+    if (toks.some(rmTokenDangerous)) return true;
+  }
+  return false;
+}
+
+function isDangerousShell(cmd: string, rs: RulesetVersion): boolean {
+  if (rs === 'r1') {
+    const c = stripQuotes(cmd); // ignore dangerous literals that are only quoted data
+    return PIPE_TO_SHELL.some((re) => re.test(c)) || CHMOD_OPEN.test(c) || rmDestructive(c);
+  }
+  const c = blankQuotes(cmd);
+  return PIPE_TO_SHELL.some((re) => re.test(c)) || CHMOD_OPEN.test(c) || rmDangerous(cmd);
 }
 
 // ---- auth path (segment boundary, Tier 1) --------------------------------
@@ -86,6 +191,23 @@ const AUTH_SEGMENT =
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec|specs|fixtures|mocks?)(\/)/i;
 export function isAuthPath(p: string): boolean {
   return AUTH_SEGMENT.test(p);
+}
+// injected-tamper uses a STRONGER auth predicate: it drops the ambiguous,
+// high-churn 'middleware'|'guard' segments (they still earn a per-event auth-edit
+// chip, but must not alone promote an injection pairing to a HIGH tamper combo).
+const AUTH_SEGMENT_STRONG =
+  /(^|[/_.\-])(auth[nz]?|authorize|authorization|login|logout|password|passwd|jwt|oauth|oidc|sso|saml|credential|credentials|rbac|acl|iam|keycloak)(?=$|[/_.\-])/i;
+export function isStrongAuthPath(p: string): boolean {
+  return AUTH_SEGMENT_STRONG.test(p);
+}
+export function isTestPath(p: string): boolean {
+  return TEST_PATH.test(p);
+}
+// CI/build config an injected instruction would target for a persistent backdoor.
+const CI_BUILD_PATH =
+  /(^|\/)\.github\/workflows\/|(^|\/)\.circleci\/|(^|\/)(\.gitlab-ci\.ya?ml|azure-pipelines\.ya?ml|Jenkinsfile|\.drone\.yml|package\.json|Makefile|setup\.py|pyproject\.toml)$/i;
+export function isCiBuildPath(p: string): boolean {
+  return CI_BUILD_PATH.test(p);
 }
 
 // ---- external send (the exfil-chain consequent) --------------------------
@@ -194,6 +316,38 @@ export function isExternalSend(e: BlackboxEvent): ExternalSend | null {
   return null;
 }
 
+// ---- injected-tamper antecedent (provenance-gated) -----------------------
+/** The tamper antecedent arms ONLY from output that arrived on an UNTRUSTED
+ *  external channel — a web fetch or an MCP tool response. An agent READING a
+ *  local file that merely contains an injection string, or a shell echo of one,
+ *  never arms (kills the meta-FP of doing injection work on this very repo). */
+export function isUntrustedOutputChannel(e: BlackboxEvent): boolean {
+  return e.action_type === 'web_fetch' || e.action_type === 'mcp_call';
+}
+// Imperative, low-collision markers — any ONE arms.
+export const TAMPER_ARM_STRONG = ['ignore-instructions', 'disregard', 'override-safety', 'conceal-from-user'];
+// Ambiguous with benign RBAC/onboarding English — need >=2 distinct arming markers.
+export const TAMPER_ARM_CORROBORATE = ['you-are-now', 'new-instructions'];
+/** Whether captured injection pattern names arm the tamper antecedent, given the
+ *  channel they arrived on. Selects among already-captured i1 names — never
+ *  re-scans output. A web page commonly QUOTES an injection string (security
+ *  articles, this project's own docs), so a `web_fetch` needs corroboration (>=2
+ *  distinct arming markers); MCP tool output is more clearly untrusted, so one
+ *  strong marker arms. */
+export function armsTamper(patterns: string[], channel: string): boolean {
+  const s = new Set(patterns);
+  const strong = TAMPER_ARM_STRONG.filter((p) => s.has(p)).length;
+  const corrob = TAMPER_ARM_CORROBORATE.filter((p) => s.has(p)).length;
+  if (channel === 'web_fetch') return strong + corrob >= 2;
+  return strong >= 1 || strong + corrob >= 2;
+}
+/** The first sensitive local file referenced by an MCP call's OUTBOUND tool_input
+ *  (its `target` is the JSON.stringify'd input). Powers the tool-poisoning data
+ *  link: a poisoned server shipping a file the session already read. */
+export function mcpOutboundSensitiveFile(e: BlackboxEvent): string | null {
+  return e.action_type === 'mcp_call' ? commandReadsSensitiveFile(e.target ?? '') : null;
+}
+
 // ---- per-event evaluation ------------------------------------------------
 function parseDetail(e: BlackboxEvent): Record<string, unknown> | null {
   if (!e.detail) return null;
@@ -204,67 +358,89 @@ function parseDetail(e: BlackboxEvent): Record<string, unknown> | null {
   }
 }
 
-/** Evaluate one event. Feed a session's events in seq order (ctx tracks MCP servers). */
-export function evaluateEvent(e: BlackboxEvent, ctx: SessionRuleCtx): RuleHit[] {
+/** Evaluate one event. Feed a session's events in seq order (ctx tracks MCP
+ *  servers). Scores are version-dispatched: under r2, secret-touch and
+ *  new-mcp-server score 0 (annotations) but still HIT — combos key off presence. */
+export function evaluateEvent(e: BlackboxEvent, ctx: SessionRuleCtx, rs: RulesetVersion = RULESET_VERSION): RuleHit[] {
   const hits: RuleHit[] = [];
+  const sc = SCORES[rs];
   const cmd = e.target ?? '';
 
-  if (e.phase === 'failure') hits.push({ flag: 'failed', score: 0 });
+  if (e.phase === 'failure') hits.push({ flag: 'failed', score: sc.failed });
 
-  if (e.redaction_count > 0) hits.push({ flag: 'secret-touch', score: 30 });
+  if (e.redaction_count > 0) hits.push({ flag: 'secret-touch', score: sc['secret-touch'] });
   else if (/^file_(read|write|edit)$/.test(e.action_type) && cmd && isSensitivePath(cmd))
-    hits.push({ flag: 'secret-touch', score: 30, evidence: { path: cmd } });
+    hits.push({ flag: 'secret-touch', score: sc['secret-touch'], evidence: { path: cmd } });
   else if ((e.action_type === 'shell_command' || e.action_type === 'git_action') && cmd) {
     const sf = commandReadsSensitiveFile(cmd); // cat/base64 .env, curl -d @secret, etc.
-    if (sf) hits.push({ flag: 'secret-touch', score: 30, evidence: { path: sf } });
+    if (sf) hits.push({ flag: 'secret-touch', score: sc['secret-touch'], evidence: { path: sf } });
   }
 
-  if ((e.action_type === 'shell_command' || e.action_type === 'git_action') && cmd && isDangerousShell(cmd))
-    hits.push({ flag: 'dangerous-shell', score: 60 });
+  if ((e.action_type === 'shell_command' || e.action_type === 'git_action') && cmd && isDangerousShell(cmd, rs))
+    hits.push({ flag: 'dangerous-shell', score: sc['dangerous-shell'] });
 
   if ((e.action_type === 'file_write' || e.action_type === 'file_edit') && cmd && isAuthPath(cmd))
-    hits.push({ flag: 'auth-edit', score: TEST_PATH.test(cmd) ? 25 : 50, evidence: { path: cmd } });
+    hits.push({ flag: 'auth-edit', score: TEST_PATH.test(cmd) ? sc['auth-edit-test'] : sc['auth-edit'], evidence: { path: cmd } });
 
   const detail = parseDetail(e);
   const git = detail?.git as { is_force?: boolean; is_reset?: boolean; is_delete?: boolean; diffstat?: { files: number; insertions: number; deletions: number } } | undefined;
-  if (git && (git.is_force || git.is_reset || git.is_delete)) hits.push({ flag: 'destructive-git', score: 25 });
+  if (git && (git.is_force || git.is_reset || git.is_delete)) hits.push({ flag: 'destructive-git', score: sc['destructive-git'] });
   if (git?.diffstat) {
     const { files, insertions, deletions } = git.diffstat;
-    if (deletions >= 500 && deletions > 3 * insertions) hits.push({ flag: 'mass-diff', score: 60, evidence: { ...git.diffstat, kind: 'bulk-delete' } });
-    else if (files >= 25 || insertions + deletions >= 1500) hits.push({ flag: 'mass-diff', score: 50, evidence: git.diffstat });
+    if (deletions >= 500 && deletions > 3 * insertions) hits.push({ flag: 'mass-diff', score: sc['mass-diff-bulk'], evidence: { ...git.diffstat, kind: 'bulk-delete' } });
+    else if (files >= 25 || insertions + deletions >= 1500) hits.push({ flag: 'mass-diff', score: sc['mass-diff'], evidence: git.diffstat });
   }
   if ((e.action_type === 'shell_command' || e.action_type === 'git_action') && GIT_DESTRUCTIVE.some((re) => re.test(cmd)) && !hits.some((h) => h.flag === 'destructive-git'))
-    hits.push({ flag: 'destructive-git', score: 25 });
+    hits.push({ flag: 'destructive-git', score: sc['destructive-git'] });
 
   if (e.tool_name?.startsWith('mcp__')) {
     const server = e.tool_name.split('__')[1] ?? '';
     if (server && !ctx.seenMcp.has(server)) {
       ctx.seenMcp.add(server);
-      hits.push({ flag: 'new-mcp-server', score: 20, evidence: { server } });
+      hits.push({ flag: 'new-mcp-server', score: sc['new-mcp-server'], evidence: { server } });
     }
   }
 
   const send = isExternalSend(e);
-  if (send) hits.push({ flag: 'external-send', score: 0, evidence: { ...send } });
+  if (send) hits.push({ flag: 'external-send', score: sc['external-send'], evidence: { ...send } });
 
-  // Captured as a fact now, but scored 0 in r1: the heuristic injection scanner
-  // is unvalidated, so it must not inflate verdicts until the injected-tamper
-  // combo work (the circle-back) validates and scores it.
+  // A captured FACT (score 0): the heuristic injection scanner is unvalidated, so
+  // it never inflates a verdict on its own — the injected-* combos (risk-engine)
+  // are the only thing that turns it into signal, and only on an untrusted channel.
   const inj = (detail?.output_signals as { injection?: string[] } | undefined)?.injection;
-  if (inj?.length) hits.push({ flag: 'injection-output', score: 0, evidence: { patterns: inj } });
+  if (inj?.length) hits.push({ flag: 'injection-output', score: sc['injection-output'], evidence: { patterns: inj } });
 
   return hits;
 }
 
 /** Fingerprint of the exact rule table — stored on each verdict so a report is
- *  pinned to a reproducible computation. */
-export function rulesFingerprint(): string {
-  const spec = {
-    version: RULESET_VERSION,
+ *  pinned to a reproducible computation. Version-keyed: the r1 spec object is
+ *  FROZEN byte-for-byte, so stored r1 rows' rules_hash still validates after the
+ *  r2 bump. */
+export function rulesFingerprint(ruleset: RulesetVersion = RULESET_VERSION): string {
+  const sha = (spec: unknown): string => 'sha256:' + createHash('sha256').update(JSON.stringify(spec)).digest('hex');
+  const r1spec = {
+    version: 'r1',
     scores: { 'secret-touch': 30, 'dangerous-shell': 60, 'auth-edit': 50, 'auth-edit-test': 25, 'mass-diff': 50, 'mass-diff-bulk': 60, 'new-mcp-server': 20, 'destructive-git': 25, 'injection-output': 0, 'external-send': 0, failed: 0 },
     thresholds: { massDiffFiles: 25, massDiffLines: 1500, bulkDelDeletions: 500, bulkDelRatio: 3, queryPayloadMinLen: 40, exfilTemporalWindow: 20 },
     combos: { 'exfil-chain': { dataLinked: 'high', temporal: 'medium' } },
     verdict: { comboWeight: 40, highScore: 80, medScore: 50 },
   };
-  return 'sha256:' + createHash('sha256').update(JSON.stringify(spec)).digest('hex');
+  if (ruleset === 'r1') return sha(r1spec);
+  const r2spec = {
+    version: 'r2',
+    scores: { 'secret-touch': 0, 'dangerous-shell': 60, 'auth-edit': 50, 'auth-edit-test': 25, 'mass-diff': 50, 'mass-diff-bulk': 60, 'new-mcp-server': 0, 'destructive-git': 25, 'injection-output': 0, 'external-send': 0, failed: 0 },
+    thresholds: { massDiffFiles: 25, massDiffLines: 1500, bulkDelDeletions: 500, bulkDelRatio: 3, queryPayloadMinLen: 40, exfilTemporalWindow: 20, tamperWindow: 20, dangerousShellRm: 'target-scoped' },
+    combos: {
+      'exfil-chain': { dataLinked: 'high', temporal: 'medium' },
+      'injected-tamper': { auth: 'high', authTest: 'medium' },
+      'injected-exfil': { push: 'high' },
+      'injected-rce': { shell: 'high' },
+      'injected-ci-write': { ci: 'high' },
+      'tool-poisoning': { dataLinked: 'high', firstContact: 'medium-disabled' },
+    },
+    strongInjection: { arm: TAMPER_ARM_STRONG, corroborate: TAMPER_ARM_CORROBORATE, untrustedChannels: ['web_fetch', 'mcp_call'], webFetchNeedsCorroboration: true },
+    verdict: { comboWeight: 40, highScore: 80, medScore: 50 },
+  };
+  return sha(r2spec);
 }

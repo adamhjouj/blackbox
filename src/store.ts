@@ -148,6 +148,10 @@ export interface SessionSummary {
   started: string;
   ended: string;
   failures: number;
+  /** Events that are NOT bare session-lifecycle markers (SessionStart/SessionEnd):
+   *  tool use, Stop (a completed turn), or subagent activity. 0 ⇒ the session
+   *  recorded no chat at all — opened but never used. */
+  activity: number;
 }
 
 /**
@@ -391,7 +395,8 @@ export class Store {
                 COUNT(*)                                  AS events,
                 MIN(ts)                                   AS started,
                 MAX(ts)                                   AS ended,
-                SUM(CASE WHEN phase = 'failure' THEN 1 ELSE 0 END) AS failures
+                SUM(CASE WHEN phase = 'failure' THEN 1 ELSE 0 END) AS failures,
+                SUM(CASE WHEN phase NOT IN ('session_start','session_end') THEN 1 ELSE 0 END) AS activity
          FROM events
          GROUP BY session_id
          ORDER BY started ASC`,

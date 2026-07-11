@@ -14,7 +14,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/cli.js",
-    "verify": "node dist/cli.js verify"
+    "verify": "node dist/cli.js verify",
+    "test": "npm run build && node --test test/*.test.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1"

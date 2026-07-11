@@ -7,7 +7,7 @@ import { canonical } from './hash';
 import { init, uninit, versionWarning } from './init';
 import { normalize } from './normalize';
 import { backfill, computeSession, rescoreSession } from './risk-engine';
-import { RULESET_VERSION } from './risk-rules';
+import { isKnownRuleset, KNOWN_RULESETS, RULESET_VERSION, rulesFingerprint, type RulesetVersion } from './risk-rules';
 import { unwatchGlobal, unwatchRepo, watchGlobal, watchRepo } from './watch';
 import { ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
 import { Store } from './store';
@@ -478,8 +478,12 @@ function cmdSessions(args: Args): number {
 
 function cmdRescore(args: Args): number {
   const store = new Store(resolveDb(args.db));
-  const ruleset = args.ruleset ?? RULESET_VERSION;
+  const ruleset = (args.ruleset ?? RULESET_VERSION) as RulesetVersion;
   try {
+    if (!isKnownRuleset(ruleset)) {
+      console.error(`unknown ruleset "${ruleset}" (known: ${KNOWN_RULESETS.join(', ')})`);
+      return 2;
+    }
     if (args.prune) {
       store.riskDelete(args.prune);
       console.log(`pruned risk rows for ruleset ${args.prune}`);
@@ -488,9 +492,11 @@ function cmdRescore(args: Args): number {
     const sessionIds = args.session ? [args.session] : store.sessions().map((s) => s.session_id);
     if (args.check) {
       // Compare the ENTIRE recomputed risk layer (verdict + score + combos +
-      // rule_counts + every per-event risk row) against what's stored — so a
-      // tampered per-event flag/evidence/rule_count is caught even if the final
-      // verdict is unchanged. canonical() neutralizes key ordering.
+      // rule_counts + rules_hash + every per-event risk row) against what's stored
+      // — so a tampered flag/evidence/count is caught even if the verdict is
+      // unchanged. canonical() neutralizes key ordering. A session with NO stored
+      // row for this ruleset is "not yet scored" (e.g. right after an r2 bump,
+      // before backfill) and is reported separately, never counted as tampering.
       const jparse = (s: string | null, f: unknown): unknown => {
         try {
           return s ? JSON.parse(s) : f;
@@ -499,23 +505,30 @@ function cmdRescore(args: Args): number {
         }
       };
       let mismatches = 0;
+      let unscored = 0;
+      const rulesHash = rulesFingerprint(ruleset);
       for (const sid of sessionIds) {
-        const { verdict, risks } = computeSession(store, sid);
+        const sr = store.sessionRisk(sid, ruleset);
+        if (!sr) {
+          unscored++;
+          console.error(`  · ${sid.slice(0, 18)}: not yet scored under ruleset ${ruleset} (run backfill/rescore)`);
+          continue;
+        }
+        const { verdict, risks } = computeSession(store, sid, ruleset);
         const recomputed = canonical({
-          v: verdict.verdict, s: verdict.score, combos: verdict.combos, rc: verdict.rule_counts, last: verdict.last_scored_seq,
+          v: verdict.verdict, s: verdict.score, combos: verdict.combos, rc: verdict.rule_counts, last: verdict.last_scored_seq, h: rulesHash,
           risks: risks.map((r) => ({ seq: r.seq, score: r.score, flags: r.flags, evidence: r.evidence })),
         });
-        const sr = store.sessionRisk(sid, ruleset);
         const storedRisks = store.riskForSession(sid, ruleset).map((r) => ({ seq: r.seq, score: r.score, flags: jparse(r.flags, []), evidence: jparse(r.evidence, null) }));
-        const stored = sr
-          ? canonical({ v: sr.verdict, s: sr.score, combos: jparse(sr.combos, []), rc: jparse(sr.rule_counts, {}), last: sr.last_scored_seq, risks: storedRisks })
-          : null;
+        const stored = canonical({ v: sr.verdict, s: sr.score, combos: jparse(sr.combos, []), rc: jparse(sr.rule_counts, {}), last: sr.last_scored_seq, h: sr.rules_hash ?? null, risks: storedRisks });
         if (recomputed !== stored) {
           mismatches++;
           console.error(`  ✗ ${sid.slice(0, 18)}: risk layer differs from recomputation`);
         }
       }
-      console.log(mismatches ? `✗ ${mismatches}/${sessionIds.length} session(s) differ from recomputation` : `✓ all ${sessionIds.length} session(s) match recomputation`);
+      const checked = sessionIds.length - unscored;
+      const tail = unscored ? ` (${unscored} not yet scored under ${ruleset})` : '';
+      console.log(mismatches ? `✗ ${mismatches}/${checked} scored session(s) differ from recomputation${tail}` : `✓ all ${checked} scored session(s) match recomputation${tail}`);
       return mismatches ? 1 : 0;
     }
     let n = 0;

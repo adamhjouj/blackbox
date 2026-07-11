@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { RULESET_VERSION, type FlagId } from './risk-rules';
-import type { Store } from './store';
+import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
+import type { SessionRiskRow, Store } from './store';
 import type { BlackboxEvent } from './types';
 
 /** One row in the timeline: a Pre/Post tool pair collapsed into a single action,
@@ -18,7 +18,8 @@ export interface Action {
   success: 0 | 1 | null;
   duration_ms: number | null;
   redaction_count: number;
-  signals: FlagId[];
+  signals: FlagId[]; // risk flags + always-show / on-combo annotations → red/muted row chips
+  notes: FlagId[]; // muted annotations shown only in the expanded dossier
   score: number;
   prompt_id: string | null;
   agent_type: string | null;
@@ -30,6 +31,8 @@ export interface ComboEvidence {
   antecedent_seq: number;
   consequent_seq: number;
   note: string;
+  server?: string; // tool-poisoning: the poisoned server
+  host?: string; // optional external host evidence
 }
 
 export interface SessionCard {
@@ -42,7 +45,8 @@ export interface SessionCard {
   score: number;
   ruleset_version: string;
   combos: ComboEvidence[];
-  flags: Record<string, number>;
+  flags: Record<string, number>; // risk-flag counts only (drives the "N flagged" badge)
+  annotations: Record<string, number>; // muted context counts (secret-touch, etc.)
   flagged: number;
   cwd: string | null;
   name: string | null; // human-readable session name (user /rename, else AI title)
@@ -62,11 +66,40 @@ function safeParse<T>(s: string | null, fallback: T): T {
   }
 }
 
+/** Parse a stored JSON array, tolerating BOTH parse errors and a non-array shape.
+ *  The risk layer is untrusted (re-derivable, not chained), so a corrupt/tampered
+ *  `combos` value must never crash the timeline. */
+function safeArray<T>(s: string | null): T[] {
+  const v = safeParse<unknown>(s, null);
+  return Array.isArray(v) ? (v as T[]) : [];
+}
+
 // Cache keyed on chain head_seq: the store is append-only and the daemon writes
 // risk right after each append, so a result is valid until head_seq advances.
 let cardsCache: { head: number; cards: SessionCard[] } | null = null;
 const actionsCache = new Map<string, { head: number; actions: Action[] }>();
 const headSeq = (store: Store): number => store.chainMeta()?.head_seq ?? 0;
+
+// Version-fallback read: after an r2 bump but before backfill, a session only has
+// r1 rows — render those rather than a blanket "unscored". Returns the highest
+// ruleset for which the session has a verdict, or the current one if none yet.
+function resolveRuleset(store: Store, sessionId: string): RulesetVersion {
+  return store.sessionRisk(sessionId, RULESET_VERSION) ? RULESET_VERSION : 'r1';
+}
+
+// Split a seq's flags into row chips (signals) vs dossier-only context (notes):
+// risk flags and always-show annotations always chip; other annotations chip only
+// on a combo's cited seq (so the timeline shows exactly what a combo points at)
+// and otherwise drop to notes — this is what silences the 345x secret-touch noise.
+function splitFlags(flags: FlagId[], seq: number, comboSeqs: Set<number>): { signals: FlagId[]; notes: FlagId[] } {
+  const signals: FlagId[] = [];
+  const notes: FlagId[] = [];
+  for (const f of flags) {
+    if (RISK_FLAGS.has(f) || ALWAYS_SHOW_ANNOTATIONS.has(f) || (comboSeqs.has(seq) && ANNOTATION_FLAGS.has(f))) signals.push(f);
+    else notes.push(f);
+  }
+  return { signals, notes };
+}
 
 // A session's first non-null cwd is immutable (append-only store), so cache it
 // forever once found — this avoids re-scanning every session's events on each
@@ -120,24 +153,47 @@ export function sessionCards(store: Store): SessionCard[] {
   const head = headSeq(store);
   if (cardsCache && cardsCache.head === head) return cardsCache.cards;
 
-  const risk = new Map(store.sessionRiskAll(RULESET_VERSION).map((r) => [r.session_id, r]));
-  const cards: SessionCard[] = store.sessions().map((s) => {
+  // Merge r1 + r2 verdicts, preferring the highest ruleset per session — so cards
+  // never blank out in the window between an r2 bump and the backfill pass.
+  const risk = new Map<string, SessionRiskRow>();
+  for (const r of store.sessionRiskAll('r1')) risk.set(r.session_id, r);
+  for (const r of store.sessionRiskAll(RULESET_VERSION)) {
+    const prev = risk.get(r.session_id);
+    if (!prev || rulesetNum(r.ruleset_version) >= rulesetNum(prev.ruleset_version)) risk.set(r.session_id, r);
+  }
+  const cards: SessionCard[] = store
+    .sessions()
+    // Drop sessions with zero chat activity — ones that recorded only lifecycle
+    // markers (a lone SessionStart/SessionEnd, no tool use, no Stop, no subagent).
+    // Those are Claude Code sessions opened but never used; they only clutter the
+    // rail. `activity` is stripped here so the card wire shape is unchanged.
+    .filter((s) => s.activity > 0)
+    .map(({ activity: _activity, ...s }) => {
     const r = risk.get(s.session_id);
     // First non-null cwd in the session — the UI shows the project a session ran in.
     const cwd = sessionCwd(store, s.session_id);
     const name = sessionName(store, s.session_id);
     if (!r) {
-      return { ...s, verdict: 'unscored', score: 0, ruleset_version: RULESET_VERSION, combos: [], flags: {}, flagged: 0, cwd, name };
+      return { ...s, verdict: 'unscored', score: 0, ruleset_version: RULESET_VERSION, combos: [], flags: {}, annotations: {}, flagged: 0, cwd, name };
     }
-    const flags = safeParse<Record<string, number>>(r.rule_counts, {});
+    // Split the persisted rule_counts: RISK_FLAGS drive the "N flagged" badge;
+    // ANNOTATION_FLAGS stay as muted context (a truthful count, not 345).
+    const all = safeParse<Record<string, number>>(r.rule_counts, {});
+    const flags: Record<string, number> = {};
+    const annotations: Record<string, number> = {};
+    for (const [k, v] of Object.entries(all)) {
+      if (RISK_FLAGS.has(k as FlagId)) flags[k] = v;
+      else if (ANNOTATION_FLAGS.has(k as FlagId)) annotations[k] = v;
+    }
     const flagged = Object.values(flags).reduce((a, b) => a + b, 0);
     return {
       ...s,
       verdict: r.verdict,
       score: r.score,
       ruleset_version: r.ruleset_version,
-      combos: safeParse<ComboEvidence[]>(r.combos, []),
+      combos: safeArray<ComboEvidence>(r.combos),
       flags,
+      annotations,
       flagged,
       cwd,
       name,
@@ -155,15 +211,23 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
   if (cached && cached.head === head) return cached.actions;
 
   const events = store.eventsLight(sessionId);
-  const riskBySeq = new Map(store.riskForSession(sessionId, RULESET_VERSION).map((r) => [r.seq, r]));
+  const ruleset = resolveRuleset(store, sessionId);
+  const riskBySeq = new Map(store.riskForSession(sessionId, ruleset).map((r) => [r.seq, r]));
   const flagsFor = (seq: number): FlagId[] => safeParse<FlagId[]>(riskBySeq.get(seq)?.flags ?? null, []);
   const scoreFor = (seq: number): number => riskBySeq.get(seq)?.score ?? 0;
+  // Seqs a fired combo cites as evidence — an annotation on one of these is
+  // promoted from a dossier note to a visible row chip.
+  const comboSeqs = new Set<number>();
+  for (const c of safeArray<ComboEvidence>(store.sessionRisk(sessionId, ruleset)?.combos ?? null)) {
+    comboSeqs.add(c.antecedent_seq);
+    comboSeqs.add(c.consequent_seq);
+  }
 
   const open = new Map<string, Action>();
   const actions: Action[] = [];
 
   for (const e of events) {
-    const flags = flagsFor(e.seq);
+    const { signals, notes } = splitFlags(flagsFor(e.seq), e.seq, comboSeqs);
     if (isPre(e) && e.tool_use_id) {
       const a: Action = {
         key: e.tool_use_id,
@@ -178,7 +242,8 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
         success: null,
         duration_ms: null,
         redaction_count: e.redaction_count,
-        signals: [...flags],
+        signals: [...signals],
+        notes: [...notes],
         score: scoreFor(e.seq),
         prompt_id: e.prompt_id,
         agent_type: e.agent_type,
@@ -193,7 +258,8 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
       a.phase = e.phase;
       a.redaction_count += e.redaction_count;
       a.score = Math.max(a.score, scoreFor(e.seq));
-      for (const s of flags) if (!a.signals.includes(s)) a.signals.push(s);
+      for (const s of signals) if (!a.signals.includes(s)) a.signals.push(s);
+      for (const n of notes) if (!a.notes.includes(n)) a.notes.push(n);
       open.delete(e.tool_use_id);
     } else {
       actions.push({
@@ -209,7 +275,8 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
         success: e.success,
         duration_ms: e.duration_ms,
         redaction_count: e.redaction_count,
-        signals: flags,
+        signals,
+        notes,
         score: scoreFor(e.seq),
         prompt_id: e.prompt_id,
         agent_type: e.agent_type,
@@ -241,7 +308,7 @@ export function eventDetail(store: Store, seq: number): Record<string, unknown> 
       detail = e.detail;
     }
   }
-  const risk = store.riskForSession(e.session_id, RULESET_VERSION).find((r) => r.seq === seq);
+  const risk = store.riskForSession(e.session_id, resolveRuleset(store, e.session_id)).find((r) => r.seq === seq);
   return {
     seq: e.seq,
     event_id: e.event_id,
