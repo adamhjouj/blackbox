@@ -274,6 +274,18 @@ export class Store {
     return (this.db.prepare('SELECT * FROM events WHERE seq = ?').get(seq) as BlackboxEvent | undefined) ?? null;
   }
 
+  /** The transcript file path for a session (from any event's payload) — lets the
+   *  read layer resolve the human-readable session name. */
+  sessionTranscriptPath(sessionId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT json_extract(raw, '$.transcript_path') AS tp
+           FROM events WHERE session_id = ? AND raw LIKE '%transcript_path%' LIMIT 1`,
+      )
+      .get(sessionId) as { tp: string | null } | undefined;
+    return row?.tp ?? null;
+  }
+
   events(sessionId?: string): BlackboxEvent[] {
     if (sessionId) {
       return this.db

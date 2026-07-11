@@ -81,10 +81,12 @@ const PAGE_CSS = `  :root {
   .sess .live { color:var(--live); }
   .sess .proj { margin-top:2px; font-size:11.5px; color:var(--fg-3);
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sess .ssid { margin-top:1px; font-family:var(--mono); letter-spacing:.02em; opacity:.85; }
 
   /* summary */
   .summary { padding:22px 26px 18px; border-bottom:1px solid var(--line); }
-  .summary .sid { font-family:var(--mono); font-size:13px; color:var(--fg-2); word-break:break-all; }
+  .summary .sid { font-family:var(--mono); font-size:13px; color:var(--fg-2); word-break:break-all; display:flex; flex-wrap:wrap; align-items:baseline; gap:10px; }
+  .summary .sid .sname { font-family:var(--macro); font-weight:800; font-size:16px; letter-spacing:.02em; color:var(--fg); }
   .summary .sline { margin-top:8px; font-size:15px; color:var(--fg-2); font-variant-numeric:tabular-nums; }
   .summary .n { color:var(--fg); font-weight:600; }
   .summary .flag { color:var(--accent); font-weight:600; }
@@ -295,9 +297,11 @@ function fillCard(d, c){
   const keepEnter = d.className.includes('enter');
   d.textContent = '';
   d.className = 'sess' + (keepEnter ? ' enter' : '') + (c.session_id === current ? ' active' : '');
-  const top = el('div',{className:'top'}, el('span',{className:'id',title:c.session_id,textContent:c.session_id.slice(0,20)}));
+  const label = c.name || c.session_id.slice(0,20);
+  const top = el('div',{className:'top'}, el('span',{className:'id',title:c.session_id + (c.name ? ' — ' + c.name : ''),textContent:label}));
   if(c.flagged) top.append(el('span',{className:'fl',textContent:c.flagged+' flagged'}));
   d.append(top);
+  if(c.name) d.append(el('div',{className:'proj ssid',textContent:c.session_id.slice(0,20),title:c.session_id}));
   const rel = fmtRel(c.ended);
   const relEl = el('span',{className:rel===null?'live':'',textContent:rel===null?'live':rel});
   d._relEl = relEl; d._ended = c.ended;
@@ -414,7 +418,10 @@ function updateVerdict(actions){
   if(fp === fpVerdict) return;
   fpVerdict = fp;
   v.textContent = '';
-  v.append(el('div',{className:'sid'}, el('samp',{textContent:current})));
+  const sid = el('div',{className:'sid'});
+  if(card && card.name) sid.append(el('span',{className:'sname',textContent:card.name}), el('samp',{textContent:current}));
+  else sid.append(el('samp',{textContent:current}));
+  v.append(sid);
 
   const line = el('div',{className:'sline'});
   line.append(el('span',{className:'n',textContent:String(actions.length)}), ' actions');

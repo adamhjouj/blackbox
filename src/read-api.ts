@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { RULESET_VERSION, type FlagId } from './risk-rules';
 import type { Store } from './store';
 import type { BlackboxEvent } from './types';
@@ -44,6 +45,7 @@ export interface SessionCard {
   flags: Record<string, number>;
   flagged: number;
   cwd: string | null;
+  name: string | null; // human-readable session name (user /rename, else AI title)
 }
 
 const isPre = (e: BlackboxEvent): boolean => e.hook_event === 'PreToolUse';
@@ -79,6 +81,40 @@ function sessionCwd(store: Store, sessionId: string): string | null {
   return cwd;
 }
 
+/** Human-readable session name: the user's `/rename` (customTitle) if set, else
+ *  the AI-generated title (aiTitle), read from the session transcript. Cached
+ *  once found (names rarely change; a daemon restart re-resolves). */
+const nameCache = new Map<string, string>();
+function lastMatch(text: string, re: RegExp): string | null {
+  let m: RegExpExecArray | null;
+  let last: string | null = null;
+  while ((m = re.exec(text)) !== null) last = m[1] ?? null;
+  return last;
+}
+function sessionName(store: Store, sessionId: string): string | null {
+  const cached = nameCache.get(sessionId);
+  if (cached) return cached;
+  const tp = store.sessionTranscriptPath(sessionId);
+  if (!tp) return null;
+  let text: string;
+  try {
+    text = readFileSync(tp, 'utf8');
+  } catch {
+    return null;
+  }
+  const raw = lastMatch(text, /"customTitle":"((?:[^"\\]|\\.)*)"/g) ?? lastMatch(text, /"aiTitle":"((?:[^"\\]|\\.)*)"/g);
+  if (raw == null) return null;
+  let name = raw;
+  try {
+    name = JSON.parse(`"${raw}"`); // unescape any JSON escapes
+  } catch {
+    /* keep raw */
+  }
+  if (nameCache.size > 4096) nameCache.clear();
+  nameCache.set(sessionId, name);
+  return name;
+}
+
 /** Sessions with their persisted risk verdict, highest-risk first. */
 export function sessionCards(store: Store): SessionCard[] {
   const head = headSeq(store);
@@ -89,8 +125,9 @@ export function sessionCards(store: Store): SessionCard[] {
     const r = risk.get(s.session_id);
     // First non-null cwd in the session — the UI shows the project a session ran in.
     const cwd = sessionCwd(store, s.session_id);
+    const name = sessionName(store, s.session_id);
     if (!r) {
-      return { ...s, verdict: 'unscored', score: 0, ruleset_version: RULESET_VERSION, combos: [], flags: {}, flagged: 0, cwd };
+      return { ...s, verdict: 'unscored', score: 0, ruleset_version: RULESET_VERSION, combos: [], flags: {}, flagged: 0, cwd, name };
     }
     const flags = safeParse<Record<string, number>>(r.rule_counts, {});
     const flagged = Object.values(flags).reduce((a, b) => a + b, 0);
@@ -103,6 +140,7 @@ export function sessionCards(store: Store): SessionCard[] {
       flags,
       flagged,
       cwd,
+      name,
     };
   });
   cards.sort((a, b) => (VERDICT_RANK[a.verdict] ?? 5) - (VERDICT_RANK[b.verdict] ?? 5) || (a.ended < b.ended ? 1 : -1));
