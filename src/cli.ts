@@ -1,7 +1,10 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
+import { DEFAULT_PORT, startDaemon } from './daemon';
 import { normalize } from './normalize';
-import { resolveDb } from './paths';
+import { ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
 import { Store } from './store';
 import { verify } from './verify';
 
@@ -9,6 +12,9 @@ interface Args {
   _: string[];
   db?: string;
   session?: string;
+  port?: number;
+  foreground?: boolean;
+  captureOutput?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -17,15 +23,96 @@ function parseArgs(argv: string[]): Args {
     const a = argv[i];
     if (a === '--db') out.db = argv[++i] ?? out.db;
     else if (a === '--session') out.session = argv[++i];
+    else if (a === '--port') out.port = Number(argv[++i]);
+    else if (a === '--foreground') out.foreground = true;
+    else if (a === '--capture-output') out.captureOutput = true;
     else if (a === '-h' || a === '--help') out._.push('help');
     else out._.push(a as string);
   }
   return out;
 }
 
+interface PidInfo {
+  pid: number;
+  port: number;
+  db: string;
+  started: string;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function readPid(): PidInfo | null {
+  try {
+    return JSON.parse(readFileSync(pidPath(), 'utf8')) as PidInfo;
+  } catch {
+    return null;
+  }
+}
+function writePid(info: PidInfo): void {
+  ensureBlackboxDir();
+  writeFileSync(pidPath(), JSON.stringify(info));
+}
+function removePid(): void {
+  try {
+    unlinkSync(pidPath());
+  } catch {
+    /* already gone */
+  }
+}
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface Health {
+  ok: boolean;
+  pid: number;
+  port: number;
+  uptime_s: number;
+  count: number;
+  head_seq: number;
+  db: string;
+}
+function getHealth(port: number, timeoutMs = 1000): Promise<Health | null> {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: timeoutMs }, (res) => {
+      let d = '';
+      res.on('data', (c) => (d += c));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(d) as Health);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const h = await getHealth(port, 500);
+    if (h?.ok) return true;
+    await sleep(150);
+  }
+  return false;
+}
+
 const HELP = `blackbox — forensic recorder for AI coding agents (Phase 0)
 
 Usage:
+  blackbox start                 Start the localhost hook-receiver daemon (background)
+  blackbox stop                  Stop the daemon
+  blackbox status                Show daemon status
   blackbox ingest <file.jsonl>   Normalize raw hook payloads into the chained store
   blackbox verify                Verify the hash chain; report the first break
   blackbox head                  Print the current head anchor (seq, count, hash)
@@ -34,9 +121,12 @@ Usage:
   blackbox sessions              Summarize recorded sessions
 
 Options:
-  --db <path>        Store path (default: $BLACKBOX_DB or ./blackbox.db)
-  --session <id>     Filter to one session (list)
-  -h, --help         Show this help
+  --db <path>          Store path (default: $BLACKBOX_DB or ~/.blackbox/blackbox.db)
+  --port <n>           Daemon port (default: 7842)
+  --foreground         Run the daemon in the foreground (start)
+  --capture-output     Store tool output bodies (still redacted) instead of eliding to a hash
+  --session <id>       Filter to one session (list/audit)
+  -h, --help           Show this help
 
 Exit codes:
   0  success / chain intact
@@ -140,6 +230,104 @@ function cmdHead(args: Args): number {
   return 0;
 }
 
+async function cmdStart(args: Args): Promise<number> {
+  const db = resolveDb(args.db);
+  const port = args.port ?? DEFAULT_PORT;
+  const existing = readPid();
+  if (existing && isAlive(existing.pid)) {
+    console.log(`blackbox daemon already running (pid ${existing.pid}, port ${existing.port})`);
+    return 0;
+  }
+  if (existing) removePid(); // stale pid
+
+  if (args.foreground) {
+    ensureBlackboxDir();
+    let daemon;
+    try {
+      daemon = await startDaemon({ db, port, logFile: logPath(), captureOutput: args.captureOutput });
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      console.error(e.code === 'EADDRINUSE' ? `port ${port} is already in use` : `failed to start: ${e.message}`);
+      return 2;
+    }
+    writePid({ pid: process.pid, port: daemon.port, db, started: new Date().toISOString() });
+    console.log(`blackbox daemon listening on 127.0.0.1:${daemon.port} (db ${db})`);
+    return await new Promise<number>((resolve) => {
+      const shutdown = (): void => {
+        void daemon.close().then(() => {
+          removePid();
+          resolve(0);
+        });
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    });
+  }
+
+  // Background: re-spawn ourselves in --foreground, detached, logging to file.
+  ensureBlackboxDir();
+  const logFd = openSync(logPath(), 'a');
+  const childArgs = [process.argv[1] as string, 'start', '--foreground', '--db', db, '--port', String(port)];
+  if (args.captureOutput) childArgs.push('--capture-output');
+  const child = spawn(process.execPath, childArgs, { detached: true, stdio: ['ignore', logFd, logFd] });
+  child.unref();
+  if (!(await waitForHealth(port, 3000))) {
+    console.error(`daemon did not become healthy on port ${port} — check ${logPath()}`);
+    return 2;
+  }
+  console.log(`blackbox daemon started on 127.0.0.1:${port} (db ${db})`);
+  return 0;
+}
+
+async function cmdStop(_args: Args): Promise<number> {
+  const p = readPid();
+  if (!p) {
+    console.log('blackbox daemon not running');
+    return 0;
+  }
+  if (!isAlive(p.pid)) {
+    removePid();
+    console.log('blackbox daemon not running (removed stale pid)');
+    return 0;
+  }
+  try {
+    process.kill(p.pid, 'SIGTERM');
+  } catch {
+    /* raced with exit */
+  }
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && isAlive(p.pid)) await sleep(150);
+  if (isAlive(p.pid)) {
+    try {
+      process.kill(p.pid, 'SIGKILL');
+    } catch {
+      /* gone */
+    }
+  }
+  removePid();
+  console.log('blackbox daemon stopped');
+  return 0;
+}
+
+async function cmdStatus(_args: Args): Promise<number> {
+  const p = readPid();
+  if (!p || !isAlive(p.pid)) {
+    if (p) removePid();
+    console.log('blackbox daemon: not running');
+    return 3;
+  }
+  const h = await getHealth(p.port);
+  if (!h?.ok) {
+    console.log(`blackbox daemon: pid ${p.pid} alive but not responding on port ${p.port}`);
+    return 3;
+  }
+  console.log('blackbox daemon: running');
+  console.log(`  pid ${h.pid}  port ${h.port}  uptime ${h.uptime_s}s`);
+  console.log(`  db ${h.db}`);
+  console.log(`  ${h.count} event(s), head seq ${h.head_seq}`);
+  return 0;
+}
+
 function cmdAudit(args: Args): number {
   const store = new Store(resolveDb(args.db));
   const rows = store.events(args.session);
@@ -189,10 +377,16 @@ function cmdSessions(args: Args): number {
   return 0;
 }
 
-function main(): number {
+async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0];
   switch (cmd) {
+    case 'start':
+      return cmdStart(args);
+    case 'stop':
+      return cmdStop(args);
+    case 'status':
+      return cmdStatus(args);
     case 'ingest':
       return cmdIngest(args);
     case 'verify':
@@ -216,4 +410,4 @@ function main(): number {
   }
 }
 
-process.exit(main());
+void main().then((code) => process.exit(code));
