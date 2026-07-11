@@ -37,8 +37,23 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 function sendJson(res: http.ServerResponse, code: number, obj: unknown): void {
   const body = JSON.stringify(obj);
-  res.writeHead(code, { 'content-type': 'application/json' });
+  res.writeHead(code, { 'content-type': 'application/json', 'x-content-type-options': 'nosniff' });
   res.end(body);
+}
+
+/**
+ * Only requests whose Host is a loopback name are honored. Binding 127.0.0.1 is
+ * NOT enough: a DNS-rebinding page rebinds its own hostname to 127.0.0.1 and then
+ * reads the daemon same-origin (bypassing the Origin/Sec-Fetch checks). Rejecting
+ * any non-loopback Host header closes that hole.
+ */
+function isLoopbackHost(hostHeader: string): boolean {
+  if (!hostHeader) return false;
+  const h = hostHeader
+    .replace(/:\d+$/, '')
+    .replace(/^\[|\]$/g, '')
+    .toLowerCase();
+  return h === '127.0.0.1' || h === 'localhost' || h === '::1';
 }
 
 function readBody(req: http.IncomingMessage, maxBody: number): Promise<{ body: string; truncated: boolean }> {
@@ -182,6 +197,12 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
       try {
         const url = req.url ?? '';
         const path = url.split('?')[0] ?? '';
+        // Anti-DNS-rebinding: honor loopback Host names only.
+        if (!isLoopbackHost(hdr(req.headers, 'host'))) {
+          log(`rejected non-loopback Host: ${hdr(req.headers, 'host')}`);
+          sendJson(res, 403, { ok: false, error: 'bad host' });
+          return;
+        }
         if (req.method === 'GET' && (path === '/health' || path === '/healthz')) {
           const meta = store.chainMeta();
           sendJson(res, 200, {
@@ -197,7 +218,14 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
         }
         // The timeline UI (served to the local browser). No framing allowed.
         if (req.method === 'GET' && path === '/') {
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-frame-options': 'DENY', 'cache-control': 'no-store' });
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'x-frame-options': 'DENY',
+            'x-content-type-options': 'nosniff',
+            'content-security-policy':
+              "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+            'cache-control': 'no-store',
+          });
           res.end(renderPage());
           return;
         }
@@ -215,7 +243,14 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           }
           const ms = path.match(/^\/api\/session\/(.+)\/events$/);
           if (ms) {
-            sendJson(res, 200, sessionActions(store, decodeURIComponent(ms[1]!)));
+            let id: string;
+            try {
+              id = decodeURIComponent(ms[1]!);
+            } catch {
+              sendJson(res, 400, { ok: false, error: 'bad session id' });
+              return;
+            }
+            sendJson(res, 200, sessionActions(store, id));
             return;
           }
           const me = path.match(/^\/api\/event\/(\d+)$/);

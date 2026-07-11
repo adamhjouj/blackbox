@@ -33,10 +33,21 @@ export interface SessionCard {
 const isPre = (e: BlackboxEvent): boolean => e.hook_event === 'PreToolUse';
 const isPost = (e: BlackboxEvent): boolean => e.hook_event === 'PostToolUse' || e.hook_event === 'PostToolUseFailure';
 
+// The store is append-only, so any result is valid until head_seq advances. The
+// UI polls every few seconds; without this each poll re-scans the whole store
+// synchronously and can starve the /hook recording path. Caching by head_seq
+// makes an idle poll O(1).
+let cardsCache: { head: number; cards: SessionCard[] } | null = null;
+const actionsCache = new Map<string, { head: number; actions: Action[] }>();
+const headSeq = (store: Store): number => store.chainMeta()?.head_seq ?? 0;
+
 /** Sessions with per-session signal counts, newest activity first. */
 export function sessionCards(store: Store): SessionCard[] {
+  const head = headSeq(store);
+  if (cardsCache && cardsCache.head === head) return cardsCache.cards;
+
   const cards = store.sessions().map((s) => {
-    const events = store.events(s.session_id);
+    const events = store.eventsLight(s.session_id);
     const ctx = newCtx();
     const flags: Partial<Record<SignalKey, number>> = {};
     let flagged = 0;
@@ -48,12 +59,18 @@ export function sessionCards(store: Store): SessionCard[] {
     }
     return { ...s, flags, flagged };
   });
-  return cards.sort((a, b) => (a.ended < b.ended ? 1 : -1));
+  cards.sort((a, b) => (a.ended < b.ended ? 1 : -1));
+  cardsCache = { head, cards };
+  return cards;
 }
 
 /** The paired, signal-annotated timeline for one session. */
 export function sessionActions(store: Store, sessionId: string): Action[] {
-  const events = store.events(sessionId);
+  const head = headSeq(store);
+  const cached = actionsCache.get(sessionId);
+  if (cached && cached.head === head) return cached.actions;
+
+  const events = store.eventsLight(sessionId);
   const ctx = newCtx();
   const open = new Map<string, Action>();
   const actions: Action[] = [];
@@ -106,6 +123,9 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
       });
     }
   }
+  // Bound the per-session cache so many sessions don't leak memory.
+  if (actionsCache.size > 64) actionsCache.clear();
+  actionsCache.set(sessionId, { head, actions });
   return actions;
 }
 

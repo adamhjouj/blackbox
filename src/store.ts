@@ -5,6 +5,9 @@ import { EVENT_COLUMNS, type BlackboxEvent, type NormalizedEvent } from './types
 /** Current schema/hash-format version. Bump on any breaking hash-format change. */
 const SCHEMA_VERSION = 1;
 
+/** Every event column except the heavy `raw`, for the read/UI path. */
+const LIGHT_COLUMNS = EVENT_COLUMNS.filter((c) => c !== 'raw').join(', ');
+
 /** SQLite column type for each event column (used by ensureColumns migration). */
 const COLUMN_TYPES: Record<string, string> = {
   seq: 'INTEGER',
@@ -222,6 +225,21 @@ export class Store {
         .all(sessionId) as BlackboxEvent[];
     }
     return this.all();
+  }
+
+  /**
+   * Like events() but WITHOUT the heavy `raw` column — for the read/UI path,
+   * which needs only normalized fields + `detail` for signals. Cuts read-path
+   * memory by the size of the (potentially multi-MB) raw payloads.
+   */
+  eventsLight(sessionId?: string): BlackboxEvent[] {
+    const cols = LIGHT_COLUMNS;
+    if (sessionId) {
+      return this.db
+        .prepare(`SELECT ${cols} FROM events WHERE session_id = ? ORDER BY seq ASC`)
+        .all(sessionId) as BlackboxEvent[];
+    }
+    return this.db.prepare(`SELECT ${cols} FROM events ORDER BY seq ASC`).all() as BlackboxEvent[];
   }
 
   sessions(): SessionSummary[] {
