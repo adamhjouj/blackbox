@@ -12,19 +12,26 @@ V1 is **record + flag**: read-only, local-first, zero-config. Nothing leaves the
 
 ## Status — 2026-07-11
 
-**Done:** research + de-risking. All load-bearing platform assumptions verified empirically on this machine (macOS 26.5.1, Claude Code 2.1.206).
-**Not started:** any product code. There is no `package.json`, no store, no daemon yet — only docs and throwaway experiments.
-**Next:** Phase 0 (scaffold + schema + store + hash chain + verify). See below.
+**Done:** research/de-risk, **Phase 0** (tamper-evident store + hash chain + `verify`), and **Phase 1** (live-capture daemon + secret redaction + git forensics collector). blackbox now records real Claude Code sessions automatically. See `docs/PHASE0.md` and `docs/PHASE1.md`.
+**Next:** Phase 2 (timeline UI), then Phase 3 (risk rules), Phase 4 (report export).
+
+Try it: `npm install && npm run build && node dist/cli.js init && node dist/cli.js start`, then use Claude Code and `node dist/cli.js list`.
 
 ### Repo map
 ```
+src/                     The tool (TypeScript → dist/)
+  daemon.ts              127.0.0.1 hook-receiver (POST /hook, /git) + health
+  redact.ts, redact-rules.ts   fail-closed secret redaction
+  git-collector.ts, watch.ts   git ref-change ground truth + session correlation
+  init.ts                blackbox init/uninit (register hooks in ~/.claude/settings.json)
+  store.ts, hash.ts, verify.ts, types.ts, normalize.ts   the Phase-0 store + chain
+  cli.ts, paths.ts       CLI (init/watch/start/stop/status/ingest/verify/list/audit/sessions)
 docs/
   ARCHITECTURE.md        The full build plan (V1 scope, schema, storage, risk engine, roadmap)
+  PHASE0.md, PHASE1.md   What each shipped phase does + honest limits
   DAY1-FINDINGS.md       Verified hook behavior on 2.1.206 (the make-or-break test, passed)
   FORENSIC-COLLECTORS.md What we capture at each tier, how attribution works, what's deferred
-experiments/
-  day1-hooks/            Reproducible hook-reality test + real captured event fixtures
-  four-collectors-demo/  Live run (write→commit→delete→curl) through all 4 Tier-1 collectors
+experiments/             Reproducible hook-reality test, fixtures, four-collectors demo
 README.md                This file — orientation entry point
 ```
 
@@ -51,17 +58,15 @@ README.md                This file — orientation entry point
 
 ---
 
-## Next steps — Phase 0 (foundation / spine)
+## Next steps — Phase 2 onward
 
-Do in this order; build the trust anchor before feeding it real events.
-1. **Scaffold** the TS project — `package.json`, `tsconfig`, `better-sqlite3`, a `blackbox` CLI entrypoint.
-2. **Canonical event schema** as TS types — built against the real fixtures in `experiments/`. Bake in: raw payload stored verbatim, `pre`/`post`/`failure` phases, `tool_use_id` join key, `agent_id`/`prompt_id`, tolerant `tool_response`/`error` parsing.
-3. **SQLite store (WAL) + hash chain** — append-only; each row's hash includes the previous.
-4. **`blackbox verify`** — walk the chain, report the first break. (The demo money-shot.)
+Phases 0 and 1 are built (`docs/PHASE0.md`, `docs/PHASE1.md`). Remaining:
+- **Phase 2 — timeline UI** on `127.0.0.1`, reading the store; the flagged-session view is the growth artifact.
+- **Phase 3 — risk engine** — the 5 high-precision rules + combination highlighting over this event stream.
+- **Phase 4 — report export** — one-command Markdown incident report.
+- **Hardening follow-ups** — durable (redacting) spool + launchd auto-start so daemon-down loss is closed; `--global` git watch broader testing.
 
-Then Phase 1 wires the real hook receiver + normalizer (Pre/Post pairing by `tool_use_id`) + redaction into that store; Phase 2 the timeline UI; Phase 3 the 5 risk rules + combos; Phase 4 the report export.
-
-**Pending doc task:** `docs/ARCHITECTURE.md` still describes collectors loosely (pre-Tier-1 decision) and repeats the docs' `tool_output` field name — reconcile it with the decisions above during Phase 0 kickoff.
+**Pending doc task:** `docs/ARCHITECTURE.md` still describes collectors loosely (pre-Tier-1) and repeats the docs' `tool_output` field name — reconcile it with what shipped (see `docs/PHASE1.md`).
 
 ---
 
