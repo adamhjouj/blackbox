@@ -176,6 +176,18 @@ export function normalize(
     output_hash,
     output_size_bytes,
     redaction_count: hits.length,
-    detail: hits.length ? JSON.stringify({ redaction: hits.map(({ type, path, bytes }) => ({ type, path, bytes })) }) : null,
+    detail: buildDetail(hits, injection),
   };
+}
+
+/** Merge the capture-time facts (redaction summary + injection scan) into the
+ *  hashed `detail` column. null keeps the column hash-neutral. */
+function buildDetail(
+  hits: { type: string; path: string; bytes: number }[],
+  injection: { patterns: string[]; truncated: boolean; scanner_version: string } | null,
+): string | null {
+  const detail: Record<string, unknown> = {};
+  if (hits.length) detail.redaction = hits.map(({ type, path, bytes }) => ({ type, path, bytes }));
+  if (injection) detail.output_signals = { injection: injection.patterns, truncated: injection.truncated, scanner_version: injection.scanner_version };
+  return Object.keys(detail).length ? JSON.stringify(detail) : null;
 }

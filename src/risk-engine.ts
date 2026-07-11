@@ -1,6 +1,9 @@
-import { evaluateEvent, newRuleCtx, RULESET_VERSION, rulesFingerprint, type FlagId, type SessionRuleCtx } from './risk-rules';
+import { evaluateEvent, newRuleCtx, PUSH_SENDS, RULESET_VERSION, rulesFingerprint, type FlagId, type SessionRuleCtx } from './risk-rules';
 import type { RiskRow, SessionRiskRow, Store } from './store';
 import type { BlackboxEvent } from './types';
+
+/** Max seq gap for the temporal (non-data-linked) exfil variant to fire (MEDIUM). */
+const EXFIL_WINDOW = 20;
 
 export type Verdict = 'none' | 'low' | 'medium' | 'high';
 export type ComboId = 'exfil-chain';
@@ -96,13 +99,25 @@ export class RiskEngine {
     const fired: ComboFire[] = [];
     const send = hits.find((h) => h.flag === 'external-send');
     if (send && !state.combos.has('exfil-chain')) {
-      if (e.redaction_count > 0) {
-        // Direct variant: a secret was literally in the outbound payload.
-        const cf: ComboFire = { id: 'exfil-chain', severity: 'high', antecedent_seq: e.seq, consequent_seq: e.seq, note: 'secret in outbound payload' };
+      const ev = (send.evidence ?? {}) as { host?: string; secret?: string; via?: string };
+      if (ev.secret) {
+        // Data-linked: a sensitive FILE is being sent to an external host — the
+        // only near-zero-FP signal, so this is the HIGH case. (A redacted auth
+        // header on a legit API call is NOT this, and no longer fires.)
+        const ante = state.firstSecretTouchSeq !== null && state.firstSecretTouchSeq < e.seq ? state.firstSecretTouchSeq : e.seq;
+        const cf: ComboFire = { id: 'exfil-chain', severity: 'high', antecedent_seq: ante, consequent_seq: e.seq, note: 'sensitive file ' + ev.secret + ' sent to ' + (ev.host ?? 'external host') };
         state.combos.set('exfil-chain', cf);
         fired.push(cf);
-      } else if (state.firstSecretTouchSeq !== null && state.firstSecretTouchSeq < e.seq) {
-        const cf: ComboFire = { id: 'exfil-chain', severity: 'high', antecedent_seq: state.firstSecretTouchSeq, consequent_seq: e.seq, note: 'secret-touch then external send' };
+      } else if (
+        state.firstSecretTouchSeq !== null &&
+        state.firstSecretTouchSeq < e.seq &&
+        e.seq - state.firstSecretTouchSeq <= EXFIL_WINDOW &&
+        (PUSH_SENDS as string[]).includes(ev.via ?? '')
+      ) {
+        // Temporal correlation only (no proof the data flowed) → MEDIUM, not HIGH,
+        // and bounded to a short window + a push-type send. Avoids the "read .env
+        // then call an API" false alarm.
+        const cf: ComboFire = { id: 'exfil-chain', severity: 'medium', antecedent_seq: state.firstSecretTouchSeq, consequent_seq: e.seq, note: 'secret-touch then external send to ' + (ev.host ?? 'external host') + ' (temporal, unverified)' };
         state.combos.set('exfil-chain', cf);
         fired.push(cf);
       }
@@ -204,9 +219,13 @@ export function backfill(store: Store, ruleset = RULESET_VERSION): { sessions: n
   let sessions = 0;
   let events = 0;
   for (const sid of store.unscoredSessions(ruleset)) {
-    const v = rescoreSession(store, sid, ruleset);
-    sessions++;
-    events += v.last_scored_seq ? 1 : 0; // count of scored sessions is the useful metric
+    try {
+      const v = rescoreSession(store, sid, ruleset);
+      sessions++;
+      events += v.last_scored_seq ? 1 : 0;
+    } catch {
+      // One bad session must not abort the whole backfill pass.
+    }
   }
   return { sessions, events };
 }

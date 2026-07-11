@@ -66,13 +66,17 @@ const SENSITIVE_BASENAMES = [
   /^\.netrc$/,
   /^\.git-credentials$/,
   /^credentials(\.json)?$/,
-  /^secrets?(\..*)?$/,
+  // a secrets DATA file — not a source module named secrets.ts
+  /^secrets?(\.(json|ya?ml|env|txt|conf))?$/i,
 ];
 
 const SENSITIVE_SEGMENTS = /(^|\/)\.(aws|ssh|gnupg)(\/|$)/;
+// Committed placeholder templates — not real secrets, must not be secret-touch antecedents.
+const TEMPLATE = /\.(example|sample|template|dist)$/i;
 
 export function isSensitivePath(path: string): boolean {
-  if (SENSITIVE_SEGMENTS.test(path)) return true;
   const base = path.split('/').pop() ?? path;
+  if (TEMPLATE.test(base)) return false; // .env.example, config.template, …
+  if (SENSITIVE_SEGMENTS.test(path)) return true;
   return SENSITIVE_BASENAMES.some((re) => re.test(base));
 }

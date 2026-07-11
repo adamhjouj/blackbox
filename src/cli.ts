@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { DEFAULT_PORT, startDaemon } from './daemon';
+import { canonical } from './hash';
 import { init, uninit, versionWarning } from './init';
 import { normalize } from './normalize';
 import { backfill, computeSession, rescoreSession } from './risk-engine';
@@ -486,14 +487,32 @@ function cmdRescore(args: Args): number {
     }
     const sessionIds = args.session ? [args.session] : store.sessions().map((s) => s.session_id);
     if (args.check) {
+      // Compare the ENTIRE recomputed risk layer (verdict + score + combos +
+      // rule_counts + every per-event risk row) against what's stored — so a
+      // tampered per-event flag/evidence/rule_count is caught even if the final
+      // verdict is unchanged. canonical() neutralizes key ordering.
+      const jparse = (s: string | null, f: unknown): unknown => {
+        try {
+          return s ? JSON.parse(s) : f;
+        } catch {
+          return f;
+        }
+      };
       let mismatches = 0;
       for (const sid of sessionIds) {
-        const { verdict } = computeSession(store, sid);
-        const stored = store.sessionRisk(sid, ruleset);
-        const storedCombos = stored?.combos ? (JSON.parse(stored.combos) as unknown[]).length : 0;
-        if (!stored || stored.verdict !== verdict.verdict || stored.score !== verdict.score || storedCombos !== verdict.combos.length) {
+        const { verdict, risks } = computeSession(store, sid);
+        const recomputed = canonical({
+          v: verdict.verdict, s: verdict.score, combos: verdict.combos, rc: verdict.rule_counts, last: verdict.last_scored_seq,
+          risks: risks.map((r) => ({ seq: r.seq, score: r.score, flags: r.flags, evidence: r.evidence })),
+        });
+        const sr = store.sessionRisk(sid, ruleset);
+        const storedRisks = store.riskForSession(sid, ruleset).map((r) => ({ seq: r.seq, score: r.score, flags: jparse(r.flags, []), evidence: jparse(r.evidence, null) }));
+        const stored = sr
+          ? canonical({ v: sr.verdict, s: sr.score, combos: jparse(sr.combos, []), rc: jparse(sr.rule_counts, {}), last: sr.last_scored_seq, risks: storedRisks })
+          : null;
+        if (recomputed !== stored) {
           mismatches++;
-          console.error(`  ✗ ${sid.slice(0, 18)}: stored ${stored?.verdict ?? '(none)'} vs recomputed ${verdict.verdict}`);
+          console.error(`  ✗ ${sid.slice(0, 18)}: risk layer differs from recomputation`);
         }
       }
       console.log(mismatches ? `✗ ${mismatches}/${sessionIds.length} session(s) differ from recomputation` : `✓ all ${sessionIds.length} session(s) match recomputation`);
