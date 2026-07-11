@@ -123,6 +123,8 @@ const PAGE_CSS = `  :root {
     font-family:var(--mono); font-size:12.5px; color:var(--fg); }
   .c-tgt .dir  { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .c-tgt .base { flex:0 0 auto; white-space:nowrap; }
+  /* plain-English summary reads in the sans face, not mono */
+  .c-tgt .sum  { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--sans); color:var(--fg-1); }
   .c-sig  { flex:0 0 auto; display:flex; gap:5px; margin-left:10px; }
   .c-sig .tag { margin-left:0; }
   .c-dur  { flex:0 0 auto; margin-left:10px; font-family:var(--mono); font-size:11.5px; color:var(--fg-3); font-variant-numeric:tabular-nums; }
@@ -160,6 +162,15 @@ const PAGE_CSS = `  :root {
   .gline .gl { display:inline-block; min-width:76px; color:var(--fg-4); }
   .gline .del { color:var(--accent); }
   .derr { color:var(--accent); font-size:12.5px; }
+  /* plain-English explanation — the lead of the dossier */
+  .detail .exsum { font-size:13.5px; line-height:1.55; color:var(--fg-1); margin-bottom:10px; }
+  .detail .esteps { margin:0 0 8px; padding-left:20px; }
+  .detail .esteps li { font-size:12.5px; line-height:1.5; color:var(--fg-2); margin:3px 0; }
+  .detail .esteps li.edanger { color:var(--fg-1); }
+  .detail .esteps li.edanger::marker { color:var(--accent); }
+  .detail .danger { margin-top:6px; padding:9px 11px; background:var(--accent-wash); border:1px solid var(--accent-line); border-radius:var(--r2); }
+  .detail .danger .dwhat { font-size:12.5px; font-weight:600; color:var(--fg-hi); margin-bottom:3px; }
+  .detail .danger .dwhy { font-size:12px; line-height:1.5; color:var(--fg-2); }
 
   /* states */
   .empty { max-width:440px; margin:60px auto; padding:0 24px; text-align:center; color:var(--fg-3); }
@@ -184,8 +195,10 @@ const PAGE_CSS = `  :root {
 // Consumes: GET /health → {count, head_seq, port, db}; GET /api/sessions →
 // SessionCard[] {session_id, events, started, ended, failures, verdict, score,
 // combos[], flags{id→n}, annotations{id→n}, flagged, cwd}; GET /api/session/:id/events →
-// Action[] {key, seq, post_seq, ts, hook_event, type, tool, target, phase, success,
-// duration_ms, redaction_count, signals[], notes[], score, prompt_id, agent_type};
+// Action[] {key, seq, post_seq, ts, hook_event, type, tool, target, summary, phase,
+// success, duration_ms, redaction_count, signals[], notes[], score, prompt_id, agent_type};
+// `summary` is the plain-English one-liner shown on every row (agent's own
+// description when present, else synthesized from the command/target).
 // GET /api/event/:seq → full detail incl. risk + chain hashes (see read-api.ts).
 // All fields beyond the Phase-2 set are read defensively (missing → degraded
 // display, never a crash), so this page works against older daemons too.
@@ -410,17 +423,22 @@ function maybeDivider(a){
   tbody.append(el('div',{className:'turn',textContent:'turn '+turnN}));
 }
 
-// Type-aware target: file paths keep the basename (dir ellipsizes, base pinned);
-// commands tail-ellipsize so the verb survives. Full text is in the title attr.
+// Every row reads in plain English. File ops keep the path (dir ellipsizes, base
+// pinned) since the tool column already says Read/Write/Edit; everything else
+// shows the plain-English summary (the agent's own description, else synthesized)
+// so a shell command or MCP call is legible at a glance. Raw text is in the title
+// attr and the expanded dossier.
 function targetCell(a){
-  const c = el('div',{className:'c-tgt',title:a.target||''});
   const t = a.target || '';
   const isPath = a.type==='file_read' || a.type==='file_write' || a.type==='file_edit';
+  const c = el('div',{className:'c-tgt',title:t || a.summary || ''});
   const i = t.lastIndexOf('/');
   if(isPath && i >= 0 && i < t.length-1){
     c.append(el('span',{className:'dir',textContent:t.slice(0,i+1)}), el('span',{className:'base',textContent:t.slice(i+1)}));
+  } else if(isPath && t){
+    c.append(el('span',{className:'base',textContent:t}));
   } else {
-    c.append(el('span',{className:'dir',textContent:t}));
+    c.append(el('span',{className:'sum',textContent:(a.summary||t).split(String.fromCharCode(96)).join('')}));
   }
   return c;
 }
@@ -537,9 +555,29 @@ async function insertDetail(seq, row){
   box.append(el('div',{className:'kv'},
     el('b',{textContent:(d.tool_name||d.hook_event)}), ' · '+idbits.filter(Boolean).join(' · ')));
 
-  // risk first: it answers "why is this flagged"
+  // plain English FIRST — a forensic record no one can read is useless. The
+  // agent's action in words, then the specific dangers, then the raw jargon.
+  const ex = d.explanation;
+  if(ex && ex.summary){
+    box.append(el('div',{className:'exsum'}, ex.summary));
+    if(Array.isArray(ex.steps) && ex.steps.length){
+      const ol = el('ol',{className:'esteps'});
+      ex.steps.forEach(s=>ol.append(el('li',{className:(s&&s.danger)?'edanger':'',textContent:(s&&s.text)||''})));
+      box.append(ol);
+    }
+  }
+  if(ex && Array.isArray(ex.dangers) && ex.dangers.length){
+    box.append(secLabel('why this is risky'));
+    for(const dg of ex.dangers){
+      box.append(el('div',{className:'danger'},
+        el('div',{className:'dwhat',textContent:(dg&&dg.what)||''}),
+        el('div',{className:'dwhy',textContent:(dg&&dg.why)||''})));
+    }
+  }
+
+  // the technical risk chips (the machine's view, for skeptics)
   if(d.risk && (d.risk.score || (d.risk.flags||[]).length)){
-    box.append(secLabel('risk'));
+    box.append(secLabel('risk signals'));
     const r = gline('score', String(d.risk.score||0));
     (d.risk.flags||[]).forEach(f=>r.append(tag(f)));
     box.append(r);

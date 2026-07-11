@@ -150,6 +150,11 @@ export function normalize(
       : {};
   const action = toActionType(toolName, redactedInput);
 
+  // The agent's own one-line description of the call (Claude Code attaches one to
+  // Bash and some tools). Captured as a fact so the timeline can read in plain
+  // English without re-reading the raw payload per row.
+  const description = typeof redactedInput.description === 'string' ? redactedInput.description.trim() : null;
+
   const str = (k: string) => (typeof payload[k] === 'string' ? (payload[k] as string) : null);
 
   return {
@@ -176,18 +181,20 @@ export function normalize(
     output_hash,
     output_size_bytes,
     redaction_count: hits.length,
-    detail: buildDetail(hits, injection),
+    detail: buildDetail(hits, injection, description),
   };
 }
 
-/** Merge the capture-time facts (redaction summary + injection scan) into the
- *  hashed `detail` column. null keeps the column hash-neutral. */
+/** Merge the capture-time facts (redaction summary + injection scan + the agent's
+ *  own description) into the hashed `detail` column. null keeps it hash-neutral. */
 function buildDetail(
   hits: { type: string; path: string; bytes: number }[],
   injection: { patterns: string[]; truncated: boolean; scanner_version: string } | null,
+  description: string | null,
 ): string | null {
   const detail: Record<string, unknown> = {};
   if (hits.length) detail.redaction = hits.map(({ type, path, bytes }) => ({ type, path, bytes }));
   if (injection) detail.output_signals = { injection: injection.patterns, truncated: injection.truncated, scanner_version: injection.scanner_version };
+  if (description) detail.description = description;
   return Object.keys(detail).length ? JSON.stringify(detail) : null;
 }

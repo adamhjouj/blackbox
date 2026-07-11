@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { actionSummary, explainEvent } from './explain';
 import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
 import type { SessionRiskRow, Store } from './store';
 import type { BlackboxEvent } from './types';
@@ -14,6 +15,7 @@ export interface Action {
   type: string;
   tool: string | null;
   target: string | null;
+  summary: string; // plain-English one-liner for the row (agent description, else synthesized)
   phase: string;
   success: 0 | 1 | null;
   duration_ms: number | null;
@@ -91,6 +93,14 @@ function resolveRuleset(store: Store, sessionId: string): RulesetVersion {
 // risk flags and always-show annotations always chip; other annotations chip only
 // on a combo's cited seq (so the timeline shows exactly what a combo points at)
 // and otherwise drop to notes — this is what silences the 345x secret-touch noise.
+// The agent's own description, captured into `detail` at record time (light — no
+// raw payload read). Older events won't have it; the summary then synthesizes.
+function eventDescription(e: BlackboxEvent): string | null {
+  if (!e.detail) return null;
+  const d = safeParse<{ description?: unknown }>(e.detail, {});
+  return typeof d.description === 'string' ? d.description : null;
+}
+
 function splitFlags(flags: FlagId[], seq: number, comboSeqs: Set<number>): { signals: FlagId[]; notes: FlagId[] } {
   const signals: FlagId[] = [];
   const notes: FlagId[] = [];
@@ -238,6 +248,7 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
         type: e.action_type,
         tool: e.tool_name,
         target: e.target,
+        summary: actionSummary(e.action_type, e.target, e.tool_name, eventDescription(e)),
         phase: e.phase,
         success: null,
         duration_ms: null,
@@ -271,6 +282,7 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
         type: e.action_type,
         tool: e.tool_name,
         target: e.target,
+        summary: actionSummary(e.action_type, e.target, e.tool_name, eventDescription(e)),
         phase: e.phase,
         success: e.success,
         duration_ms: e.duration_ms,
@@ -309,6 +321,11 @@ export function eventDetail(store: Store, seq: number): Record<string, unknown> 
     }
   }
   const risk = store.riskForSession(e.session_id, resolveRuleset(store, e.session_id)).find((r) => r.seq === seq);
+  const flags = risk ? safeParse<FlagId[]>(risk.flags, []) : [];
+  // The redacted tool_input drives the plain-English explanation (and carries
+  // extras like `dangerouslyDisableSandbox`). Re-derived at read time, never stored.
+  const rawInput = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).tool_input : null;
+  const explanation = explainEvent(e, flags, rawInput && typeof rawInput === 'object' ? (rawInput as Record<string, unknown>) : null);
   return {
     seq: e.seq,
     event_id: e.event_id,
@@ -324,6 +341,7 @@ export function eventDetail(store: Store, seq: number): Record<string, unknown> 
     output_hash: e.output_hash,
     output_size_bytes: e.output_size_bytes,
     redaction_count: e.redaction_count,
+    explanation,
     raw,
     detail,
     risk: risk ? { score: risk.score, flags: safeParse<string[]>(risk.flags, []), evidence: safeParse<unknown>(risk.evidence, null) } : null,
