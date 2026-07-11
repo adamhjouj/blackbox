@@ -3,16 +3,16 @@
  * No framework, no build step. ALL recorded data is rendered via textContent /
  * DOM construction (never innerHTML with interpolation), so an agent's recorded
  * command/path strings cannot inject script into the viewer (stored-XSS safe).
+ *
+ * The page is authored as module-level constants (CSS + client JS) concatenated
+ * in renderPage(). Rules for the string contents:
+ *  - CLIENT_JS uses '...' + concatenation only — no backticks/nested templates.
+ *  - No `${` may appear in the emitted output except the intended interpolations
+ *    in the skeleton below (gated in verification).
+ *  - Literal UTF-8 glyphs over escape sequences; keep `\\` doublings as-is.
  */
-export function renderPage(): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>blackbox</title>
-<style>
-  :root {
+
+const PAGE_CSS = `  :root {
     --bg:#0e1116; --panel:#161b22; --line:#232a33; --fg:#d6dde6; --dim:#8b96a3;
     --red:#ff6b6b; --amber:#e3b341; --blue:#6cb6ff; --green:#57ab5a; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
   }
@@ -52,16 +52,13 @@ export function renderPage(): string {
   .kv b { color:var(--fg); font-weight:600; }
   .empty { padding:40px; color:var(--dim); text-align:center; }
   .ok { color:var(--green); } .fail { color:var(--red); } .warn { color:var(--amber); }
-</style>
-</head>
-<body>
-<header><b>blackbox</b> <span class="sub" id="sub">forensic timeline · reading ~/.blackbox</span></header>
-<div class="wrap">
-  <aside id="sessions"><div class="empty">loading…</div></aside>
-  <main id="timeline"><div class="empty">select a session</div></main>
-</div>
-<script>
-const SIG = {
+`;
+
+// Consumes: GET /api/sessions → SessionCard[] {session_id, events, started, ended,
+// failures, flags, flagged}; GET /api/session/:id/events → Action[] {key, seq,
+// post_seq, ts, hook_event, type, tool, target, phase, success, duration_ms,
+// redaction_count, signals[]}; GET /api/event/:seq → full detail (see read-api.ts).
+const CLIENT_JS = `const SIG = {
   'failed':{t:'failed',c:'red'}, 'secret-touch':{t:'secret',c:'amber'},
   'destructive-git':{t:'destructive-git',c:'red'}, 'dangerous-shell':{t:'dangerous-shell',c:'red'},
   'new-mcp-server':{t:'new-mcp',c:'blue'},
@@ -139,7 +136,26 @@ async function insertDetail(seq, row, tb){
 async function render(){ await loadSessions(); await loadTimeline(); }
 render();
 setInterval(render, 3000);  // auto-refresh so a live session fills in
-</script>
+`;
+
+export function renderPage(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>blackbox</title>
+<style>
+${PAGE_CSS}</style>
+</head>
+<body>
+<header><b>blackbox</b> <span class="sub" id="sub">forensic timeline · reading ~/.blackbox</span></header>
+<div class="wrap">
+  <aside id="sessions"><div class="empty">loading…</div></aside>
+  <main id="timeline"><div class="empty">select a session</div></main>
+</div>
+<script>
+${CLIENT_JS}</script>
 </body>
 </html>`;
 }
