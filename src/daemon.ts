@@ -1,6 +1,16 @@
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import http from 'node:http';
+import {
+  Correlator,
+  classify,
+  commitMeta,
+  diffstat,
+  normalizeGit,
+  parseRefLines,
+  resolveRepoTop,
+} from './git-collector';
 import { normalize } from './normalize';
+import { configPath } from './paths';
 import { Store } from './store';
 
 export interface DaemonOptions {
@@ -58,6 +68,19 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
   const store = new Store(opts.db);
   const startedAt = Date.now();
+  const correlator = new Correlator();
+
+  let configToken = '';
+  try {
+    configToken = (JSON.parse(readFileSync(configPath(), 'utf8')) as { token?: string }).token ?? '';
+  } catch {
+    /* no config yet — accept unauthenticated git events (local-trust) */
+  }
+
+  const hdr = (h: http.IncomingHttpHeaders, k: string): string => {
+    const v = h[k];
+    return Array.isArray(v) ? (v[0] ?? '') : (v ?? '');
+  };
 
   const log = (msg: string): void => {
     const line = `${new Date().toISOString()} ${msg}\n`;
@@ -93,7 +116,44 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
       log('drop: non-object payload');
       return;
     }
+    // Feed correlation state (session cwd + recent git Bash calls) before recording.
+    try {
+      correlator.observe(payload, Date.now());
+    } catch {
+      /* correlation is best-effort */
+    }
     store.append(normalize(payload, capturedAt, { captureOutput: opts.captureOutput }));
+  };
+
+  const recordGit = (headers: http.IncomingHttpHeaders, body: string): void => {
+    if (configToken && hdr(headers, 'x-bb-token') !== configToken) {
+      log('git: token mismatch — dropped');
+      return;
+    }
+    const cwd = hdr(headers, 'x-bb-cwd');
+    if (!cwd) {
+      log('git: missing cwd header');
+      return;
+    }
+    const repoTop = resolveRepoTop(cwd);
+    if (!repoTop) {
+      log(`git: cannot resolve repo for ${cwd}`);
+      return;
+    }
+    const now = Date.now();
+    const capturedAt = new Date().toISOString();
+    for (const delta of parseRefLines(body)) {
+      try {
+        const cls = classify(repoTop, delta);
+        const diff = diffstat(repoTop, delta);
+        const commit = cls.is_delete ? null : commitMeta(repoTop, delta.new);
+        const correlation = correlator.correlate(repoTop, cls, now);
+        store.append(normalizeGit({ repoTop, delta, cls, diff, commit, correlation, rawBody: body, capturedAt }));
+      } catch (err) {
+        // enrichment failure degrades a column, never drops the collector
+        log(`git: enrichment failed for ${delta.ref}: ${(err as Error).message}`);
+      }
+    }
   };
 
   const server = http.createServer((req, res) => {
@@ -121,6 +181,16 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           } catch (err) {
             // never let an append failure surface as a hook error
             log(`append error: ${(err as Error).message}`);
+          }
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        if (req.method === 'POST' && path === '/git') {
+          const { body } = await readBody(req, maxBody);
+          try {
+            recordGit(req.headers, body);
+          } catch (err) {
+            log(`git error: ${(err as Error).message}`);
           }
           sendJson(res, 200, { ok: true });
           return;

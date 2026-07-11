@@ -5,6 +5,7 @@ import http from 'node:http';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { init, uninit, versionWarning } from './init';
 import { normalize } from './normalize';
+import { unwatchGlobal, unwatchRepo, watchGlobal, watchRepo } from './watch';
 import { ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
 import { Store } from './store';
 import { verify } from './verify';
@@ -16,6 +17,7 @@ interface Args {
   port?: number;
   foreground?: boolean;
   captureOutput?: boolean;
+  global?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -27,6 +29,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--port') out.port = Number(argv[++i]);
     else if (a === '--foreground') out.foreground = true;
     else if (a === '--capture-output') out.captureOutput = true;
+    else if (a === '--global') out.global = true;
     else if (a === '-h' || a === '--help') out._.push('help');
     else out._.push(a as string);
   }
@@ -113,6 +116,8 @@ const HELP = `blackbox — forensic recorder for AI coding agents (Phase 0)
 Usage:
   blackbox init                  Register blackbox hooks in ~/.claude/settings.json
   blackbox uninit                Remove blackbox hooks from ~/.claude/settings.json
+  blackbox watch [repo]          Install git forensics hooks in a repo (--global for all repos)
+  blackbox unwatch [repo]        Remove git forensics hooks (--global to disable global)
   blackbox start                 Start the localhost hook-receiver daemon (background)
   blackbox stop                  Stop the daemon
   blackbox status                Show daemon status
@@ -230,6 +235,33 @@ function cmdHead(args: Args): number {
     return 0;
   }
   console.log(`seq ${meta.head_seq}  count ${meta.count}  head ${meta.head_hash}`);
+  return 0;
+}
+
+function cmdWatch(args: Args): number {
+  if (args.global) {
+    const r = watchGlobal();
+    console.log(`global git watching enabled (core.hooksPath = ${r.hooksDir})`);
+    if (r.priorHooksPath) console.log(`  chaining to your prior hooksPath: ${r.priorHooksPath}`);
+    return 0;
+  }
+  const repo = args._[1] ?? process.cwd();
+  const r = watchRepo(repo);
+  console.log(`watching ${r.repoTop}:`);
+  for (const [name, action] of Object.entries(r.actions)) console.log(`  ${name}: ${action}`);
+  return 0;
+}
+
+function cmdUnwatch(args: Args): number {
+  if (args.global) {
+    const r = unwatchGlobal();
+    console.log(`global git watching disabled${r.restored ? ` (restored hooksPath ${r.restored})` : ''}`);
+    return 0;
+  }
+  const repo = args._[1] ?? process.cwd();
+  const r = unwatchRepo(repo);
+  console.log(`unwatched ${r.repoTop}:`);
+  for (const [name, action] of Object.entries(r.actions)) console.log(`  ${name}: ${action}`);
   return 0;
 }
 
@@ -410,6 +442,10 @@ async function main(): Promise<number> {
       return cmdInit(args);
     case 'uninit':
       return cmdUninit(args);
+    case 'watch':
+      return cmdWatch(args);
+    case 'unwatch':
+      return cmdUnwatch(args);
     case 'start':
       return cmdStart(args);
     case 'stop':
