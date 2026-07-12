@@ -71,7 +71,7 @@ const PAGE_CSS = `  :root {
   .railhead { flex:none; display:flex; align-items:baseline; justify-content:space-between;
     padding:14px 16px 8px; font-size:11px; color:var(--fg-4); letter-spacing:.04em; text-transform:uppercase; }
   #sessions { flex:1; overflow:auto; min-height:0; padding:2px 8px 14px; }
-  main { flex:1; overflow:auto; min-width:0; }
+  main { flex:1; overflow:auto; min-width:0; position:relative; }   /* offset parent for turn-jump's offsetTop math */
 
   /* session rows */
   .sess { padding:9px 11px; border-radius:var(--r2); cursor:pointer; margin-bottom:1px;
@@ -359,6 +359,7 @@ const turnHeadByKey = new Map();  // prompt_id → .turnhead element
 let curTurnKey = null;            // prompt_id the rows are currently appended under
 let _rz = 0;                      // rAF handle for the debounced --turntop remeasure
 let flagCursor = -1;              // next-flag cursor into the flagged rows (seeded from the viewport, then steps)
+let turnCursor = -1;              // turn-jump cursor into the turn headers (seeded from the pinned turn, then steps)
 let haveSessions = false, lastHealth = null, lastHead = null;
 const sessEls = new Map();    // session_id -> rail row element
 const cardsById = new Map();  // session_id -> latest SessionCard
@@ -419,7 +420,7 @@ function select(id){
   fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
   fpStory = null; storyOpen = new Set();
   lastPrompt = null; turnN = 0;
-  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false; flagCursor = -1;
+  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false; flagCursor = -1; turnCursor = -1;
   for(const [sid, d] of sessEls) d.classList.toggle('active', sid === current);
   loadView().catch(()=>{});
 }
@@ -429,10 +430,10 @@ function loadView(){ return viewMode === 'story' ? loadStory() : loadTimeline();
 function setView(mode){
   if(viewMode === mode) return;
   viewMode = mode;
-  // reset both views' render state so the switch repaints cleanly from cache
+  // reset every view's render state so the switch repaints cleanly from cache
   fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
   fpStory = null; lastPrompt = null; turnN = 0;
-  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false; flagCursor = -1;
+  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false; flagCursor = -1; turnCursor = -1;
   document.getElementById('timeline').textContent = '';
   loadView().catch(()=>{});
 }
@@ -767,18 +768,18 @@ function buildFilterBar(main){
   const bar = el('div',{className:'filterbar',role:'search'});
 
   flaggedBtn = el('button',{type:'button',className:'fb-toggle',title:'show only flagged actions',
-    textContent:'flagged', onclick:()=>{ fltFlagged = !fltFlagged; flagCursor = -1; syncFlagged(); applyFilter(); }});
+    textContent:'flagged', onclick:()=>{ fltFlagged = !fltFlagged; flagCursor = -1; turnCursor = -1; syncFlagged(); applyFilter(); }});
   bar.append(flaggedBtn);
 
   toolOpts = new Set(['']);
   toolSel = el('select',{className:'fb-tool',title:'filter by tool',
-    onchange:()=>{ fltTool = toolSel.value; flagCursor = -1; applyFilter(); }});
+    onchange:()=>{ fltTool = toolSel.value; flagCursor = -1; turnCursor = -1; applyFilter(); }});
   toolSel.append(el('option',{value:'',textContent:'all tools'}));
   bar.append(toolSel);
 
   searchBox = el('input',{type:'search',className:'fb-search',placeholder:'search summary or target…',
     value:fltText, spellcheck:false,
-    oninput:()=>{ fltText = searchBox.value.trim().toLowerCase(); flagCursor = -1; applyFilter(); }});
+    oninput:()=>{ fltText = searchBox.value.trim().toLowerCase(); flagCursor = -1; turnCursor = -1; applyFilter(); }});
   bar.append(searchBox);
 
   jumpBtn = el('button',{type:'button',className:'fb-jump',title:'jump to next flagged action · press n',
@@ -856,13 +857,18 @@ function gotoTurn(dir){
   const main = document.getElementById('timeline');
   if(!main) return;
   const vis = turns.filter(t=> t.hdr.style.display !== 'none');   // skip filtered-out headers
-  if(!vis.length) return;
+  if(!vis.length){ turnCursor = -1; return; }
   const top = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--turntop')) || 38;
-  const fold = main.getBoundingClientRect().top + top + 6;   // tolerance > the header's 4px scroll-margin so the just-jumped turn counts as pinned and the next press advances
-  let idx = -1;   // last header at/above the fold = the pinned turn; -1 = above the first
-  for(let i=0;i<vis.length;i++){ if(vis[i].hdr.getBoundingClientRect().top <= fold) idx = i; else break; }
-  const ni = Math.max(0, Math.min(vis.length-1, idx + dir));
-  vis[ni].hdr.scrollIntoView({block:'start', behavior:'smooth'});
+  if(turnCursor < 0 || turnCursor >= vis.length){
+    // cold press: seed from the turn currently pinned at the fold so the first press moves from the view;
+    // then step via the cursor (immune to smooth-scroll timing, unlike re-deriving position each press)
+    const fold = main.getBoundingClientRect().top + top + 6;
+    let idx = -1; for(let i=0;i<vis.length;i++){ if(vis[i].hdr.getBoundingClientRect().top <= fold) idx = i; else break; }
+    turnCursor = idx;
+  }
+  turnCursor = Math.max(0, Math.min(vis.length-1, turnCursor + dir));
+  // scroll by layout offset, NOT scrollIntoView (which mishandles a stacked sticky header scrolling up)
+  main.scrollTo({ top: Math.max(0, vis[turnCursor].hdr.offsetTop - top - 4), behavior:'smooth' });
 }
 window.addEventListener('resize', ()=>{ cancelAnimationFrame(_rz); _rz = requestAnimationFrame(measureTurnTop); });
 
