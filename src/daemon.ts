@@ -9,7 +9,8 @@ import {
   parseRefLines,
   resolveRepoTop,
 } from './git-collector';
-import { normalize } from './normalize';
+import { sessionAnchor } from './mutation';
+import { normalize, normalizeAndCapture } from './normalize';
 import { configPath } from './paths';
 import { eventDetail, sessionActions, sessionCards } from './read-api';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
@@ -175,7 +176,12 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     } catch {
       /* correlation is best-effort */
     }
-    scoreAndPersist(store.append(normalize(payload, capturedAt, { captureOutput: opts.captureOutput })));
+    // Record the git anchor once per session (SessionStart/SessionEnd) — off the
+    // per-tool path, so tool-call hook latency is unaffected. Guarded internally.
+    const he = typeof payload.hook_event_name === 'string' ? payload.hook_event_name : '';
+    const anchor = he === 'SessionStart' || he === 'SessionEnd' ? sessionAnchor(typeof payload.cwd === 'string' ? payload.cwd : null) : null;
+    const { event, blob } = normalizeAndCapture(payload, capturedAt, { captureOutput: opts.captureOutput, anchor });
+    scoreAndPersist(store.append(event, blob));
   };
 
   const recordGit = (headers: http.IncomingHttpHeaders, body: string): void => {

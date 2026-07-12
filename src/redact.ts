@@ -106,6 +106,23 @@ function redactString(s: string, path: string, hits: RedactionHit[], opts: Redac
   return out;
 }
 
+/**
+ * Redact a standalone text blob (a captured patch hunk or file body) with the
+ * SAME rules the payload walk uses. This is the fail-closed gate every mutation
+ * patch/body passes through before it is content-addressed and persisted — the
+ * source strings are already redacted upstream (the tool_input walk), so this is
+ * defense-in-depth that also catches any cross-line recombination in an assembled
+ * hunk. Never throws: on an internal error the whole text is dropped to a hash.
+ */
+export function redactText(s: string, opts: RedactOptions = {}): { text: string; hits: RedactionHit[] } {
+  const hits: RedactionHit[] = [];
+  try {
+    return { text: redactString(s, 'content', hits, opts), hits };
+  } catch {
+    return { text: PLACEHOLDER('redactor-error'), hits: [{ type: 'redactor-error', path: 'content', hash: hashString(s), bytes: Buffer.byteLength(s, 'utf8') }] };
+  }
+}
+
 function walk(value: unknown, path: string, hits: RedactionHit[], opts: RedactOptions): unknown {
   if (typeof value === 'string') return redactString(value, path, hits, opts);
   if (Array.isArray(value)) return value.map((v, i) => walk(v, `${path}[${i}]`, hits, opts));

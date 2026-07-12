@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { GENESIS, hashEvent } from './hash';
+import type { BlobInput } from './mutation';
 import { EVENT_COLUMNS, type BlackboxEvent, type NormalizedEvent } from './types';
 
 /** Current schema/hash-format version. Bump on any breaking hash-format change. */
@@ -114,6 +115,25 @@ CREATE TABLE IF NOT EXISTS session_risk (
 );
 `;
 
+/**
+ * Content-addressed mutation EVIDENCE. NOT part of the hash chain: the immutable
+ * event commits to `content_hash` (in its hashed `detail.mutation`), and the bytes
+ * live here keyed by that same hash — self-verifying (bytes must hash to their key)
+ * and prunable. `verify()` reads only `events`+`chain_meta`, never this table, so
+ * dropping content is byte-identical to the chain. `prune` nulls `content` and sets
+ * `pruned_at`, keeping the row as a tombstone (hash+size+diffstat survive forever).
+ */
+const BLOB_SCHEMA = `
+CREATE TABLE IF NOT EXISTS blobs (
+  content_hash TEXT    NOT NULL PRIMARY KEY,
+  content      TEXT,
+  bytes        INTEGER NOT NULL,
+  encoding     TEXT    NOT NULL,
+  created_at   TEXT    NOT NULL,
+  pruned_at    TEXT
+);
+`;
+
 export interface ChainMeta {
   count: number;
   head_seq: number;
@@ -140,6 +160,16 @@ export interface SessionRiskRow {
   last_scored_seq: number;
   rules_hash: string;
   computed_at: string;
+}
+
+export interface BlobRow {
+  content_hash: string;
+  /** Redacted patch/body bytes; null once pruned (the row survives as a tombstone). */
+  content: string | null;
+  bytes: number;
+  encoding: string;
+  created_at: string;
+  pruned_at: string | null;
 }
 
 export interface SessionSummary {
@@ -194,6 +224,7 @@ export class Store {
     this.db.exec(SCHEMA);
     this.ensureColumns();
     this.db.exec(RISK_SCHEMA);
+    this.db.exec(BLOB_SCHEMA);
     this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -231,11 +262,14 @@ export class Store {
   }
 
   /**
-   * Assign chain fields (seq, prev_hash, hash), append the event, and advance the
-   * head anchor — all in one BEGIN IMMEDIATE transaction, so the head read, the
-   * insert, and the anchor update are atomic even under concurrent writers.
+   * Assign chain fields (seq, prev_hash, hash), append the event, advance the head
+   * anchor, and (optionally) persist the mutation-evidence blob — all in one BEGIN
+   * IMMEDIATE transaction. The blob is content-addressed (INSERT OR IGNORE dedupes
+   * identical bodies), and its key equals `detail.mutation.content_hash` because
+   * both come from the same captureMutation() call. The blob is a separate,
+   * un-hashed row; it never enters the chain, so verify() is unaffected by it.
    */
-  append(e: NormalizedEvent): BlackboxEvent {
+  append(e: NormalizedEvent, blob?: BlobInput | null): BlackboxEvent {
     // INSERT column list is derived from EVENT_COLUMNS so it can never drift
     // from the schema / hashed column set.
     const insertEvent = this.db.prepare(
@@ -246,8 +280,12 @@ export class Store {
       `INSERT INTO chain_meta (id, count, head_seq, head_hash) VALUES (1, @count, @seq, @hash)
        ON CONFLICT(id) DO UPDATE SET count = @count, head_seq = @seq, head_hash = @hash`,
     );
+    const insertBlob = this.db.prepare(
+      `INSERT OR IGNORE INTO blobs (content_hash, content, bytes, encoding, created_at)
+       VALUES (@content_hash, @content, @bytes, @encoding, @created_at)`,
+    );
 
-    const tx = this.db.transaction((n: NormalizedEvent): BlackboxEvent => {
+    const tx = this.db.transaction((n: NormalizedEvent, b: BlobInput | null): BlackboxEvent => {
       const head = this.head();
       const seq = (head?.seq ?? 0) + 1;
       const prev_hash = head?.hash ?? GENESIS;
@@ -259,9 +297,10 @@ export class Store {
 
       insertEvent.run(full);
       upsertMeta.run({ count: seq, seq, hash });
+      if (b) insertBlob.run({ content_hash: b.content_hash, content: b.content, bytes: b.bytes, encoding: b.encoding, created_at: full.captured_at });
       return full;
     });
-    return tx.immediate(e);
+    return tx.immediate(e, blob ?? null);
   }
 
   /** All events in chain order. */
@@ -386,6 +425,65 @@ export class Store {
         )
         .all(ruleset) as { session_id: string }[]
     ).map((r) => r.session_id);
+  }
+
+  // ---- mutation evidence blobs (content-addressed, prunable) --------------
+
+  /** The stored content for a mutation, or null if unknown. A row with content=null
+   *  is a tombstone (pruned): the commitment (hash/size) survives, the bytes are gone. */
+  blobGet(hash: string): BlobRow | null {
+    return (this.db.prepare('SELECT * FROM blobs WHERE content_hash = ?').get(hash) as BlobRow | undefined) ?? null;
+  }
+
+  /** Total blob rows, including pruned tombstones. */
+  blobCount(): number {
+    return (this.db.prepare('SELECT COUNT(*) AS c FROM blobs').get() as { c: number }).c;
+  }
+
+  /** Blob rows that still hold content (not yet pruned). */
+  blobLiveCount(): number {
+    return (this.db.prepare('SELECT COUNT(*) AS c FROM blobs WHERE content IS NOT NULL').get() as { c: number }).c;
+  }
+
+  /**
+   * Retention: drop the CONTENT of mutation blobs older than the cutoff, keeping
+   * each row as a tombstone (hash+size+pruned_at) and the events + chain untouched
+   * — so `verify()` is byte-identical before and after. A blob is pruned only when
+   * NO event at/after the cutoff still references its hash (content-addressed dedupe
+   * means one body can be shared across time; a still-live reference protects it).
+   */
+  prune(cutoffIso: string, prunedAtIso: string): { pruned: number; bytesFreed: number } {
+    const tx = this.db.transaction((cutoff: string, prunedAt: string) => {
+      // Hashes still referenced by an event at/after the cutoff — these are kept.
+      const live = new Set(
+        (
+          this.db
+            .prepare(
+              `SELECT DISTINCT json_extract(detail, '$.mutation.content_hash') AS ch
+                 FROM events
+                WHERE ts >= ? AND json_extract(detail, '$.mutation.content_hash') IS NOT NULL`,
+            )
+            .all(cutoff) as { ch: string | null }[]
+        )
+          .map((r) => r.ch)
+          .filter((x): x is string => !!x),
+      );
+      const candidates = this.db.prepare('SELECT content_hash, bytes FROM blobs WHERE content IS NOT NULL').all() as {
+        content_hash: string;
+        bytes: number;
+      }[];
+      const drop = this.db.prepare('UPDATE blobs SET content = NULL, pruned_at = ? WHERE content_hash = ?');
+      let pruned = 0;
+      let bytesFreed = 0;
+      for (const c of candidates) {
+        if (live.has(c.content_hash)) continue;
+        drop.run(prunedAt, c.content_hash);
+        pruned++;
+        bytesFreed += c.bytes;
+      }
+      return { pruned, bytesFreed };
+    });
+    return tx(cutoffIso, prunedAtIso);
   }
 
   sessions(): SessionSummary[] {

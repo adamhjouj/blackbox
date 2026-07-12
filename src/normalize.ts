@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { canonical, hashString } from './hash';
 import { outputToText, scanOutputForInjection } from './injection';
+import { captureMutation, type BlobInput, type MutationFact, type SessionAnchor } from './mutation';
 import { redact, type RedactOptions } from './redact';
 import type { ActionType, NormalizedEvent, Phase } from './types';
 
@@ -100,20 +101,41 @@ function toSuccess(phase: Phase): 0 | 1 | null {
   return null;
 }
 
+export interface NormalizeOptions extends RedactOptions {
+  /** Session-level git anchor, recorded on SessionStart/SessionEnd events only. */
+  anchor?: SessionAnchor | null;
+}
+
 /**
- * Normalize one raw hook payload into a NormalizedEvent.
+ * Normalize one raw hook payload into a NormalizedEvent. See normalizeAndCapture;
+ * this thin wrapper is for callers that don't persist mutation-evidence blobs.
+ */
+export function normalize(
+  payload: Record<string, unknown>,
+  capturedAt: string,
+  opts: NormalizeOptions = {},
+): NormalizedEvent {
+  return normalizeAndCapture(payload, capturedAt, opts).event;
+}
+
+/**
+ * Normalize one raw hook payload into a NormalizedEvent AND capture any mutation
+ * evidence blob to persist alongside it.
  *
  * Redaction runs FIRST: `raw` stores the REDACTED payload (never verbatim — a
  * security tool must not write secrets to disk), tool output is elided to a hash
  * (`output_hash`/`output_size_bytes`) unless `opts.captureOutput`, and `target`
  * is derived from the redacted input so a secret in a command/path can't leak
- * into a plain column. `capturedAt` is the ingest time (ISO).
+ * into a plain column. For file_write/file_edit POST events, a redacted patch/body
+ * is captured: its FACT (content_hash, diffstat, …) rides in the hashed `detail`,
+ * and its bytes are returned as `blob` for the store to persist un-hashed and
+ * prunable. `capturedAt` is the ingest time (ISO).
  */
-export function normalize(
+export function normalizeAndCapture(
   payload: Record<string, unknown>,
   capturedAt: string,
-  opts: RedactOptions = {},
-): NormalizedEvent {
+  opts: NormalizeOptions = {},
+): { event: NormalizedEvent; blob: BlobInput | null } {
   const hookEvent = typeof payload.hook_event_name === 'string' ? payload.hook_event_name : 'Unknown';
   const phase = toPhase(hookEvent);
   const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : null;
@@ -150,6 +172,24 @@ export function normalize(
       : {};
   const action = toActionType(toolName, redactedInput);
 
+  // Mutation capture (file_write / file_edit POST): a small redacted patch/body,
+  // content-addressed. The FACT goes into the hashed `detail`; the blob bytes are
+  // returned for the store to persist in the same append transaction.
+  let mutation: MutationFact | null = null;
+  let blob: BlobInput | null = null;
+  if (phase === 'post' && (action === 'file_write' || action === 'file_edit')) {
+    const cap = captureMutation(action, redactedInput);
+    if (cap) {
+      mutation = cap.fact;
+      blob = cap.blob;
+    }
+  }
+
+  // Git anchor: recorded once per session (SessionStart/SessionEnd) so pre-session
+  // file state can later be referenced from git, never copied. Computed by the
+  // caller (daemon) off the per-tool path; absent for fixture ingest.
+  const anchor = phase === 'session_start' || phase === 'session_end' ? opts.anchor ?? null : null;
+
   // The agent's own one-line description of the call (Claude Code attaches one to
   // Bash and some tools). Captured as a fact so the timeline can read in plain
   // English without re-reading the raw payload per row.
@@ -157,7 +197,7 @@ export function normalize(
 
   const str = (k: string) => (typeof payload[k] === 'string' ? (payload[k] as string) : null);
 
-  return {
+  const event: NormalizedEvent = {
     event_id: randomUUID(),
     session_id: str('session_id') ?? 'unknown',
     tool_use_id: str('tool_use_id'),
@@ -181,20 +221,27 @@ export function normalize(
     output_hash,
     output_size_bytes,
     redaction_count: hits.length,
-    detail: buildDetail(hits, injection, description),
+    detail: buildDetail(hits, injection, description, mutation, anchor),
   };
+  return { event, blob };
 }
 
 /** Merge the capture-time facts (redaction summary + injection scan + the agent's
- *  own description) into the hashed `detail` column. null keeps it hash-neutral. */
+ *  own description + mutation commitment + git anchor) into the hashed `detail`
+ *  column. null keeps it hash-neutral; adding a key only affects the NEW event that
+ *  carries it, never any already-recorded row (canonical() omits absent keys). */
 function buildDetail(
   hits: { type: string; path: string; bytes: number }[],
   injection: { patterns: string[]; truncated: boolean; scanner_version: string } | null,
   description: string | null,
+  mutation: MutationFact | null,
+  anchor: SessionAnchor | null,
 ): string | null {
   const detail: Record<string, unknown> = {};
   if (hits.length) detail.redaction = hits.map(({ type, path, bytes }) => ({ type, path, bytes }));
   if (injection) detail.output_signals = { injection: injection.patterns, truncated: injection.truncated, scanner_version: injection.scanner_version };
   if (description) detail.description = description;
+  if (mutation) detail.mutation = mutation;
+  if (anchor) detail.anchor = anchor;
   return Object.keys(detail).length ? JSON.stringify(detail) : null;
 }

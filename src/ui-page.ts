@@ -190,6 +190,15 @@ const PAGE_CSS = `  :root {
   .detail .danger { margin-top:6px; padding:9px 11px; background:var(--accent-wash); border:1px solid var(--accent-line); border-radius:var(--r2); }
   .detail .danger .dwhat { font-size:12.5px; font-weight:600; color:var(--fg-hi); margin-bottom:3px; }
   .detail .danger .dwhy { font-size:12px; line-height:1.5; color:var(--fg-2); }
+  /* mutation diff — the "what changed" evidence */
+  .detail .diffstat { font-size:12px; color:var(--fg-3); margin-bottom:6px; font-variant-numeric:tabular-nums; }
+  .detail .diffstat .ins { color:var(--live); }
+  .detail .diffstat .del { color:var(--accent); }
+  .detail pre.diff { white-space:pre; overflow-x:auto; }
+  .detail pre.diff .add { color:var(--live); background:rgba(89,183,131,.08); display:block; }
+  .detail pre.diff .rem { color:var(--accent); background:var(--accent-wash); display:block; }
+  .detail pre.diff .ctx { color:var(--fg-3); display:block; }
+  .detail .mnote { font-size:12px; color:var(--fg-3); line-height:1.5; }
 
   /* states */
   .empty { max-width:440px; margin:60px auto; padding:0 24px; text-align:center; color:var(--fg-3); }
@@ -716,6 +725,39 @@ async function insertDetail(seq, row){
       box.append(el('div',{className:'danger'},
         el('div',{className:'dwhat',textContent:(dg&&dg.what)||''}),
         el('div',{className:'dwhy',textContent:(dg&&dg.why)||''})));
+    }
+  }
+
+  // Changes: the actual before/after evidence, reconstructed from the stored patch
+  // (or the full body for a write). Missing/pruned/skipped content states are explicit.
+  const mut = d.mutation;
+  if(mut){
+    box.append(secLabel(mut.kind === 'body' ? 'file contents' : 'changes'));
+    const ds = mut.diffstat;
+    if(ds){
+      box.append(el('div',{className:'diffstat'},
+        el('span',{className:'ins',textContent:'+'+(ds.insertions||0)}), ' ',
+        el('span',{className:'del',textContent:'-'+(ds.deletions||0)}),
+        ' \\u00B7 '+(ds.files||1)+' file'+(((ds.files||1)===1)?'':'s')+(mut.redacted?' \\u00B7 secrets redacted':'')));
+    }
+    if(mut.status === 'available' && mut.content != null){
+      const pre = el('pre',{className:'diff'});
+      const lines = String(mut.content).split(String.fromCharCode(10));
+      const cap = 400;
+      lines.slice(0, cap).forEach(function(ln){
+        const c = ln.charAt(0);
+        const cls = (mut.kind === 'body') ? 'add' : (c === '+' ? 'add' : (c === '-' ? 'rem' : 'ctx'));
+        pre.append(el('span',{className:cls,textContent:(ln.length?ln:' ')}));
+      });
+      box.append(pre);
+      if(lines.length > cap) box.append(el('div',{className:'mnote',textContent:'\\u2026 '+(lines.length-cap)+' more line(s) not shown'}));
+    } else if(mut.status === 'pruned'){
+      box.append(el('div',{className:'mnote',textContent:
+        'Content aged out'+(mut.pruned_at?(' on '+String(mut.pruned_at).slice(0,10)):'')+'. The record is retained: '+
+        mut.bytes+' bytes, sha-256 committed in the chain.'}));
+    } else if(mut.status === 'skipped'){
+      box.append(el('div',{className:'mnote',textContent:
+        'Content not stored ('+(mut.skip_reason||'skipped')+'). The commitment (size + sha-256) is recorded \\u00B7 '+mut.bytes+' bytes.'}));
     }
   }
 

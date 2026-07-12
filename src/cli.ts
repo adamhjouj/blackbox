@@ -6,7 +6,7 @@ import { disableAutostart, enableAutostart } from './autostart';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { canonical } from './hash';
 import { init, uninit, versionWarning } from './init';
-import { normalize } from './normalize';
+import { normalizeAndCapture } from './normalize';
 import { buildReport, defaultReportSession } from './report';
 import { backfill, computeSession, rescoreSession } from './risk-engine';
 import { isKnownRuleset, KNOWN_RULESETS, RULESET_VERSION, rulesFingerprint, type RulesetVersion } from './risk-rules';
@@ -28,6 +28,7 @@ interface Args {
   prune?: string;
   out?: string;
   off?: boolean;
+  olderThan?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -45,6 +46,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--prune') out.prune = argv[++i];
     else if (a === '--out') out.out = argv[++i];
     else if (a === '--off') out.off = true;
+    else if (a === '--older-than') out.olderThan = argv[++i];
     else if (a === '-h' || a === '--help') out._.push('help');
     else out._.push(a as string);
   }
@@ -141,6 +143,7 @@ Usage:
   blackbox ingest <file.jsonl>   Normalize raw hook payloads into the chained store
   blackbox verify                Verify the hash chain; report the first break
   blackbox rescore               Recompute the risk layer (--session, --ruleset, --check, --prune <v>)
+  blackbox prune                 Age out mutation content (--older-than 30d); keeps events, hashes, and verify
   blackbox report                Export a shareable Markdown session report (--session, --ruleset, --out <file>)
   blackbox head                  Print the current head anchor (seq, count, hash)
   blackbox list                  List recorded events (--session <id> to filter)
@@ -154,6 +157,7 @@ Options:
   --capture-output     Store tool output bodies (still redacted) instead of eliding to a hash
   --session <id>       Filter to one session (list/audit/report)
   --out <file>         Write the report to a file instead of stdout (report)
+  --older-than <dur>   Retention cutoff for prune (e.g. 30d, 12h; default 30d)
   -h, --help           Show this help
 
 Exit codes:
@@ -208,7 +212,8 @@ function cmdIngest(args: Args): number {
         continue;
       }
       try {
-        const stored = store.append(normalize(payload, capturedAt));
+        const { event, blob } = normalizeAndCapture(payload, capturedAt);
+        const stored = store.append(event, blob);
         if (!firstSeq) firstSeq = stored.seq;
         lastSeq = stored.seq;
         n++;
@@ -580,6 +585,43 @@ function cmdRescore(args: Args): number {
   }
 }
 
+/** Parse a retention duration like "30d", "12h", "45m" into milliseconds. */
+function parseDuration(s: string): number | null {
+  const m = /^(\d+)\s*([smhdw])$/.exec(s.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  const mult: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+  const unit = mult[m[2]!];
+  return unit ? n * unit : null;
+}
+
+function cmdPrune(args: Args): number {
+  const spec = args.olderThan ?? '30d';
+  const ms = parseDuration(spec);
+  if (ms == null) {
+    console.error(`prune: invalid --older-than "${spec}" (use e.g. 30d, 12h, 45m)`);
+    return 2;
+  }
+  const now = Date.now();
+  const cutoff = new Date(now - ms).toISOString();
+  const store = new Store(resolveDb(args.db));
+  try {
+    const before = verify(store);
+    const r = store.prune(cutoff, new Date(now).toISOString());
+    const after = verify(store);
+    // The chain must be byte-identical across a prune — this is the whole point.
+    if (before.ok && (!after.ok || before.count !== after.count)) {
+      console.error('prune: ABORTED invariant check — chain changed across prune (this should be impossible)');
+      return 1;
+    }
+    console.log(`pruned ${r.pruned} mutation blob(s) older than ${spec} — ${(r.bytesFreed / 1024).toFixed(1)} KiB freed`);
+    console.log('events and hash chain untouched; run `blackbox verify` to confirm.');
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 function cmdReport(args: Args): number {
   const store = new Store(resolveDb(args.db));
   try {
@@ -640,6 +682,8 @@ async function main(): Promise<number> {
       return cmdVerify(args);
     case 'rescore':
       return cmdRescore(args);
+    case 'prune':
+      return cmdPrune(args);
     case 'report':
       return cmdReport(args);
     case 'head':

@@ -301,6 +301,53 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
   return actions;
 }
 
+export interface MutationView {
+  kind: string;
+  diffstat: unknown;
+  bytes: number;
+  redacted: boolean;
+  /** available: content present · pruned: aged out (tombstone) · skipped: never stored. */
+  status: 'available' | 'pruned' | 'skipped';
+  skip_reason: string | null;
+  content: string | null;
+  pruned_at: string | null;
+}
+
+/** Reconstruct the mutation view from the immutable FACT (detail.mutation) + the
+ *  prunable blob. Pure read-time interpretation — never persisted. */
+function reconstructMutation(store: Store, detail: unknown): MutationView | null {
+  if (!detail || typeof detail !== 'object') return null;
+  const m = (detail as Record<string, unknown>).mutation;
+  if (!m || typeof m !== 'object') return null;
+  const f = m as Record<string, unknown>;
+  const hash = typeof f.content_hash === 'string' ? f.content_hash : null;
+  const stored = f.stored !== false;
+
+  let status: MutationView['status'] = 'skipped';
+  let content: string | null = null;
+  let pruned_at: string | null = null;
+  if (stored) {
+    const blob = hash ? store.blobGet(hash) : null;
+    if (blob && blob.content != null) {
+      status = 'available';
+      content = blob.content;
+    } else {
+      status = 'pruned';
+      pruned_at = blob?.pruned_at ?? null;
+    }
+  }
+  return {
+    kind: typeof f.kind === 'string' ? f.kind : 'patch',
+    diffstat: f.diffstat ?? null,
+    bytes: typeof f.bytes === 'number' ? f.bytes : 0,
+    redacted: f.redacted === true,
+    status,
+    skip_reason: typeof f.skip_reason === 'string' ? f.skip_reason : null,
+    content,
+    pruned_at,
+  };
+}
+
 /** Full detail for one event (by seq): parsed redacted payload, output provenance,
  *  collector detail, and the chain hashes so a skeptic can eyeball the link. */
 export function eventDetail(store: Store, seq: number): Record<string, unknown> | null {
@@ -344,6 +391,7 @@ export function eventDetail(store: Store, seq: number): Record<string, unknown> 
     explanation,
     raw,
     detail,
+    mutation: reconstructMutation(store, detail),
     risk: risk ? { score: risk.score, flags: safeParse<string[]>(risk.flags, []), evidence: safeParse<unknown>(risk.evidence, null) } : null,
     prev_hash: e.prev_hash,
     hash: e.hash,
