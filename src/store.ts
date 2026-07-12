@@ -134,6 +134,23 @@ CREATE TABLE IF NOT EXISTS blobs (
 );
 `;
 
+/**
+ * R3 chain-of-custody. Ed25519 signatures over the chain HEAD — DERIVED from the
+ * immutable chain and stored OUTSIDE it. Signing never touches events/chain_meta,
+ * so verify() is byte-identical before/after. verify() reads this table only when
+ * given a trusted public key, so existing callers are unaffected.
+ */
+const SIG_SCHEMA = `
+CREATE TABLE IF NOT EXISTS signatures (
+  seq        INTEGER NOT NULL,
+  head_hash  TEXT    NOT NULL,
+  sig        TEXT    NOT NULL,
+  pubkey     TEXT    NOT NULL,
+  ts         TEXT    NOT NULL,
+  PRIMARY KEY (seq, head_hash)
+);
+`;
+
 export interface ChainMeta {
   count: number;
   head_seq: number;
@@ -170,6 +187,15 @@ export interface BlobRow {
   encoding: string;
   created_at: string;
   pruned_at: string | null;
+}
+
+/** A signed chain-of-custody checkpoint (R3): Ed25519 signature over the head. */
+export interface SignatureRow {
+  seq: number;
+  head_hash: string;
+  sig: string;
+  pubkey: string;
+  ts: string;
 }
 
 export interface SessionSummary {
@@ -225,6 +251,7 @@ export class Store {
     this.ensureColumns();
     this.db.exec(RISK_SCHEMA);
     this.db.exec(BLOB_SCHEMA);
+    this.db.exec(SIG_SCHEMA);
     this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -424,6 +451,28 @@ export class Store {
       }
     });
     tx(ruleset, sessionId);
+  }
+
+  // ---- chain-of-custody signatures (R3) ----------------------------------
+
+  signatureUpsert(r: SignatureRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO signatures (seq, head_hash, sig, pubkey, ts)
+         VALUES (@seq, @head_hash, @sig, @pubkey, @ts)
+         ON CONFLICT(seq, head_hash) DO UPDATE SET sig=@sig, pubkey=@pubkey, ts=@ts`,
+      )
+      .run(r);
+  }
+
+  /** All signed checkpoints in chain order. */
+  signatures(): SignatureRow[] {
+    return this.db.prepare('SELECT * FROM signatures ORDER BY seq ASC').all() as SignatureRow[];
+  }
+
+  /** The most recent signed checkpoint, or null. */
+  latestSignature(): SignatureRow | null {
+    return (this.db.prepare('SELECT * FROM signatures ORDER BY seq DESC LIMIT 1').get() as SignatureRow | undefined) ?? null;
   }
 
   /** Session ids that have events but no up-to-date verdict for `ruleset`. */

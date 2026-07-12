@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { configPath, ensureBlackboxDir } from './paths';
+import { ensureKeypair } from './sign';
 
 /** Tool events get a "*" matcher; the rest are matcher-less groups. */
 const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'];
@@ -106,6 +107,13 @@ export function init(port: number): { settingsPath: string; addedEvents: string[
   const { settings, addedEvents } = mergeHooks(readSettings(path), port);
   writeSettings(path, settings);
   const token = ensureConfig(port);
+  // R3: generate the chain-of-custody signing keypair (once, idempotent). Best-effort
+  // — a keygen failure must never block recording setup.
+  try {
+    ensureKeypair();
+  } catch {
+    /* signing simply stays off until a key exists */
+  }
   return { settingsPath: path, addedEvents, token };
 }
 

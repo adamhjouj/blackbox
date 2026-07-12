@@ -7,7 +7,8 @@ import { DEFAULT_PORT, startDaemon } from './daemon';
 import { canonical } from './hash';
 import { init, uninit, versionWarning } from './init';
 import { normalizeAndCapture } from './normalize';
-import { buildReport, defaultReportSession } from './report';
+import { buildForensicReport, buildReport, defaultReportSession } from './report';
+import { loadPublicKey, loadWatermark } from './sign';
 import { backfill, computeSession, rescoreSession } from './risk-engine';
 import { isKnownRuleset, KNOWN_RULESETS, RULESET_VERSION, rulesFingerprint, type RulesetVersion } from './risk-rules';
 import { unwatchGlobal, unwatchRepo, watchGlobal, watchRepo } from './watch';
@@ -29,6 +30,8 @@ interface Args {
   out?: string;
   off?: boolean;
   olderThan?: string;
+  forensic?: boolean;
+  anchor?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -47,6 +50,8 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--out') out.out = argv[++i];
     else if (a === '--off') out.off = true;
     else if (a === '--older-than') out.olderThan = argv[++i];
+    else if (a === '--forensic') out.forensic = true;
+    else if (a === '--anchor') out.anchor = argv[++i];
     else if (a === '-h' || a === '--help') out._.push('help');
     else out._.push(a as string);
   }
@@ -145,6 +150,7 @@ Usage:
   blackbox rescore               Recompute the risk layer (--session, --ruleset, --check, --prune <v>)
   blackbox prune                 Age out mutation content (--older-than 30d); keeps events, hashes, and verify
   blackbox report                Export a shareable Markdown session report (--session, --ruleset, --out <file>)
+                                 Add --forensic for an evidentiary case-file (custody + signature + manifest)
   blackbox head                  Print the current head anchor (seq, count, hash)
   blackbox list                  List recorded events (--session <id> to filter)
   blackbox audit                 Show what was redacted (type + path, never the secret)
@@ -238,11 +244,14 @@ function cmdIngest(args: Args): number {
 
 function cmdVerify(args: Args): number {
   const store = new Store(resolveDb(args.db));
-  const r = verify(store);
+  const pubkey = loadPublicKey();
+  const sigCount = store.signatures().length;
+  const r = verify(store, { trustedPublicKey: pubkey, watermark: loadWatermark() });
   store.close();
   if (r.ok) {
     const anchor = r.anchored ? '' : ' (no head anchor — truncation not checked)';
-    console.log(`✓ chain intact — ${r.count} event(s) across ${r.sessions} session(s)${anchor}`);
+    const sig = pubkey && sigCount ? ` · ${sigCount} signed checkpoint(s) OK` : pubkey ? '' : ' (unsigned — run `blackbox init` to enable signing)';
+    console.log(`✓ chain intact — ${r.count} event(s) across ${r.sessions} session(s)${anchor}${sig}`);
     return 0;
   }
   const b = r.break!;
@@ -640,7 +649,12 @@ function cmdReport(args: Args): number {
       console.error('report: no sessions recorded');
       return 2;
     }
-    const md = buildReport(store, sessionId, ruleset);
+    const md = args.forensic
+      ? buildForensicReport(store, sessionId, { ruleset, trustedPublicKey: loadPublicKey(), watermark: loadWatermark() })
+      : buildReport(store, sessionId, ruleset);
+    if (args.forensic && args.anchor) {
+      console.error(`  (--anchor ${args.anchor} is a stub — remote head anchoring is not yet wired; see docs)`);
+    }
     if (args.out) {
       writeFileSync(args.out, md);
       console.log(`wrote report for session ${sessionId} to ${args.out}`);

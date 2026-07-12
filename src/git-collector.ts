@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { redactText } from './redact';
 import type { NormalizedEvent } from './types';
 
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -229,6 +230,12 @@ export function normalizeGit(params: {
   const diffPart = diff ? ` (+${diff.insertions} −${diff.deletions}, ${diff.files} file${diff.files === 1 ? '' : 's'})` : '';
   const target = `${cls.kind} ${delta.ref} ${short(delta.old)}→${short(delta.new)}${diffPart}`;
 
+  // Redact the commit subject/author before persistence — a commit message can
+  // carry a secret, and it flows into the shareable report / forensic case-file.
+  const safeCommit = commit
+    ? { ...commit, subject: redactText(commit.subject ?? '').text, author: redactText(commit.author ?? '').text }
+    : commit;
+
   const detail = {
     git: {
       ref: delta.ref,
@@ -240,7 +247,7 @@ export function normalizeGit(params: {
       is_delete: cls.is_delete,
       is_amend: cls.is_amend,
       diffstat: diff,
-      commit,
+      commit: safeCommit,
     },
     correlation,
   };

@@ -11,10 +11,11 @@ import {
 } from './git-collector';
 import { sessionAnchor } from './mutation';
 import { normalize, normalizeAndCapture } from './normalize';
-import { configPath } from './paths';
+import { blackboxDir, configPath } from './paths';
 import { eventDetail, sessionActions, sessionCards, sessionStory } from './read-api';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
 import { RULESET_VERSION } from './risk-rules';
+import { ensureKeypair, isSignableBoundary, signHead, writeWatermark, type Keypair } from './sign';
 import { Store } from './store';
 import type { BlackboxEvent } from './types';
 import { renderPage } from './ui-page';
@@ -110,6 +111,14 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   const startedAt = Date.now();
   const correlator = new Correlator();
   const riskEngine = new RiskEngine((sid) => store.eventsLight(sid));
+  // R3 chain-of-custody: load the signing key once (null if never keyed). Signing
+  // is off the hook path and best-effort — it can never fail a recording.
+  let signingKeys: Keypair | null = null;
+  try {
+    signingKeys = ensureKeypair();
+  } catch {
+    /* signing stays off until a key exists */
+  }
 
   let configToken = '';
   try {
@@ -149,6 +158,22 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     }
   };
 
+  // Sign the chain head at session boundaries (once or twice per session) — bounds
+  // the signature count while checkpointing every session start/end. Off the hook
+  // path via try/catch; never fails a recording.
+  const signNow = (): void => {
+    if (!signingKeys) return;
+    try {
+      const s = signHead(store, signingKeys, new Date().toISOString());
+      if (s) writeWatermark(blackboxDir(), { seq: s.seq, head_hash: s.head_hash }); // out-of-DB anti-deletion anchor
+    } catch (err) {
+      log(`signing failed: ${(err as Error).message}`);
+    }
+  };
+  const maybeSign = (e: BlackboxEvent): void => {
+    if (signingKeys && isSignableBoundary(e.phase)) signNow();
+  };
+
   const recordHook = (body: string, truncated: boolean): void => {
     const capturedAt = new Date().toISOString();
     if (truncated) {
@@ -181,7 +206,9 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     const he = typeof payload.hook_event_name === 'string' ? payload.hook_event_name : '';
     const anchor = he === 'SessionStart' || he === 'SessionEnd' ? sessionAnchor(typeof payload.cwd === 'string' ? payload.cwd : null) : null;
     const { event, blob } = normalizeAndCapture(payload, capturedAt, { captureOutput: opts.captureOutput, anchor });
-    scoreAndPersist(store.append(event, blob));
+    const appended = store.append(event, blob);
+    scoreAndPersist(appended);
+    maybeSign(appended);
   };
 
   const recordGit = (headers: http.IncomingHttpHeaders, body: string): void => {
@@ -366,6 +393,13 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           if (r.sessions) log(`risk backfill: scored ${r.sessions} session(s)`);
         } catch (err) {
           log(`risk backfill failed: ${(err as Error).message}`);
+        }
+        // R3: checkpoint the current head on startup (catches downtime gaps).
+        if (signingKeys) {
+          const before = store.latestSignature()?.seq;
+          signNow();
+          const after = store.latestSignature()?.seq;
+          if (after && after !== before) log(`signed chain head at seq ${after}`);
         }
       });
       resolve({

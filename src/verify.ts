@@ -1,4 +1,5 @@
 import { GENESIS, hashEvent } from './hash';
+import { verifyCheckpoint, type Watermark } from './sign';
 import type { Store } from './store';
 import type { BlackboxEvent } from './types';
 
@@ -6,7 +7,18 @@ export type BreakReason =
   | 'content-tampered' // a column was edited after recording
   | 'broken-link' // prev_hash doesn't match the prior event (deletion / reorder / insertion)
   | 'bad-sequence' // seq isn't contiguous from 1
-  | 'truncated'; // fewer events than the head anchor records (tail deleted / full wipe)
+  | 'truncated' // fewer events than the head anchor records (tail deleted / full wipe)
+  | 'signature-invalid'; // a signed checkpoint doesn't verify (chain re-signed with a wrong key / altered after signing)
+
+export interface VerifyOptions {
+  /** The trusted Ed25519 public key (PEM). When present, signed checkpoints are
+   *  checked — catching a full rewrite the internal hash chain alone cannot. */
+  trustedPublicKey?: string | null;
+  /** The out-of-DB high-watermark (signing.head). When present, verify requires
+   *  that checkpoint to still be present + valid in the DB — catching signature
+   *  deletion / tail-rollback by a writer who can't reach the watermark file. */
+  watermark?: Watermark | null;
+}
 
 export interface VerifyResult {
   ok: boolean;
@@ -27,7 +39,7 @@ export interface VerifyResult {
  * then check the head anchor to catch tail-truncation (which a bare prefix walk
  * cannot). Reports the FIRST break with the exact seq and what kind it is.
  */
-export function verify(store: Store): VerifyResult {
+export function verify(store: Store, opts: VerifyOptions = {}): VerifyResult {
   const rows = store.all();
   const meta = store.chainMeta();
   const sessions = new Set<string>();
@@ -92,7 +104,44 @@ export function verify(store: Store): VerifyResult {
     }
   }
 
+  // Cryptographic checkpoints (R3). When the caller holds the trusted public key,
+  // every signed head must (a) verify under that key and (b) still match the chain.
+  // This catches a FULL rewrite — events + the same-file chain_meta re-hashed
+  // consistently — that the internal walk cannot: an attacker can't forge a
+  // signature without the private key. verify(store) with no key skips this.
+  if (opts.trustedPublicKey) {
+    const bySeq = new Map(rows.map((r) => [r.seq, r]));
+    const sigs = store.signatures();
+    for (const s of sigs) {
+      if (!verifyCheckpoint(s.seq, s.head_hash, s.ts, s.sig, opts.trustedPublicKey)) {
+        return sigBreak(s.seq, bySeq.get(s.seq)?.event_id, 'a signed checkpoint does not verify under the trusted key — the chain was re-signed with a different key', rows.length, sessions.size, !!meta);
+      }
+      const ev = bySeq.get(s.seq);
+      if (!ev) {
+        return sigBreak(s.seq, undefined, `a signed checkpoint at seq ${s.seq} has no event — the chain was truncated below a signed head`, rows.length, sessions.size, !!meta);
+      }
+      if (ev.hash !== s.head_hash) {
+        return sigBreak(s.seq, ev.event_id, `the event at signed seq ${s.seq} no longer matches its signature — content was altered after signing`, rows.length, sessions.size, !!meta);
+      }
+    }
+    // Anti-deletion: the newest checkpoint recorded OUT OF THE DB must still be
+    // present + valid inside it. A DB-only attacker who deletes/rolls back the
+    // signatures table can't reach this file, so the removal is caught. (A full
+    // ~/.blackbox writer can rewrite the watermark too — the honest limit.)
+    if (opts.watermark) {
+      const w = opts.watermark;
+      const match = sigs.find((s) => s.seq === w.seq && s.head_hash === w.head_hash);
+      if (!match || !verifyCheckpoint(w.seq, w.head_hash, match.ts, match.sig, opts.trustedPublicKey)) {
+        return sigBreak(w.seq, bySeq.get(w.seq)?.event_id, `the newest signed checkpoint (seq ${w.seq}) recorded outside the DB is missing or invalid — signatures were deleted or rolled back`, rows.length, sessions.size, !!meta);
+      }
+    }
+  }
+
   return { ok: true, count: rows.length, sessions: sessions.size, anchored: !!meta };
+}
+
+function sigBreak(seq: number, eventId: string | undefined, detail: string, count: number, sessions: number, anchored: boolean): VerifyResult {
+  return { ok: false, count, sessions, anchored, break: { seq, event_id: eventId ?? '(none)', reason: 'signature-invalid', detail } };
 }
 
 function breakAt(

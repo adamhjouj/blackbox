@@ -13,10 +13,14 @@
  */
 import { readFileSync } from 'node:fs';
 import { explainEvent, type Danger } from './explain';
-import { sessionCards } from './read-api';
+import { hashString } from './hash';
+import { sessionCards, sessionStory } from './read-api';
+import { redactText } from './redact';
 import type { ComboFire } from './risk-engine';
 import { RISK_FLAGS, RULESET_VERSION, type FlagId, type RulesetVersion } from './risk-rules';
 import type { Store } from './store';
+import type { Watermark } from './sign';
+import { verify } from './verify';
 import type { BlackboxEvent } from './types';
 
 function safeParse<T>(s: string | null, fallback: T): T {
@@ -136,7 +140,8 @@ interface FlaggedEntry {
 export function buildReport(store: Store, sessionId: string, ruleset?: RulesetVersion): string {
   const rs = ruleset ?? resolveRuleset(store, sessionId);
   const events = store.eventsLight(sessionId);
-  const name = sessionName(store, sessionId);
+  const rawName = sessionName(store, sessionId);
+  const name = rawName ? redactText(rawName).text : null; // the transcript name could carry a secret
   const L: string[] = [];
 
   L.push(`# Blackbox session report — ${name ?? sessionId}`, '');
@@ -238,4 +243,90 @@ export function buildReport(store: Store, sessionId: string, ruleset?: RulesetVe
  *  zero-activity sessions. Returns null when nothing has been recorded. */
 export function defaultReportSession(store: Store): string | null {
   return sessionCards(store)[0]?.session_id ?? null;
+}
+
+/** Short fingerprint of a PEM public key — a stable, human-comparable id. */
+function keyFingerprint(pem: string): string {
+  return hashString(pem).replace('sha256:', '').slice(0, 16);
+}
+
+export interface ForensicOptions {
+  ruleset?: RulesetVersion;
+  /** Trusted Ed25519 public key (PEM) — enables the signed-checkpoint verification. */
+  trustedPublicKey?: string | null;
+  /** Out-of-DB high-watermark — enables the anti-deletion check. */
+  watermark?: Watermark | null;
+  /** Wall-clock stamp (ISO); passed in so the case-file is deterministic in tests. */
+  generatedAt?: string;
+}
+
+/**
+ * R3 forensic case-file — a self-contained evidentiary bundle: chain-of-custody
+ * (verify() status + head hash + the covering signature), the plain-English risk
+ * report, the provenance story (what changed), and a SHA-256 manifest of the whole
+ * document so the file itself is tamper-evident. Pure read-time projection; never
+ * writes, never touches the chain.
+ */
+export function buildForensicReport(store: Store, sessionId: string, opts: ForensicOptions = {}): string {
+  const generatedAt = opts.generatedAt ?? new Date().toISOString();
+  const v = verify(store, { trustedPublicKey: opts.trustedPublicKey, watermark: opts.watermark });
+  const meta = store.chainMeta();
+  const sig = store.latestSignature();
+  // Redact the session name — it's read raw from the transcript and could carry a secret.
+  const rawName = sessionName(store, sessionId);
+  const name = rawName ? redactText(rawName).text : null;
+  const L: string[] = [];
+
+  L.push(`# Blackbox forensic case-file — ${name ?? sessionId}`, '', `_Generated ${generatedAt}_`, '');
+
+  // ── chain of custody ──────────────────────────────────────────────────────
+  L.push('## Chain of custody', '');
+  L.push(
+    v.ok
+      ? `- **Integrity:** ✓ verified — the recorded chain is internally consistent`
+      : `- **Integrity:** ✗ BROKEN at seq ${v.break!.seq} (${v.break!.reason}) — ${v.break!.detail}`,
+  );
+  L.push(`- **Scope:** ${v.count} event(s) across ${v.sessions} session(s)`);
+  if (meta) L.push(`- **Head:** seq ${meta.head_seq} · \`${meta.head_hash}\``);
+  if (sig) {
+    const covers = !!meta && sig.seq === meta.head_seq && sig.head_hash === meta.head_hash;
+    const checked = opts.trustedPublicKey
+      ? v.ok
+        ? 'verifies under the trusted key'
+        : 'FAILED verification under the trusted key'
+      : 'present but not checked (no trusted key supplied)';
+    L.push(`- **Signature:** Ed25519 checkpoint at seq ${sig.seq}, signed ${sig.ts} — ${checked}${covers ? '' : ' (does not cover the current head)'}`);
+    L.push(`  - key fingerprint: \`${keyFingerprint(sig.pubkey)}\``);
+  } else {
+    L.push(`- **Signature:** none — this store was never keyed (\`blackbox init\` generates the key; the daemon signs at session boundaries).`);
+  }
+  L.push(
+    `- **Honest limit:** signing is local. Detected: wrong-key re-signing, content alteration at/below a signed head, and signature deletion/rollback (via the out-of-DB \`signing.head\` watermark). NOT resisted: an attacker with full \`~/.blackbox\` write access (DB + key + watermark) can re-sign — **true** off-machine resistance is \`--anchor\` (ship signed heads to a remote append-only log), a later/enterprise capability.`,
+    '',
+  );
+
+  // ── the plain-English risk report (its own H1 dropped) ────────────────────
+  const rep = buildReport(store, sessionId, opts.ruleset);
+  L.push(rep.startsWith('# ') ? rep.slice(rep.indexOf('\n') + 1).replace(/^\n+/, '') : rep);
+
+  // ── provenance — what changed ─────────────────────────────────────────────
+  const story = sessionStory(store, sessionId);
+  L.push('## Provenance — what changed', '');
+  if (story.files_changed.length) {
+    L.push('Files changed:', '');
+    for (const f of story.files_changed) L.push(`- \`${f.path}\` (+${f.insertions} −${f.deletions})`);
+    L.push('');
+  } else {
+    L.push('No file mutations recorded.', '');
+  }
+  if (story.commits.length) {
+    L.push('Commits:', '');
+    for (const c of story.commits) L.push(`- \`${(c.sha ?? '').slice(0, 7)}\` ${c.subject ?? ''}`.trimEnd());
+    L.push('');
+  }
+
+  // ── manifest: the case-file is itself tamper-evident ──────────────────────
+  const body = L.join('\n').replace(/\n+$/, '');
+  const manifest = hashString(body);
+  return `${body}\n\n---\n**Manifest (sha-256 of everything above this line):** \`${manifest}\`\n`;
 }

@@ -41,7 +41,7 @@ README.md                This file — orientation entry point
 
 - **Language: TypeScript/Node.** One runtime for the localhost hook receiver + UI; matches the Claude Code ecosystem and hook examples.
 - **Store: SQLite (WAL), `better-sqlite3`.** Single local file, indexed queries for the timeline, handles concurrent async-hook writes. No JSONL hedge.
-- **Tamper-evidence: hash chain** (each event hashes the previous). Detects tampering locally; true tamper-*resistance* (remote anchoring) is a later/paid tier — do not overclaim.
+- **Tamper-evidence → resistance: hash chain + Ed25519 signing** (R3). Each event hashes the previous (local tamper-*evidence*); `blackbox init` also generates a signing key (`~/.blackbox/signing.key`, 0600) and the daemon signs the chain head at session boundaries, plus an out-of-DB `signing.head` watermark. So `blackbox verify` catches a rewrite re-signed with a different key **and** signature deletion/rollback by a DB-only writer. **Honest limit:** it's all local — an attacker with full `~/.blackbox` write access (DB + key + watermark) can re-sign; *true* off-machine resistance is remote anchoring (`report --anchor`, a later/paid tier). Do not overclaim.
 - **Collector scope = Tier 1 only for V1** (see `docs/FORENSIC-COLLECTORS.md`):
   - Claude Code hooks (HTTP + `async`) — intent + result, verified.
   - git `reference-transaction` hook — ground-truth ref changes, verified.
