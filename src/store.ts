@@ -317,6 +317,20 @@ export class Store {
     return (this.db.prepare('SELECT * FROM events WHERE seq = ?').get(seq) as BlackboxEvent | undefined) ?? null;
   }
 
+  /** The Post/Failure event paired with a Pre by `tool_use_id` — the phase that
+   *  carries the outcome (mutation fact, timing). Lets the dossier for a Pre row
+   *  surface the diff, which lives on its Post sibling. Uses idx_events_tooluse. */
+  postFor(toolUseId: string, afterSeq: number): BlackboxEvent | null {
+    return (
+      (this.db
+        .prepare(
+          `SELECT * FROM events WHERE tool_use_id = ? AND seq > ? AND (phase = 'post' OR phase = 'failure')
+             ORDER BY seq ASC LIMIT 1`,
+        )
+        .get(toolUseId, afterSeq) as BlackboxEvent | undefined) ?? null
+    );
+  }
+
   /** The transcript file path for a session (from any event's payload) — lets the
    *  read layer resolve the human-readable session name. */
   sessionTranscriptPath(sessionId: string): string | null {

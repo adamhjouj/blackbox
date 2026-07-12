@@ -12,7 +12,7 @@ import {
 import { sessionAnchor } from './mutation';
 import { normalize, normalizeAndCapture } from './normalize';
 import { configPath } from './paths';
-import { eventDetail, sessionActions, sessionCards } from './read-api';
+import { eventDetail, sessionActions, sessionCards, sessionStory } from './read-api';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
 import { RULESET_VERSION } from './risk-rules';
 import { Store } from './store';
@@ -274,6 +274,18 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
               return;
             }
             sendJson(res, 200, sessionActions(store, id));
+            return;
+          }
+          const mstory = path.match(/^\/api\/session\/(.+)\/story$/);
+          if (mstory) {
+            let id: string;
+            try {
+              id = decodeURIComponent(mstory[1]!);
+            } catch {
+              sendJson(res, 400, { ok: false, error: 'bad session id' });
+              return;
+            }
+            sendJson(res, 200, sessionStory(store, id));
             return;
           }
           const me = path.match(/^\/api\/event\/(\d+)$/);

@@ -9,7 +9,7 @@ const { buildHookConfig, mergeHooks } = require('../dist/init.js');
 const { buildLaunchAgentPlist } = require('../dist/autostart.js');
 
 const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'];
-const OTHER_EVENTS = ['SessionStart', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'];
+const OTHER_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'];
 
 // ---- buildHookConfig: shape --------------------------------------------------
 
@@ -46,7 +46,7 @@ test('buildHookConfig: the port flows into the url', () => {
 
 // ---- mergeHooks: correctness + idempotency ----------------------------------
 
-test('mergeHooks: into empty settings registers all eight events', () => {
+test('mergeHooks: into empty settings registers all nine events', () => {
   const { settings, addedEvents } = mergeHooks({}, 7842);
   assert.deepEqual(addedEvents, [...TOOL_EVENTS, ...OTHER_EVENTS]);
   assert.deepEqual(Object.keys(settings.hooks), [...TOOL_EVENTS, ...OTHER_EVENTS]);

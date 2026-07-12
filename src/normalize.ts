@@ -10,6 +10,8 @@ function toPhase(hookEvent: string): Phase {
   switch (hookEvent) {
     case 'SessionStart':
       return 'session_start';
+    case 'UserPromptSubmit':
+      return 'prompt';
     case 'PreToolUse':
       return 'pre';
     case 'PostToolUse':
@@ -56,13 +58,17 @@ function toActionType(toolName: string | null, input: Record<string, unknown>): 
 }
 
 const MAX_TARGET = 500;
+/** A user prompt is the turn's intent — worth more room than a target string, but
+ *  still bounded so a pathological paste can't bloat the hashed row. Full redacted
+ *  prompt survives in `raw`; this is the display projection. */
+const MAX_PROMPT = 2000;
 
 /** Truncate on code-point boundaries so an astral char (emoji) is never split
  *  into a lone surrogate — splitting one would both corrupt the display string
  *  and, after a SQLite UTF-8 round-trip, break the hash chain verification. */
-function truncate(s: string): string {
+function truncate(s: string, max: number = MAX_TARGET): string {
   const points = Array.from(s);
-  return points.length > MAX_TARGET ? points.slice(0, MAX_TARGET).join('') + '…' : s;
+  return points.length > max ? points.slice(0, max).join('') + '…' : s;
 }
 
 /** Extract a concise, human-facing target string. */
@@ -197,6 +203,24 @@ export function normalizeAndCapture(
 
   const str = (k: string) => (typeof payload[k] === 'string' ? (payload[k] as string) : null);
 
+  // The user's submitted prompt (UserPromptSubmit): the turn's intent. The field name
+  // differs across Claude Code versions — the docs say `user_input`, live payloads have
+  // used `prompt` — so accept either (both are in redact's WALK_FIELDS, so whichever is
+  // present is scrubbed before it reaches the hashed detail; the full redacted prompt
+  // also survives in `raw`).
+  const promptRaw =
+    typeof redacted.user_input === 'string'
+      ? (redacted.user_input as string)
+      : typeof redacted.prompt === 'string'
+        ? (redacted.prompt as string)
+        : null;
+  const prompt = phase === 'prompt' && promptRaw ? truncate(promptRaw.trim(), MAX_PROMPT) : null;
+  // Subagent→parent link: ties a subagent's events back to the Task/Agent call that
+  // spawned it, so provenance can nest the subtree. Not a documented hook field yet —
+  // captured opportunistically (null → omitted, hash-neutral); provenance falls back to
+  // agent_id when it's absent.
+  const parentToolUseId = str('parent_tool_use_id');
+
   const event: NormalizedEvent = {
     event_id: randomUUID(),
     session_id: str('session_id') ?? 'unknown',
@@ -221,7 +245,7 @@ export function normalizeAndCapture(
     output_hash,
     output_size_bytes,
     redaction_count: hits.length,
-    detail: buildDetail(hits, injection, description, mutation, anchor),
+    detail: buildDetail(hits, injection, description, mutation, anchor, prompt, parentToolUseId),
   };
   return { event, blob };
 }
@@ -236,6 +260,8 @@ function buildDetail(
   description: string | null,
   mutation: MutationFact | null,
   anchor: SessionAnchor | null,
+  prompt: string | null,
+  parentToolUseId: string | null,
 ): string | null {
   const detail: Record<string, unknown> = {};
   if (hits.length) detail.redaction = hits.map(({ type, path, bytes }) => ({ type, path, bytes }));
@@ -243,5 +269,7 @@ function buildDetail(
   if (description) detail.description = description;
   if (mutation) detail.mutation = mutation;
   if (anchor) detail.anchor = anchor;
+  if (prompt) detail.prompt = prompt;
+  if (parentToolUseId) detail.parent_tool_use_id = parentToolUseId;
   return Object.keys(detail).length ? JSON.stringify(detail) : null;
 }

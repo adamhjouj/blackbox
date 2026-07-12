@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { actionSummary, explainEvent } from './explain';
+import { buildStory, type EventDetail, type SessionStory } from './provenance';
 import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
 import type { SessionRiskRow, Store } from './store';
 import type { BlackboxEvent } from './types';
@@ -80,6 +81,7 @@ function safeArray<T>(s: string | null): T[] {
 // risk right after each append, so a result is valid until head_seq advances.
 let cardsCache: { head: number; cards: SessionCard[] } | null = null;
 const actionsCache = new Map<string, { head: number; actions: Action[] }>();
+const storyCache = new Map<string, { head: number; story: SessionStory }>();
 const headSeq = (store: Store): number => store.chainMeta()?.head_seq ?? 0;
 
 // Version-fallback read: after an r2 bump but before backfill, a session only has
@@ -301,6 +303,37 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
   return actions;
 }
 
+/** The re-traceable session story: turns (prompt → steps → outcomes), projected
+ *  from the immutable chain. Reuses sessionActions (Pair + risk) and the same
+ *  head-seq cache discipline; the projection itself lives in provenance.ts. */
+export function sessionStory(store: Store, sessionId: string): SessionStory {
+  const head = headSeq(store);
+  const cached = storyCache.get(sessionId);
+  if (cached && cached.head === head) return cached.story;
+
+  const actions = sessionActions(store, sessionId);
+  // detail carries prompt / mutation / git — parse it once per event (light: no raw).
+  const detailBySeq = new Map<number, EventDetail>();
+  for (const e of store.eventsLight(sessionId)) {
+    if (!e.detail) continue;
+    const d = safeParse<EventDetail | null>(e.detail, null);
+    if (d && typeof d === 'object') detailBySeq.set(e.seq, d);
+  }
+  const ruleset = resolveRuleset(store, sessionId);
+  const story = buildStory({
+    session_id: sessionId,
+    name: sessionName(store, sessionId),
+    cwd: sessionCwd(store, sessionId),
+    verdict: store.sessionRisk(sessionId, ruleset)?.verdict ?? 'unscored',
+    actions,
+    detailBySeq,
+  });
+
+  if (storyCache.size > 64) storyCache.clear();
+  storyCache.set(sessionId, { head, story });
+  return story;
+}
+
 export interface MutationView {
   kind: string;
   diffstat: unknown;
@@ -373,6 +406,15 @@ export function eventDetail(store: Store, seq: number): Record<string, unknown> 
   // extras like `dangerouslyDisableSandbox`). Re-derived at read time, never stored.
   const rawInput = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).tool_input : null;
   const explanation = explainEvent(e, flags, rawInput && typeof rawInput === 'object' ? (rawInput as Record<string, unknown>) : null);
+  // A mutation fact rides on the POST event; a timeline row expands its PRE event,
+  // so fall back to the paired Post's detail — otherwise expanding an edit shows no
+  // diff (the "I can't see what changed" bug). The story view drills into post_seq
+  // directly and never needs this fallback.
+  let mutation = reconstructMutation(store, detail);
+  if (!mutation && e.phase === 'pre' && e.tool_use_id) {
+    const post = store.postFor(e.tool_use_id, e.seq);
+    if (post) mutation = reconstructMutation(store, safeParse<unknown>(post.detail, null));
+  }
   return {
     seq: e.seq,
     event_id: e.event_id,
@@ -391,7 +433,7 @@ export function eventDetail(store: Store, seq: number): Record<string, unknown> 
     explanation,
     raw,
     detail,
-    mutation: reconstructMutation(store, detail),
+    mutation,
     risk: risk ? { score: risk.score, flags: safeParse<string[]>(risk.flags, []), evidence: safeParse<unknown>(risk.evidence, null) } : null,
     prev_hash: e.prev_hash,
     hash: e.hash,

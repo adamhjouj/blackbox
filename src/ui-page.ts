@@ -200,6 +200,53 @@ const PAGE_CSS = `  :root {
   .detail pre.diff .ctx { color:var(--fg-3); display:block; }
   .detail .mnote { font-size:12px; color:var(--fg-3); line-height:1.5; }
 
+  /* story view — the re-traceable session narrative */
+  .viewbar { padding:16px 16px 0; }
+  .viewtoggle { display:inline-flex; gap:2px; padding:2px; background:var(--surface); border:1px solid var(--border); border-radius:var(--r2); }
+  .viewtoggle button { font:12px var(--sans); color:var(--fg-2); background:transparent; border:0; border-radius:var(--r1);
+    padding:4px 13px; cursor:pointer; transition:color .1s ease, background .1s ease; }
+  .viewtoggle button:hover { color:var(--fg-1); }
+  .viewtoggle button.on { color:var(--fg-hi); background:var(--selected); }
+  .turns { padding:6px 16px 40px; }
+  .turncard { border:1px solid var(--border-subtle); border-radius:var(--r3); padding:14px 16px; margin-bottom:12px; background:var(--surface); }
+  .turncard .tnum { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-4); margin-bottom:6px; }
+  .turncard .tprompt { font-size:14px; line-height:1.5; color:var(--fg-hi); white-space:pre-wrap; word-break:break-word; }
+  .turncard .tprompt.muted { color:var(--fg-4); font-style:italic; font-size:12.5px; }
+  .turncard .tband { display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin-top:10px; font-size:12px; color:var(--fg-3); }
+  .tpill { padding:1px 8px; border:1px solid var(--border); border-radius:999px; font-size:11.5px; color:var(--fg-2); font-variant-numeric:tabular-nums; }
+  .tflag { padding:1px 8px; border-radius:999px; font-size:11.5px; color:var(--accent); background:var(--accent-wash); border:1px solid var(--accent-line); font-variant-numeric:tabular-nums; }
+  .frollup { margin-top:12px; display:flex; flex-direction:column; gap:1px; }
+  .frlabel { font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--fg-4); margin-bottom:5px; }
+  .frow, .crow, .srow { border-left:2px solid transparent; }
+  .frow { display:flex; align-items:center; gap:10px; padding:5px 8px; border-radius:var(--r1); cursor:pointer; transition:background .1s ease; }
+  .frow:hover { background:var(--hover); }
+  .frow.open { background:var(--selected); }
+  .frow .fname { flex:1 1 auto; min-width:0; font-family:var(--mono); font-size:12.5px; color:var(--fg-1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .frow .fstat { flex:0 0 auto; font-family:var(--mono); font-size:12px; font-variant-numeric:tabular-nums; }
+  .frow .fstat .ins { color:var(--live); }
+  .frow .fstat .del { color:var(--accent); }
+  .frow .fskip { flex:0 0 auto; font-size:11px; color:var(--fg-4); }
+  .crow { display:flex; align-items:center; gap:10px; margin-top:8px; padding:7px 9px; border-radius:var(--r2);
+    cursor:pointer; background:var(--surface-2); border:1px solid var(--border-subtle); }
+  .crow:hover { background:var(--hover); }
+  .crow.open { background:var(--selected); }
+  .crow .csha { flex:0 0 auto; font-family:var(--mono); font-size:12px; color:var(--live); }
+  .crow .csub { flex:1 1 auto; min-width:0; font-size:12.5px; color:var(--fg-1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .crow .cstat { flex:0 0 auto; font-family:var(--mono); font-size:11.5px; color:var(--fg-3); font-variant-numeric:tabular-nums; }
+  .tsteps-toggle { margin-top:12px; font-size:11.5px; color:var(--fg-3); cursor:pointer; user-select:none; }
+  .tsteps-toggle:hover { color:var(--fg-1); }
+  .tsteps { margin-top:4px; display:flex; flex-direction:column; }
+  .srow { display:flex; align-items:center; gap:9px; padding:4px 8px; border-radius:var(--r1); cursor:pointer; }
+  .srow:hover { background:var(--hover); }
+  .srow.open { background:var(--selected); }
+  .srow.flag { border-left-color:var(--fg-4); }
+  .srow.fail { border-left-color:var(--accent); }
+  .srow .stime { flex:0 0 auto; font-family:var(--mono); font-size:11px; color:var(--fg-4); font-variant-numeric:tabular-nums; }
+  .srow .stool { flex:0 0 78px; font-size:12px; color:var(--fg-3); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .srow .ssum { flex:1 1 auto; min-width:0; font-size:12.5px; color:var(--fg-1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .srow .sub { flex:0 0 auto; font-size:9.5px; letter-spacing:.04em; text-transform:uppercase; color:var(--fg-4);
+    border:1px solid var(--border); border-radius:var(--r1); padding:0 5px; }
+
   /* states */
   .empty { max-width:440px; margin:60px auto; padding:0 24px; text-align:center; color:var(--fg-3); }
   .empty .h { color:var(--fg-2); font-size:13.5px; margin-bottom:8px; }
@@ -252,6 +299,8 @@ const CLIENT_JS = `const ALERT = new Set(['dangerous-shell','destructive-git','a
 const RISKWORD = Object.assign(Object.create(null), { high:'high risk', medium:'medium risk', low:'low risk' });
 
 let current = null, expanded = new Set();
+let viewMode = 'story';               // 'story' (default lens) | 'timeline'
+let fpStory = null, storyOpen = new Set();   // fp gate + per-turn step-expansion (by turn key)
 let fpSessions = null, fpTimeline = null, fpVerdict = null, fpHud = null;
 let rowState = [];            // [{fp, tr, a}] parallel to the rendered action list
 let tbody = null;
@@ -314,9 +363,29 @@ function select(id){
   if(current === id) return;
   current = id; expanded = new Set();
   fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
+  fpStory = null; storyOpen = new Set();
   lastPrompt = null; turnN = 0;
   for(const [sid, d] of sessEls) d.classList.toggle('active', sid === current);
-  loadTimeline().catch(()=>{});
+  loadView().catch(()=>{});
+}
+
+// The main pane shows either the story (default) or the flat timeline.
+function loadView(){ return viewMode === 'story' ? loadStory() : loadTimeline(); }
+function setView(mode){
+  if(viewMode === mode) return;
+  viewMode = mode;
+  // reset both views' render state so the switch repaints cleanly from cache
+  fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
+  fpStory = null; lastPrompt = null; turnN = 0;
+  document.getElementById('timeline').textContent = '';
+  loadView().catch(()=>{});
+}
+function viewBar(){
+  const seg = el('div',{className:'viewtoggle',role:'tablist'});
+  const mk = (mode, label)=> el('button',{type:'button',className:(viewMode===mode?'on':''),
+    role:'tab','aria-selected':String(viewMode===mode),textContent:label,onclick:()=>setView(mode)});
+  seg.append(mk('story','Story'), mk('timeline','Timeline'));
+  return el('div',{className:'viewbar'}, seg);
 }
 
 async function loadSessions(){
@@ -425,6 +494,7 @@ function renderTimeline(main, actions){
   if(!incremental){
     main.textContent='';
     fpVerdict = null; rowState = []; lastPrompt = null; turnN = 0;
+    main.append(viewBar());
     main.append(el('section',{className:'summary',id:'verdict'}));
     buildFilterBar(main);   // filter bar + column labels, sticky over the rows
     tbody = el('div',{className:'tl',role:'table','aria-label':'action timeline'});
@@ -821,12 +891,144 @@ async function insertDetail(seq, row){
   row.after(el('div',{className:'detailrow'}, box));
 }
 
+/* ── story view — the re-traceable narrative ─────────────────────── */
+// A calm, causal read of a session: each user turn as a card — the prompt (intent),
+// an outcome band, the files it changed, its commits, and a collapsible step list.
+// Every file / commit / step expands the SAME dossier the timeline uses (via toggle),
+// so the diff + chain hashes are one click away. Full-rebuild on data change (fp-gated
+// so idle polls cost nothing); per-turn expansion persists across rebuilds.
+function shortPath(p){ const parts=(p||'').split('/').filter(Boolean); return parts.length<=2 ? (p||'') : parts.slice(-2).join('/'); }
+function pill(text){ return el('span',{className:'tpill',textContent:text}); }
+function stripTicks(s){ return (s||'').split(String.fromCharCode(96)).join(''); }
+
+async function loadStory(){
+  const main = document.getElementById('timeline');
+  if(!current){
+    const key = haveSessions ? 'sel' : 'armed';
+    if(fpStory !== 'e:'+key){ fpStory = 'e:'+key; main.textContent=''; main.append(viewBar(), emptyState(key)); }
+    return;
+  }
+  const sid = current;
+  const story = await api('/api/session/'+encodeURIComponent(sid)+'/story');
+  if(current !== sid) return;   // selection changed mid-fetch
+  const fp = JSON.stringify([sid, story]);
+  if(fp === fpStory) return;    // idle poll → zero DOM work
+  renderStory(main, story);
+  fpStory = fp;                 // commit only after a successful render
+}
+
+function renderStory(main, story){
+  main.textContent='';
+  main.append(viewBar());
+
+  const sum = el('section',{className:'summary'});
+  if(story.name) sum.append(el('div',{className:'sname',textContent:story.name}));
+  sum.append(el('div',{className:'sid'}, el('samp',{textContent:story.session_id})));
+  const c = story.counts || {turns:0,steps:0,files:0,commits:0};
+  const line = el('div',{className:'sline'});
+  line.append(el('span',{className:'n',textContent:String(c.turns)}), ' turns');
+  line.append(el('span',{className:'sep',textContent:'·'}), el('span',{className:'n',textContent:String(c.steps)}), ' steps');
+  if(c.files) line.append(el('span',{className:'sep',textContent:'·'}), el('span',{className:'n',textContent:String(c.files)}), ' files changed');
+  if(c.commits) line.append(el('span',{className:'sep',textContent:'·'}), el('span',{className:'n',textContent:String(c.commits)}), ' commits');
+  if(RISKWORD[story.verdict]){ const hot = story.verdict==='medium'||story.verdict==='high';
+    line.append(el('span',{className:'sep',textContent:'·'}), el('span',{className:'risk'+(hot?' hot':''),textContent:RISKWORD[story.verdict]})); }
+  sum.append(line);
+  if(story.files_changed && story.files_changed.length) sum.append(filesRollup(story.files_changed, 'files changed this session'));
+  main.append(sum);
+
+  const turns = story.turns || [];
+  if(!turns.length){ main.append(el('div',{className:'empty'}, el('p',{textContent:'No actions recorded in this session yet.'}))); return; }
+  const wrap = el('div',{className:'turns'});
+  turns.forEach((t,i)=> wrap.append(turnCard(t, i)));
+  main.append(wrap);
+}
+
+function turnCard(t, i){
+  const key = t.prompt_id || ('#'+i);
+  const card = el('div',{className:'turncard'});
+  card.append(el('div',{className:'tnum',textContent:'turn '+(i+1)}));
+  const hasPrompt = !!t.prompt;
+  const text = hasPrompt ? t.prompt : (t.prompt_id ? 'intent not captured (recorded before prompt capture)' : 'session activity');
+  card.append(el('div',{className:'tprompt'+(hasPrompt?'':' muted'),textContent:text}));
+
+  const band = el('div',{className:'tband'});
+  band.append(pill((t.steps||[]).length+' step'+((t.steps||[]).length===1?'':'s')));
+  const span = fmtSpan(t.started_at, t.ended_at);
+  if(span) band.append(pill(span));
+  if(t.flagged) band.append(el('span',{className:'tflag',textContent:t.flagged+' flagged'}));
+  card.append(band);
+
+  if(t.files_changed && t.files_changed.length) card.append(filesRollup(t.files_changed, null));
+  (t.commits||[]).forEach(cm=> card.append(commitRow(cm)));
+
+  const steps = t.steps || [];
+  if(steps.length){
+    const open = storyOpen.has(key);
+    const body = el('div',{className:'tsteps'});
+    const tog = el('div',{className:'tsteps-toggle',tabIndex:0});
+    const paint = (isOpen)=>{ tog.textContent = isOpen ? '▾ hide steps' : ('▸ show '+steps.length+' step'+(steps.length===1?'':'s')); };
+    const fill = ()=>{ body.textContent=''; steps.forEach(s=> body.append(stepRow(s))); };
+    if(open) fill();
+    paint(open);
+    const flip = ()=>{ if(storyOpen.has(key)){ storyOpen.delete(key); body.textContent=''; paint(false); }
+      else { storyOpen.add(key); fill(); paint(true); } };
+    tog.onclick = flip;
+    tog.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); flip(); } };
+    card.append(tog, body);
+  }
+  return card;
+}
+
+function filesRollup(files, label){
+  const box = el('div',{className:'frollup'});
+  if(label) box.append(el('div',{className:'frlabel',textContent:label}));
+  files.forEach(f=>{
+    const seq = f.seq;
+    const row = el('div',{className:'frow',tabIndex:0,title:f.path});
+    row.append(el('span',{className:'fname',textContent:shortPath(f.path)}));
+    row.append(el('span',{className:'fstat'},
+      el('span',{className:'ins',textContent:'+'+(f.insertions||0)}), ' ',
+      el('span',{className:'del',textContent:'−'+(f.deletions||0)})));
+    if(f.status==='skipped') row.append(el('span',{className:'fskip',textContent:f.skip_reason||'not stored'}));
+    row.onclick = ()=> toggle(seq, row);
+    row.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggle(seq,row); } };
+    box.append(row);
+  });
+  return box;
+}
+
+function commitRow(cm){
+  const seq = cm.seq;
+  const row = el('div',{className:'crow',tabIndex:0,title:cm.ref||''});
+  row.append(el('span',{className:'csha',textContent:cm.sha ? String(cm.sha).slice(0,7) : (cm.kind||'ref')}));
+  row.append(el('span',{className:'csub',textContent:cm.subject || (cm.kind ? cm.kind+' '+(cm.ref||'') : 'commit')}));
+  if(cm.insertions || cm.deletions) row.append(el('span',{className:'cstat',textContent:'+'+(cm.insertions||0)+' −'+(cm.deletions||0)}));
+  row.onclick = ()=> toggle(seq, row);
+  row.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggle(seq,row); } };
+  return row;
+}
+
+function stepRow(s){
+  const seq = s.post_seq || s.seq;
+  const fail = s.success === 0;
+  const flagged = (s.signals||[]).some(x=>ALERT.has(x));
+  const row = el('div',{className:'srow'+(fail?' fail':flagged?' flag':''),tabIndex:0});
+  row.append(el('span',{className:'stime',textContent:hhmmss(s.ts)}));
+  row.append(el('span',{className:'stool',textContent:(s.tool||s.type||'')}));
+  row.append(el('span',{className:'ssum',textContent:stripTicks(s.summary||s.target||'')}));
+  if(s.is_subagent) row.append(el('span',{className:'sub',textContent:s.agent_type||'subagent'}));
+  (s.signals||[]).forEach(x=> row.append(tag(x)));
+  row.onclick = ()=> toggle(seq, row);
+  row.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggle(seq,row); } };
+  return row;
+}
+
 /* ── poll loop ───────────────────────────────────────────────────── */
 async function render(){
   let linkOk = true;
   try { updateHud(await api('/health')); } catch { linkOk = false; }
   try { await loadSessions(); } catch {}
-  try { await loadTimeline(); } catch {}
+  try { await loadView(); } catch {}
   refreshRel();
   setLink(linkOk);
 }

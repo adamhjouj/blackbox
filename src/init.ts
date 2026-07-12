@@ -7,7 +7,7 @@ import { configPath, ensureBlackboxDir } from './paths';
 
 /** Tool events get a "*" matcher; the rest are matcher-less groups. */
 const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'];
-const OTHER_EVENTS = ['SessionStart', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'];
+const OTHER_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'];
 
 const MIN_VERSION = [2, 1, 119]; // duration_ms floor
 

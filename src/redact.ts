@@ -26,7 +26,7 @@ export interface RedactionResult {
 
 /** Only these subtrees are walked. Top-level IDs (session_id, tool_use_id, …) are
  *  deliberately left untouched — entropy detection would wreck columns and joins. */
-const WALK_FIELDS = ['tool_input', 'tool_response', 'tool_output', 'error', 'last_assistant_message', 'prompt', 'message'];
+const WALK_FIELDS = ['tool_input', 'tool_response', 'tool_output', 'error', 'last_assistant_message', 'prompt', 'user_input', 'message'];
 
 /** key = value / key: value where the key names a credential — catches even
  *  low-entropy secrets (e.g. `DB_PASSWORD=hunter2`) and slash-bearing values. */

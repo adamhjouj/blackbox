@@ -11,6 +11,7 @@
 
 export type Phase =
   | 'session_start'
+  | 'prompt'
   | 'pre'
   | 'post'
   | 'failure'
