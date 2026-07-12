@@ -7,6 +7,7 @@ import { DEFAULT_PORT, startDaemon } from './daemon';
 import { canonical } from './hash';
 import { init, uninit, versionWarning } from './init';
 import { normalizeAndCapture } from './normalize';
+import { persistReconciliation } from './reconcile';
 import { buildForensicReport, buildReport, defaultReportSession } from './report';
 import { loadPublicKey, loadWatermark } from './sign';
 import { backfill, computeSession, rescoreSession } from './risk-engine';
@@ -149,6 +150,7 @@ Usage:
   blackbox verify                Verify the hash chain; report the first break
   blackbox rescore               Recompute the risk layer (--session, --ruleset, --check, --prune <v>)
   blackbox prune                 Age out mutation content (--older-than 30d); keeps events, hashes, and verify
+  blackbox reconcile             Cross-check hooks vs git ground truth (--session, --check for details)
   blackbox report                Export a shareable Markdown session report (--session, --ruleset, --out <file>)
                                  Add --forensic for an evidentiary case-file (custody + signature + manifest)
   blackbox head                  Print the current head anchor (seq, count, hash)
@@ -631,6 +633,33 @@ function cmdPrune(args: Args): number {
   }
 }
 
+function cmdReconcile(args: Args): number {
+  const store = new Store(resolveDb(args.db));
+  try {
+    const sids = args.session ? [args.session] : store.sessions().map((s) => s.session_id);
+    const now = new Date().toISOString();
+    let withFindings = 0;
+    let totalFindings = 0;
+    let uncorroborated = 0;
+    for (const sid of sids) {
+      const r = persistReconciliation(store, sid, now);
+      if (!r.coverage.corroborated) uncorroborated++;
+      if (r.findings.length) {
+        withFindings++;
+        totalFindings += r.findings.length;
+        if (args.check) {
+          console.log(`${sid.slice(0, 12)}: ${r.findings.length} discrepancy(ies)`);
+          for (const f of r.findings) console.log(`  [${f.type}] ${f.path} — ${f.note}`);
+        }
+      }
+    }
+    console.log(`reconciled ${sids.length} session(s): ${withFindings} with discrepancies (${totalFindings} total), ${uncorroborated} uncorroborated`);
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 function cmdReport(args: Args): number {
   const store = new Store(resolveDb(args.db));
   try {
@@ -698,6 +727,8 @@ async function main(): Promise<number> {
       return cmdRescore(args);
     case 'prune':
       return cmdPrune(args);
+    case 'reconcile':
+      return cmdReconcile(args);
     case 'report':
       return cmdReport(args);
     case 'head':

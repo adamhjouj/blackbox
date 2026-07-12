@@ -5,6 +5,7 @@ import { captureMutation, type BlobInput, type MutationFact, type SessionAnchor 
 import { redact, redactText, type RedactOptions } from './redact';
 import type { TurnIntent } from './transcript';
 import type { ActionType, NormalizedEvent, Phase } from './types';
+import type { WorktreeDelta } from './worktree';
 
 /** Map a raw hook_event_name to our coarse phase. */
 function toPhase(hookEvent: string): Phase {
@@ -322,4 +323,48 @@ export function reasoningEvent(sessionId: string, intent: TurnIntent, capturedAt
     redaction_count: hits.length,
     detail: JSON.stringify(detail),
   };
+}
+
+/**
+ * R2 — build the standalone event carrying the git ground-truth fact
+ * `detail.worktree_delta` (paths + status + diffstat + on-disk content HASHES; no
+ * bodies, so nothing to redact). Appended async after SessionEnd; the reconciliation
+ * layer joins it against the hook mutations. A hashed fact — durable, recomputable.
+ */
+function worktreeEvent(sessionId: string, delta: WorktreeDelta, capturedAt: string, hookEvent: string, phase: Phase, detailKey: 'worktree_delta' | 'worktree_base'): NormalizedEvent {
+  return {
+    event_id: randomUUID(),
+    session_id: sessionId,
+    tool_use_id: null,
+    prompt_id: null,
+    phase,
+    hook_event: hookEvent,
+    tool_name: null,
+    action_type: 'session',
+    target: null,
+    agent_id: null,
+    agent_type: 'main',
+    cwd: null,
+    permission_mode: null,
+    success: null,
+    duration_ms: null,
+    ts: capturedAt,
+    captured_at: capturedAt,
+    raw: JSON.stringify({ kind: hookEvent, session_id: sessionId }),
+    output_hash: null,
+    output_size_bytes: null,
+    redaction_count: 0,
+    detail: JSON.stringify({ [detailKey]: delta }),
+  };
+}
+
+/** End-of-session git ground truth (worktree vs the session's start HEAD). */
+export function worktreeDeltaEvent(sessionId: string, delta: WorktreeDelta, capturedAt: string): NormalizedEvent {
+  return worktreeEvent(sessionId, delta, capturedAt, 'WorktreeDelta', 'session_end', 'worktree_delta');
+}
+
+/** Start-of-session baseline (files already dirty/untracked at SessionStart), so the
+ *  reconciler doesn't blame the agent for the developer's pre-existing changes. */
+export function worktreeBaseEvent(sessionId: string, delta: WorktreeDelta, capturedAt: string): NormalizedEvent {
+  return worktreeEvent(sessionId, delta, capturedAt, 'WorktreeBase', 'session_start', 'worktree_base');
 }

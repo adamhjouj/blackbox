@@ -14,8 +14,17 @@
  * null `prompt` (intent unknown), which is honest degradation, not a failure.
  */
 import type { Action } from './read-api';
+import type { Coverage, Discrepancy } from './reconcile';
 import type { FlagId } from './risk-rules';
 import { RISK_FLAGS } from './risk-rules';
+
+/** R2 reconciliation summary attached to the story (populated by read-api). */
+export interface ReconSummary {
+  corroborated: boolean;
+  finding_count: number;
+  findings: Discrepancy[];
+  coverage: Coverage;
+}
 
 /** Model/usage metadata for a turn (R1), from the transcript. */
 export interface TurnMeta {
@@ -106,6 +115,7 @@ export interface SessionStory {
   files_changed: FileChange[]; // session-level rollup
   commits: Commit[];
   counts: { turns: number; steps: number; files: number; commits: number };
+  reconciliation: ReconSummary | null; // R2 — populated by read-api.sessionStory
 }
 
 export interface StoryInput {
@@ -274,5 +284,6 @@ export function buildStory(input: StoryInput): SessionStory {
     files_changed: sessionFiles,
     commits: allCommits,
     counts: { turns: turns.length, steps: stepCount, files: sessionFiles.length, commits: allCommits.length },
+    reconciliation: null, // read-api attaches the persisted R2 summary
   };
 }

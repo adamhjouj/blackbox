@@ -151,6 +151,26 @@ CREATE TABLE IF NOT EXISTS signatures (
 );
 `;
 
+/**
+ * R2 reconciliation = a SEPARATE re-derivable interpretation, like risk. It joins
+ * the captured git worktree_delta fact against the hook mutations and records
+ * discrepancy findings + coverage. Never part of the hash chain; recomputable via
+ * `blackbox reconcile`, so verify() is byte-identical.
+ */
+const RECON_SCHEMA = `
+CREATE TABLE IF NOT EXISTS session_reconciliation (
+  session_id      TEXT    NOT NULL,
+  ruleset_version TEXT    NOT NULL,
+  corroborated    INTEGER NOT NULL,
+  finding_count   INTEGER NOT NULL,
+  findings        TEXT    NOT NULL,
+  coverage        TEXT    NOT NULL,
+  last_seq        INTEGER NOT NULL,
+  computed_at     TEXT    NOT NULL,
+  PRIMARY KEY (session_id, ruleset_version)
+);
+`;
+
 export interface ChainMeta {
   count: number;
   head_seq: number;
@@ -196,6 +216,18 @@ export interface SignatureRow {
   sig: string;
   pubkey: string;
   ts: string;
+}
+
+/** A session's R2 reconciliation verdict (re-derivable, un-hashed). */
+export interface SessionReconciliationRow {
+  session_id: string;
+  ruleset_version: string;
+  corroborated: number;
+  finding_count: number;
+  findings: string; // JSON Discrepancy[]
+  coverage: string; // JSON Coverage
+  last_seq: number;
+  computed_at: string;
 }
 
 export interface SessionSummary {
@@ -252,6 +284,7 @@ export class Store {
     this.db.exec(RISK_SCHEMA);
     this.db.exec(BLOB_SCHEMA);
     this.db.exec(SIG_SCHEMA);
+    this.db.exec(RECON_SCHEMA);
     this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -356,6 +389,30 @@ export class Store {
         )
         .get(toolUseId, afterSeq) as BlackboxEvent | undefined) ?? null
     );
+  }
+
+  /** R2: the session's START HEAD (from the SessionStart git anchor), or null when
+   *  the session wasn't anchored (no cwd / not a repo). The reconciliation base. */
+  sessionBaseSha(sessionId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT json_extract(detail, '$.anchor.head_sha') AS sha
+           FROM events WHERE session_id = ? AND phase = 'session_start' AND detail LIKE '%anchor%'
+          ORDER BY seq ASC LIMIT 1`,
+      )
+      .get(sessionId) as { sha: string | null } | undefined;
+    return row?.sha ?? null;
+  }
+
+  /** R2: has a worktree delta already been captured for this session? (SessionEnd
+   *  can fire more than once — keep one WorktreeDelta event per session.) */
+  worktreeDeltaExists(sessionId: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM events WHERE session_id = ? AND hook_event = 'WorktreeDelta' LIMIT 1").get(sessionId);
+  }
+
+  /** R2: has the SessionStart dirty-baseline already been captured for this session? */
+  worktreeBaseExists(sessionId: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM events WHERE session_id = ? AND hook_event = 'WorktreeBase' LIMIT 1").get(sessionId);
   }
 
   /** R1: has a reasoning digest already been captured for this turn? (Stop can
@@ -481,6 +538,34 @@ export class Store {
   /** The most recent signed checkpoint, or null. */
   latestSignature(): SignatureRow | null {
     return (this.db.prepare('SELECT * FROM signatures ORDER BY seq DESC LIMIT 1').get() as SignatureRow | undefined) ?? null;
+  }
+
+  // ---- R2 reconciliation layer -------------------------------------------
+
+  reconciliationUpsert(r: SessionReconciliationRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO session_reconciliation
+           (session_id, ruleset_version, corroborated, finding_count, findings, coverage, last_seq, computed_at)
+         VALUES (@session_id, @ruleset_version, @corroborated, @finding_count, @findings, @coverage, @last_seq, @computed_at)
+         ON CONFLICT(session_id, ruleset_version) DO UPDATE SET
+           corroborated=@corroborated, finding_count=@finding_count, findings=@findings,
+           coverage=@coverage, last_seq=@last_seq, computed_at=@computed_at`,
+      )
+      .run(r);
+  }
+
+  sessionReconciliation(sessionId: string, ruleset: string): SessionReconciliationRow | null {
+    return (
+      (this.db
+        .prepare('SELECT * FROM session_reconciliation WHERE session_id = ? AND ruleset_version = ?')
+        .get(sessionId, ruleset) as SessionReconciliationRow | undefined) ?? null
+    );
+  }
+
+  reconciliationDelete(ruleset: string, sessionId?: string): void {
+    if (sessionId) this.db.prepare('DELETE FROM session_reconciliation WHERE ruleset_version = ? AND session_id = ?').run(ruleset, sessionId);
+    else this.db.prepare('DELETE FROM session_reconciliation WHERE ruleset_version = ?').run(ruleset);
   }
 
   /** Session ids that have events but no up-to-date verdict for `ruleset`. */

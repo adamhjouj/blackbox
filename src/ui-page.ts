@@ -268,6 +268,19 @@ const PAGE_CSS = `  :root {
   .treason pre { margin:0; padding:10px 12px; background:var(--bg); border:1px solid var(--border-subtle); border-radius:var(--r2);
     white-space:pre-wrap; word-break:break-word; font:12px/1.55 var(--mono); color:var(--fg-2); max-height:300px; overflow:auto; }
   .treason .redact { color:var(--accent); background:var(--accent-wash); border-radius:3px; padding:0 3px; }
+  /* R2 git-corroboration strip */
+  .covstrip { margin:0 18px 12px; padding:10px 14px; border-radius:var(--r3); font-size:12.5px; line-height:1.5; border:1px solid var(--border-subtle); color:var(--fg-3); }
+  .covstrip .covlabel { font-weight:600; }
+  .covstrip.cov-ok .covlabel { color:var(--live); }
+  .covstrip.cov-none { color:var(--fg-4); }
+  .covstrip.cov-warn { border-color:var(--accent-line); background:var(--accent-wash); }
+  .covstrip.cov-warn .covlabel { color:var(--accent); }
+  .covhead { margin-bottom:7px; }
+  .covlist { display:flex; flex-direction:column; gap:5px; }
+  .covrow { display:flex; gap:11px; align-items:baseline; }
+  .covtype { flex:0 0 62px; font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--accent); font-weight:600; }
+  .covpath { flex:0 0 auto; font-family:var(--mono); font-size:12px; color:var(--fg-1); }
+  .covnote { flex:1 1 auto; min-width:0; color:var(--fg-3); font-size:11.5px; }
   .tsteps { display:flex; flex-direction:column; margin-top:-3px; }
   .srow { display:flex; align-items:center; gap:11px; padding:3px 8px; border-radius:var(--r1); cursor:pointer; }
   .srow:hover { background:var(--hover); }
@@ -345,6 +358,7 @@ const turns = [];                 // [{key, hdr}] in render order (keyboard turn
 const turnHeadByKey = new Map();  // prompt_id → .turnhead element
 let curTurnKey = null;            // prompt_id the rows are currently appended under
 let _rz = 0;                      // rAF handle for the debounced --turntop remeasure
+let flagCursor = -1;              // next-flag cursor into the flagged rows (seeded from the viewport, then steps)
 let haveSessions = false, lastHealth = null, lastHead = null;
 const sessEls = new Map();    // session_id -> rail row element
 const cardsById = new Map();  // session_id -> latest SessionCard
@@ -405,7 +419,7 @@ function select(id){
   fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
   fpStory = null; storyOpen = new Set();
   lastPrompt = null; turnN = 0;
-  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false;
+  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false; flagCursor = -1;
   for(const [sid, d] of sessEls) d.classList.toggle('active', sid === current);
   loadView().catch(()=>{});
 }
@@ -418,7 +432,7 @@ function setView(mode){
   // reset both views' render state so the switch repaints cleanly from cache
   fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
   fpStory = null; lastPrompt = null; turnN = 0;
-  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false;
+  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false; flagCursor = -1;
   document.getElementById('timeline').textContent = '';
   loadView().catch(()=>{});
 }
@@ -575,11 +589,12 @@ function renderTimeline(main, actions){
 function maybeDivider(a){
   if(!a.prompt_id || a.prompt_id === lastPrompt) return;   // null never opens/closes a turn
   lastPrompt = a.prompt_id; turnN++;
-  const key = a.prompt_id, folded = bigSession;            // fold new turns by default on a wall
+  const key = a.prompt_id, folded = bigSession;            // fold state set once per full render (a live-watched session is not re-folded mid-stream)
   if(folded) collapsedTurns.add(key);
   const gist = (a.summary || a.target || '').split(String.fromCharCode(96)).join('');
   const metaEl = el('span',{className:'th-meta'});
-  const riskEl = el('span',{className:'th-risk'}); riskEl.style.display = 'none';
+  const riskEl = el('span',{className:'th-risk',title:'flagged'}); riskEl.style.display = 'none';
+  riskEl.setAttribute('role','img'); riskEl.setAttribute('aria-label','flagged');   // risk is not conveyed by colour alone
   const hdr = el('div',{className:'turnhead'+(folded?'':' open'),role:'button',tabIndex:0},
     el('span',{className:'th-chev',textContent:'›'}),
     el('span',{className:'th-n',textContent:'turn '+turnN}),
@@ -698,7 +713,9 @@ function applyFilter(){
   let shown = 0, total = 0, flaggedMatch = 0;
   let hdr = null, hdrKey = null, hdrMatch = false;
   const flushHdr = ()=>{ if(hdr){ setDisp(hdr, filterActive ? hdrMatch : true);
-    hdr.classList.toggle('open', filterActive || !collapsedTurns.has(hdrKey)); } };
+    const open = filterActive || !collapsedTurns.has(hdrKey);
+    hdr.classList.toggle('open', open);
+    if(hdr.getAttribute('aria-expanded') !== String(open)) hdr.setAttribute('aria-expanded', String(open)); } };
   const kids = tbody.children;
   for(let i=0;i<kids.length;i++){
     const n = kids[i], cl = n.classList;
@@ -750,18 +767,18 @@ function buildFilterBar(main){
   const bar = el('div',{className:'filterbar',role:'search'});
 
   flaggedBtn = el('button',{type:'button',className:'fb-toggle',title:'show only flagged actions',
-    textContent:'flagged', onclick:()=>{ fltFlagged = !fltFlagged; syncFlagged(); applyFilter(); }});
+    textContent:'flagged', onclick:()=>{ fltFlagged = !fltFlagged; flagCursor = -1; syncFlagged(); applyFilter(); }});
   bar.append(flaggedBtn);
 
   toolOpts = new Set(['']);
   toolSel = el('select',{className:'fb-tool',title:'filter by tool',
-    onchange:()=>{ fltTool = toolSel.value; applyFilter(); }});
+    onchange:()=>{ fltTool = toolSel.value; flagCursor = -1; applyFilter(); }});
   toolSel.append(el('option',{value:'',textContent:'all tools'}));
   bar.append(toolSel);
 
   searchBox = el('input',{type:'search',className:'fb-search',placeholder:'search summary or target…',
     value:fltText, spellcheck:false,
-    oninput:()=>{ fltText = searchBox.value.trim().toLowerCase(); applyFilter(); }});
+    oninput:()=>{ fltText = searchBox.value.trim().toLowerCase(); flagCursor = -1; applyFilter(); }});
   bar.append(searchBox);
 
   jumpBtn = el('button',{type:'button',className:'fb-jump',title:'jump to next flagged action · press n',
@@ -788,21 +805,26 @@ function measureTurnTop(){
 
 // Scroll the next flagged row below the fold into view (wraps at the end); counts
 // only rows the filter leaves visible. Bound to the button and the 'n' key.
+// Step to the next flagged row (wraps). A module cursor guarantees each press ADVANCES
+// (scrollIntoView centres the target, so a geometry-only "first below the fold" would keep
+// re-selecting it). Cold press (cursor reset by a session/view/filter change) seeds from the
+// first flag below the fold to honour "next ↓"; subsequent presses increment. Collapse-aware:
+// a flagged row inside a folded turn is still a candidate and its turn is expanded on landing.
 function jumpNext(){
   if(!tbody) return;
   const cands = rowState.filter(s=> isFlagged(s.a) && rowMatches(s.a));   // filter-aware, collapse-independent
-  if(!cands.length) return;
-  const main = document.getElementById('timeline'), head = document.querySelector('.tlhead');
-  const fold = main.getBoundingClientRect().top + (head ? head.getBoundingClientRect().height : 0) + 4;
-  // a folded row has no position of its own → fall back to its turn header's position
-  const posOf = (s)=>{
-    if(s.tr.style.display !== 'none') return s.tr.getBoundingClientRect().top;
-    const h = turnHeadByKey.get(s.tr._turnKey);
-    return h ? h.getBoundingClientRect().top : Infinity;
-  };
-  let target = null;
-  for(const s of cands){ if(posOf(s) > fold){ target = s; break; } }
-  if(!target) target = cands[0];   // past the last flagged row → wrap to the first
+  if(!cands.length){ flagCursor = -1; return; }
+  if(flagCursor < 0 || flagCursor >= cands.length){
+    const main = document.getElementById('timeline'), head = document.querySelector('.tlhead');
+    const fold = main.getBoundingClientRect().top + (head ? head.getBoundingClientRect().height : 0) + 4;
+    const posOf = (s)=>{ if(s.tr.style.display !== 'none') return s.tr.getBoundingClientRect().top;
+      const h = turnHeadByKey.get(s.tr._turnKey); return h ? h.getBoundingClientRect().top : Infinity; };   // folded row → its header's position
+    const seed = cands.findIndex(s => posOf(s) > fold);
+    flagCursor = seed < 0 ? 0 : seed;
+  } else {
+    flagCursor = (flagCursor + 1) % cands.length;   // advance; wrap past the last
+  }
+  const target = cands[flagCursor];
   if(target.tr._turnKey != null && collapsedTurns.has(target.tr._turnKey)){
     collapsedTurns.delete(target.tr._turnKey);
     const h = turnHeadByKey.get(target.tr._turnKey); if(h) h.setAttribute('aria-expanded','true');
@@ -836,7 +858,7 @@ function gotoTurn(dir){
   const vis = turns.filter(t=> t.hdr.style.display !== 'none');   // skip filtered-out headers
   if(!vis.length) return;
   const top = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--turntop')) || 38;
-  const fold = main.getBoundingClientRect().top + top + 1;
+  const fold = main.getBoundingClientRect().top + top + 6;   // tolerance > the header's 4px scroll-margin so the just-jumped turn counts as pinned and the next press advances
   let idx = -1;   // last header at/above the fold = the pinned turn; -1 = above the first
   for(let i=0;i<vis.length;i++){ if(vis[i].hdr.getBoundingClientRect().top <= fold) idx = i; else break; }
   const ni = Math.max(0, Math.min(vis.length-1, idx + dir));
@@ -1097,11 +1119,43 @@ function renderStory(main, story){
   if(story.files_changed && story.files_changed.length) sum.append(group('files changed', story.files_changed.map(fileRow)));
   main.append(sum);
 
+  if(story.reconciliation) main.append(coverageStrip(story.reconciliation));
+
   const turns = story.turns || [];
   if(!turns.length){ main.append(el('div',{className:'empty'}, el('p',{textContent:'No actions recorded in this session yet.'}))); return; }
   const wrap = el('div',{className:'turns'});
   turns.forEach((t,i)=> wrap.append(turnCard(t, i)));
   main.append(wrap);
+}
+
+// R2: the git-corroboration strip — did what happened on disk match the hook stream?
+const COVLABEL = { ghost_mutation:'ghost', phantom_mutation:'phantom', content_mismatch:'mismatch' };
+function coverageStrip(r){
+  const box = el('div',{className:'covstrip'});
+  const cov = r.coverage || {};
+  if(!r.corroborated){
+    box.classList.add('cov-none');
+    box.append(el('span',{className:'covlabel',textContent:'uncorroborated'}),
+      ' — '+(cov.reason||'no git anchor')+'. blackbox corroborates file mutations against git ground truth; this session has no baseline.');
+    return box;
+  }
+  if(!r.finding_count){
+    box.classList.add('cov-ok');
+    box.append(el('span',{className:'covlabel',textContent:'✓ git-corroborated'}),
+      ' — every on-disk change matches the hook stream ('+(cov.files_on_disk||0)+' file'+((cov.files_on_disk||0)===1?'':'s')+').');
+    return box;
+  }
+  box.classList.add('cov-warn');
+  box.append(el('div',{className:'covhead'}, el('span',{className:'covlabel',textContent:'⚠ '+r.finding_count+' discrepanc'+(r.finding_count===1?'y':'ies')+' vs git ground truth'})));
+  const list = el('div',{className:'covlist'});
+  (r.findings||[]).slice(0,25).forEach(f=>{
+    list.append(el('div',{className:'covrow'},
+      el('span',{className:'covtype',textContent:COVLABEL[f.type]||f.type}),
+      el('span',{className:'covpath',textContent:shortPath(f.path)}),
+      el('span',{className:'covnote',textContent:f.note})));
+  });
+  box.append(list);
+  return box;
 }
 
 function turnCard(t, i){

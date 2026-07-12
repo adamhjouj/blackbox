@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { actionSummary, explainEvent } from './explain';
 import { buildStory, type EventDetail, type SessionStory } from './provenance';
+import { RECON_VERSION, type Coverage, type Discrepancy } from './reconcile';
 import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
 import type { SessionRiskRow, Store } from './store';
 import type { BlackboxEvent } from './types';
@@ -328,6 +329,17 @@ export function sessionStory(store: Store, sessionId: string): SessionStory {
     actions,
     detailBySeq,
   });
+
+  // R2: attach the persisted reconciliation summary (git ground truth vs hooks).
+  const recon = store.sessionReconciliation(sessionId, RECON_VERSION);
+  if (recon) {
+    story.reconciliation = {
+      corroborated: recon.corroborated === 1,
+      finding_count: recon.finding_count,
+      findings: safeArray<Discrepancy>(recon.findings),
+      coverage: safeParse<Coverage>(recon.coverage, { corroborated: recon.corroborated === 1, reason: null, files_on_disk: 0, hook_files: 0, truncated: false }),
+    };
+  }
 
   if (storyCache.size > 64) storyCache.clear();
   storyCache.set(sessionId, { head, story });

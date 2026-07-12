@@ -10,8 +10,10 @@ import {
   resolveRepoTop,
 } from './git-collector';
 import { sessionAnchor } from './mutation';
-import { normalize, normalizeAndCapture, reasoningEvent } from './normalize';
+import { normalize, normalizeAndCapture, reasoningEvent, worktreeBaseEvent, worktreeDeltaEvent } from './normalize';
+import { persistReconciliation } from './reconcile';
 import { readTurnIntent } from './transcript';
+import { captureWorktreeDelta } from './worktree';
 import { blackboxDir, configPath } from './paths';
 import { eventDetail, sessionActions, sessionCards, sessionStory } from './read-api';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
@@ -191,6 +193,33 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     }
   };
 
+  // R2 git-anchored reconciliation: at SessionEnd, diff the worktree vs the session's
+  // start HEAD (the ground-truth FACT), then reconcile it against the hook mutations
+  // (the re-derivable interpretation). Off the hook path; never fails a recording.
+  // At SessionStart: snapshot the worktree's dirty/untracked state vs HEAD, so a
+  // developer's pre-existing changes aren't later blamed on the agent.
+  const captureBaseline = (sessionId: string, cwd: string | null, baseSha: string | null): void => {
+    try {
+      if (store.worktreeBaseExists(sessionId)) return;
+      const delta = captureWorktreeDelta(cwd, baseSha);
+      if (delta) store.append(worktreeBaseEvent(sessionId, delta, new Date().toISOString()));
+    } catch (err) {
+      log(`baseline capture failed: ${(err as Error).message}`);
+    }
+  };
+  const captureWorktree = (sessionId: string, cwd: string | null): void => {
+    try {
+      if (!store.worktreeDeltaExists(sessionId)) {
+        const base = store.sessionBaseSha(sessionId);
+        const delta = captureWorktreeDelta(cwd, base);
+        if (delta) store.append(worktreeDeltaEvent(sessionId, delta, new Date().toISOString()));
+      }
+      persistReconciliation(store, sessionId, new Date().toISOString());
+    } catch (err) {
+      log(`reconciliation failed: ${(err as Error).message}`);
+    }
+  };
+
   const recordHook = (body: string, truncated: boolean): void => {
     const capturedAt = new Date().toISOString();
     if (truncated) {
@@ -235,6 +264,20 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
       const pid = typeof payload.prompt_id === 'string' ? payload.prompt_id : null;
       const tp = typeof payload.transcript_path === 'string' ? payload.transcript_path : store.sessionTranscriptPath(sid);
       if (tp) setTimeout(() => captureReasoning(sid, pid, tp), 1200).unref?.();
+    }
+
+    // R2: the session started — snapshot the dirty worktree baseline (vs HEAD).
+    if (he === 'SessionStart') {
+      const sid = typeof payload.session_id === 'string' ? payload.session_id : appended.session_id;
+      const cwd = typeof payload.cwd === 'string' ? payload.cwd : appended.cwd;
+      const base = anchor?.head_sha ?? null;
+      if (cwd && base) setTimeout(() => captureBaseline(sid, cwd, base), 300).unref?.();
+    }
+    // R2: the session ended — capture git ground truth + reconcile, async.
+    if (he === 'SessionEnd') {
+      const sid = typeof payload.session_id === 'string' ? payload.session_id : appended.session_id;
+      const cwd = typeof payload.cwd === 'string' ? payload.cwd : appended.cwd;
+      setTimeout(() => captureWorktree(sid, cwd), 400).unref?.();
     }
   };
 
