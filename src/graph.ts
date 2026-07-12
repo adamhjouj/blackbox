@@ -60,9 +60,11 @@ export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptI
     if (from !== to && nodes.has(from) && nodes.has(to)) edges.push({ from, to, type, risk });
   };
 
-  // seq → the prompt node that owns it, so a risk combo can attach to the graph even
-  // in the overview (where individual steps aren't nodes).
+  // seq → the node a risk combo should attach to. A step's seq AND its post_seq both
+  // map to the step node (combos often cite the POST/output seq, e.g. a redaction-
+  // detected secret-touch), preferred over the owning prompt.
   const seqToPrompt = new Map<number, string>();
+  const seqToStep = new Map<number, string>();
 
   const turns = promptId ? story.turns.filter((t) => t.prompt_id === promptId) : story.turns;
   turns.forEach((t, ti) => {
@@ -79,7 +81,11 @@ export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptI
         else addEdge(pid, sid, 'caused');
         if (s.type === 'task_control') lastTask = sid;
         seqToPrompt.set(s.seq, pid);
-        if (s.post_seq != null) seqToPrompt.set(s.post_seq, pid);
+        seqToStep.set(s.seq, sid);
+        if (s.post_seq != null) {
+          seqToPrompt.set(s.post_seq, pid);
+          seqToStep.set(s.post_seq, sid);
+        }
         for (const f of s.files) {
           const fid = 'f:' + f.path;
           addNode(fid, 'file', basename(f.path), f.seq);
@@ -106,17 +112,20 @@ export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptI
   });
 
   // risk combos → secret / host / mcp entities + the red exfil path. Anchor to the
-  // step node when it exists (detailed), else to the prompt that owns the seq (overview).
-  const anchorFor = (seq: number): string | null => (nodes.has('s:' + seq) ? 's:' + seq : seqToPrompt.get(seq) ?? null);
+  // step node (via seqToStep, incl. post_seq) when present, else the owning prompt.
+  const anchorFor = (seq: number): string | null => seqToStep.get(seq) ?? seqToPrompt.get(seq) ?? null;
   const markRisk = (id: string | null): void => {
     if (id && nodes.has(id)) nodes.get(id)!.risk = true;
   };
   for (const cb of combos) {
+    const ant = anchorFor(cb.antecedent_seq);
+    const con = anchorFor(cb.consequent_seq);
+    // A combo that anchors nowhere in this (sub)graph belongs to a different turn —
+    // never draw a fabricated exfil path on an unrelated turn.
+    if (!ant && !con) continue;
     if (cb.id === 'exfil-chain' || cb.id.startsWith('injected')) {
       const sec = 'sec:' + cb.antecedent_seq;
       addNode(sec, 'secret', 'secret', cb.antecedent_seq, true);
-      const ant = anchorFor(cb.antecedent_seq);
-      const con = anchorFor(cb.consequent_seq);
       markRisk(ant);
       markRisk(con);
       if (ant) addEdge(ant, sec, 'read', true);
@@ -129,7 +138,12 @@ export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptI
         addEdge(sec, con, 'combo', true); // exfil path without a resolved host node
       }
     }
-    if (cb.server) addNode('mcp:' + cb.server, 'mcp', cb.server, null, true);
+    if (cb.server) {
+      const m = 'mcp:' + cb.server;
+      addNode(m, 'mcp', cb.server, null, true);
+      const a = con || ant; // link the poisoned server to the step/prompt that used it
+      if (a) addEdge(a, m, 'read', true);
+    }
   }
 
   for (const e of edges) {

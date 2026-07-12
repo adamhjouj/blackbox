@@ -102,11 +102,13 @@ test('an injected-* combo yields the same secret/host/red-path shape as exfil-ch
   assert.equal(g.edges.filter((e) => e.type === 'combo' && e.risk).length, 1);
 });
 
-test('a tool-poisoning combo (server field) yields an mcp node, no phantom secret/host', () => {
-  const g = buildGraph(STORY, [{ id: 'tool-poisoning', severity: 'high', antecedent_seq: 0, consequent_seq: 0, server: 'evil-mcp', note: 'x' }]);
+test('a tool-poisoning combo (server field) yields a connected mcp node, no phantom secret/host', () => {
+  const g = buildGraph(STORY, [{ id: 'tool-poisoning', severity: 'high', antecedent_seq: 2, consequent_seq: 4, server: 'evil-mcp', note: 'x' }]);
   assert.equal(types(g.nodes).mcp, 1);
-  assert.ok(g.nodes.find((n) => n.id === 'mcp:evil-mcp' && n.risk));
-  assert.ok(!types(g.nodes).secret && !types(g.nodes).host);
+  const mcp = g.nodes.find((n) => n.id === 'mcp:evil-mcp');
+  assert.ok(mcp && mcp.risk);
+  assert.ok(mcp.degree > 0, 'the mcp node is linked to the step/prompt that used it, not floating');
+  assert.ok(!types(g.nodes).secret && !types(g.nodes).host, 'tool-poisoning is orthogonal to the exfil path');
 });
 
 test('same-basename files are distinct nodes; a step and a commit can share a seq', () => {
@@ -132,10 +134,38 @@ test('a file changed across two turns is one node with degree 2 (overview dedup)
   assert.equal(g.edges.filter((e) => e.type === 'changed').length, 2);
 });
 
-test('a dangling combo (seqs anchor nowhere) still shows secret+host+combo, no read/sent', () => {
+test('a combo that anchors nowhere in the (sub)graph is skipped — no fabricated path', () => {
   const g = buildGraph(STORY, [{ id: 'exfil-chain', severity: 'high', antecedent_seq: 999, consequent_seq: 998, host: 'evil.com', note: 'x' }], 'P1');
-  assert.equal(types(g.nodes).secret, 1);
-  assert.equal(types(g.nodes).host, 1);
-  assert.equal(g.edges.filter((e) => e.type === 'combo').length, 1);
-  assert.equal(g.edges.filter((e) => e.type === 'read' || e.type === 'sent').length, 0);
+  assert.ok(!types(g.nodes).secret, 'no orphan secret node when the combo belongs to no visible step/prompt');
+  assert.ok(!types(g.nodes).host);
+  assert.equal(g.edges.filter((e) => e.type === 'combo').length, 0);
+});
+
+test('a detailed subgraph never leaks another turn\'s exfil combo', () => {
+  const s = mkStory([
+    mkTurn('P1', 'benign edit', [mkStep(2, '/r/a.ts')]),
+    mkTurn('P2', 'risky turn', [mkStep(10, '/r/.env'), mkStep(12, '/r/x.ts')]),
+  ]);
+  const p2Combo = [{ id: 'exfil-chain', severity: 'high', antecedent_seq: 10, consequent_seq: 12, host: 'evil.com', note: 'x' }];
+  // Viewing P1: P2's combo anchors to no P1 node → must not draw a red exfil path.
+  const gA = buildGraph(s, p2Combo, 'P1');
+  assert.ok(!types(gA.nodes).secret, 'P1 must not show P2\'s secret');
+  assert.ok(!types(gA.nodes).host, 'P1 must not show P2\'s host');
+  assert.equal(gA.edges.filter((e) => e.type === 'combo').length, 0);
+  // Viewing P2: the combo does anchor and draws the path.
+  const gB = buildGraph(s, p2Combo, 'P2');
+  assert.equal(types(gB.nodes).secret, 1);
+  assert.equal(types(gB.nodes).host, 1);
+  assert.equal(gB.edges.filter((e) => e.type === 'combo').length, 1);
+});
+
+test('a combo citing a step\'s post_seq anchors to the step, not the prompt', () => {
+  const step = { seq: 10, post_seq: 11, ts: 't', type: 'file_read', tool: 'Read', target: '/r/.env', summary: 'read env', success: 1, duration_ms: 1, signals: [], score: 0, agent_type: 'main', is_subagent: false, files: [] };
+  const send = { seq: 12, post_seq: 13, ts: 't', type: 'shell_command', tool: 'Bash', target: 'curl', summary: 'send', success: 1, duration_ms: 1, signals: [], score: 0, agent_type: 'main', is_subagent: false, files: [] };
+  // combo cites the POST seqs (11, 13) — the output side, as real redaction-detected combos do.
+  const g = buildGraph(mkStory([mkTurn('P1', 'x', [step, send])]), [{ id: 'exfil-chain', severity: 'high', antecedent_seq: 11, consequent_seq: 13, host: 'evil.com', note: 'x' }], 'P1');
+  const read = g.edges.find((e) => e.type === 'read');
+  assert.equal(read.from, 's:10', 'the read edge originates at the step node, not p:P1');
+  assert.ok(g.nodes.find((n) => n.id === 's:10').risk, 'the step is risk-marked');
+  assert.ok(!g.nodes.find((n) => n.id === 'p:P1').risk, 'the prompt itself is not falsely marked risky');
 });
