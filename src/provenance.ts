@@ -17,10 +17,20 @@ import type { Action } from './read-api';
 import type { FlagId } from './risk-rules';
 import { RISK_FLAGS } from './risk-rules';
 
+/** Model/usage metadata for a turn (R1), from the transcript. */
+export interface TurnMeta {
+  model?: string | null;
+  usage?: Record<string, number> | null;
+  stop_reason?: string | null;
+  assistant_messages?: number;
+}
+
 /** The subset of a parsed `detail` bag the story needs, keyed by event seq. */
 export interface EventDetail {
   prompt?: string;
   parent_tool_use_id?: string;
+  reasoning?: string; // R1: the turn's redacted reasoning digest (on a reasoning event)
+  turn_meta?: TurnMeta;
   mutation?: { kind?: string; diffstat?: { files?: number; insertions?: number; deletions?: number }; stored?: boolean; skip_reason?: string };
   git?: {
     ref?: string;
@@ -75,6 +85,8 @@ export interface StoryStep {
 export interface Turn {
   prompt_id: string | null;
   prompt: string | null; // null for pre-capture sessions or lifecycle preamble
+  reasoning: string | null; // R1: the agent's redacted reasoning digest (the "why")
+  turn_meta: TurnMeta | null; // R1: model + token usage for the turn
   started_at: string;
   ended_at: string;
   steps: StoryStep[];
@@ -158,7 +170,7 @@ function rollup(files: FileChange[]): FileChange[] {
 }
 
 function newTurn(prompt_id: string | null, prompt: string | null, at: string): Turn {
-  return { prompt_id, prompt, started_at: at, ended_at: at, steps: [], files_changed: [], commits: [], flags: {}, flagged: 0, max_score: 0 };
+  return { prompt_id, prompt, reasoning: null, turn_meta: null, started_at: at, ended_at: at, steps: [], files_changed: [], commits: [], flags: {}, flagged: 0, max_score: 0 };
 }
 
 /**
@@ -180,6 +192,17 @@ export function buildStory(input: StoryInput): SessionStory {
     if (a.phase === 'prompt') {
       current = newTurn(a.prompt_id, d?.prompt ?? null, a.ts);
       turns.push(current);
+      continue;
+    }
+
+    // R1: a reasoning event attaches to its turn (by prompt_id) — never a step, never
+    // a new turn. It's appended async after Stop, so it can arrive out of seq order.
+    if (a.phase === 'reasoning') {
+      const t = turns.find((x) => x.prompt_id === a.prompt_id) ?? current;
+      if (t) {
+        if (d?.reasoning) t.reasoning = d.reasoning;
+        if (d?.turn_meta) t.turn_meta = d.turn_meta;
+      }
       continue;
     }
 

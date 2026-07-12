@@ -77,8 +77,10 @@ const PAGE_CSS = `  :root {
   .sess { padding:9px 11px; border-radius:var(--r2); cursor:pointer; margin-bottom:1px;
     border-left:2px solid transparent; transition:background .12s ease; }
   .sess:hover { background:var(--hover); }
-  .sess.active { background:var(--selected); border-left-color:var(--accent); }
+  .sess.active { background:var(--selected); border-left-color:var(--border-strong); }
   .sess .top { display:flex; align-items:baseline; gap:8px; }
+  .sess .rk { flex:0 0 auto; width:5px; height:5px; border-radius:50%; background:var(--fg-4); align-self:center; }
+  .sess .rk.hot { background:var(--accent); }
   .sess .id { flex:1; min-width:0; font-size:13px; font-weight:500; color:var(--fg-1);
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .sess.unnamed .id { font-family:var(--mono); font-weight:400; font-size:12px; color:var(--fg-2); }
@@ -102,11 +104,13 @@ const PAGE_CSS = `  :root {
   .summary .risk { margin-left:2px; padding:1px 9px; border-radius:999px; font-size:11.5px; border:1px solid var(--border); color:var(--fg-3); }
   .summary .risk.hot { border-color:var(--accent-line); color:var(--accent); }
   .summary .combo { margin-top:8px; font-size:12px; color:var(--fg-4); font-family:var(--mono); }
+  /* the Brief's flagged count links into the deep log (scoped under #verdict so Story's summary is untouched) */
+  #verdict .flag.jump { cursor:pointer; text-decoration:underline; text-decoration-color:var(--accent-line); text-underline-offset:2px; }
+  #verdict .flag.jump:hover { text-decoration-color:var(--accent); }
 
   /* timeline (flex rows) */
   .tl { padding-bottom:24px; }
-  .thead, .trow { display:flex; align-items:center; padding:6px 16px 6px 12px; border-left:2px solid transparent; }
-  .thead { border-bottom:1px solid var(--border); font-size:11px; color:var(--fg-4); letter-spacing:.02em; }
+  .trow { display:flex; align-items:center; padding:6px 16px 6px 22px; border-left:2px solid transparent; }
 
   /* filter bar — sticky over the timeline; the column labels ride under it */
   .tlhead { position:sticky; top:0; z-index:3; background:var(--bg); }
@@ -127,7 +131,6 @@ const PAGE_CSS = `  :root {
   .fb-jump:hover:not(:disabled) { color:var(--fg-1); border-color:var(--border-strong); }
   .fb-jump:disabled { opacity:.4; cursor:default; }
   .fb-count { flex:none; margin-left:2px; color:var(--fg-4); font-size:11.5px; font-variant-numeric:tabular-nums; white-space:nowrap; }
-  .thead .c-tgt { color:var(--fg-4); }
   .trow { cursor:pointer; transition:background .1s ease; }
   .trow:hover { background:var(--hover); }
   .trow:hover .c-tgt { color:var(--fg-hi); }
@@ -140,8 +143,10 @@ const PAGE_CSS = `  :root {
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .c-tgt  { flex:0 1 auto; min-width:0; display:flex; overflow:hidden;
     font-family:var(--mono); font-size:12.5px; color:var(--fg); }
-  .c-tgt .dir  { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .c-tgt .dir  { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fg-3); }
   .c-tgt .base { flex:0 0 auto; white-space:nowrap; }
+  /* the repeated path prefix recedes so the filename is the ink that reads */
+  .trow:hover .c-tgt .dir, .trow.open .c-tgt .dir { color:var(--fg-2); }
   /* plain-English summary reads in the sans face, not mono */
   .c-tgt .sum  { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--sans); color:var(--fg-1); }
   .c-sig  { flex:0 0 auto; display:flex; gap:5px; margin-left:10px; }
@@ -150,7 +155,23 @@ const PAGE_CSS = `  :root {
   .c-pad  { flex:1 1 0; min-width:14px; }
   .c-chev { flex:0 0 auto; margin-left:8px; color:var(--fg-4); opacity:0; transition:opacity .1s ease; }
   .trow:hover .c-chev { opacity:.55; }
-  .turn { padding:18px 16px 4px 14px; font-size:10.5px; color:var(--fg-4); letter-spacing:.05em; }
+
+  /* turn outline — sticky collapsible section bars; a LOG table-of-contents, not a Story card */
+  .turnhead { position:sticky; top:var(--turntop,38px); z-index:2;
+    display:flex; align-items:center; gap:10px; padding:8px 16px 8px 12px;
+    cursor:pointer; user-select:none; background:var(--bg);
+    border-top:1px solid var(--border-subtle); border-left:2px solid transparent;
+    scroll-margin-top:calc(var(--turntop,38px) + 4px); }
+  .turnhead:first-child { border-top:0; }
+  .turnhead:hover { background:var(--hover); }
+  .turnhead .th-chev { flex:0 0 auto; color:var(--fg-4); transition:transform .12s ease; }
+  .turnhead.open .th-chev { transform:rotate(90deg); }
+  .turnhead .th-n { flex:0 0 auto; font-size:10.5px; letter-spacing:.05em; color:var(--fg-4); font-variant-numeric:tabular-nums; }
+  .turnhead .th-gist { flex:1 1 auto; min-width:0; font-size:12.5px; color:var(--fg-3);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .turnhead.open .th-gist { color:var(--fg-1); }
+  .turnhead .th-meta { flex:0 0 auto; font-size:11px; color:var(--fg-4); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .turnhead .th-risk { flex:0 0 auto; width:5px; height:5px; border-radius:50%; background:var(--accent); }
 
   /* signal tags */
   .tag { display:inline-block; margin-left:5px; padding:1px 6px; border-radius:var(--r1);
@@ -243,6 +264,10 @@ const PAGE_CSS = `  :root {
   .crow .cstat { flex:0 0 auto; font-family:var(--mono); font-size:11px; color:var(--fg-3); font-variant-numeric:tabular-nums; }
   .tsteps-toggle { width:fit-content; font-size:11.5px; color:var(--fg-3); cursor:pointer; user-select:none; }
   .tsteps-toggle:hover { color:var(--fg-1); }
+  /* R1 reasoning (the "why") */
+  .treason pre { margin:0; padding:10px 12px; background:var(--bg); border:1px solid var(--border-subtle); border-radius:var(--r2);
+    white-space:pre-wrap; word-break:break-word; font:12px/1.55 var(--mono); color:var(--fg-2); max-height:300px; overflow:auto; }
+  .treason .redact { color:var(--accent); background:var(--accent-wash); border-radius:3px; padding:0 3px; }
   .tsteps { display:flex; flex-direction:column; margin-top:-3px; }
   .srow { display:flex; align-items:center; gap:11px; padding:3px 8px; border-radius:var(--r1); cursor:pointer; }
   .srow:hover { background:var(--hover); }
@@ -313,6 +338,13 @@ let fpSessions = null, fpTimeline = null, fpVerdict = null, fpHud = null;
 let rowState = [];            // [{fp, tr, a}] parallel to the rendered action list
 let tbody = null;
 let lastPrompt = null, turnN = 0;   // turn-divider walk state (reset with rowState)
+// turn-outline state — display-only, survives the 3s poll; reset on session/view switch + full render.
+let collapsedTurns = new Set();   // prompt_ids currently folded
+let bigSession = false;           // >60 actions → turns fold by default
+const turns = [];                 // [{key, hdr}] in render order (keyboard turn-jump)
+const turnHeadByKey = new Map();  // prompt_id → .turnhead element
+let curTurnKey = null;            // prompt_id the rows are currently appended under
+let _rz = 0;                      // rAF handle for the debounced --turntop remeasure
 let haveSessions = false, lastHealth = null, lastHead = null;
 const sessEls = new Map();    // session_id -> rail row element
 const cardsById = new Map();  // session_id -> latest SessionCard
@@ -373,6 +405,7 @@ function select(id){
   fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
   fpStory = null; storyOpen = new Set();
   lastPrompt = null; turnN = 0;
+  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false;
   for(const [sid, d] of sessEls) d.classList.toggle('active', sid === current);
   loadView().catch(()=>{});
 }
@@ -385,6 +418,7 @@ function setView(mode){
   // reset both views' render state so the switch repaints cleanly from cache
   fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
   fpStory = null; lastPrompt = null; turnN = 0;
+  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false;
   document.getElementById('timeline').textContent = '';
   loadView().catch(()=>{});
 }
@@ -452,7 +486,9 @@ function fillCard(d, c){
   const keepEnter = d.className.includes('enter');
   d.textContent = '';
   d.className = 'sess' + (keepEnter ? ' enter' : '') + (c.name ? '' : ' unnamed') + (c.session_id === current ? ' active' : '');
+  const rkHot = (c.verdict === 'medium' || c.verdict === 'high');   // red only for real risk; class from a literal boolean, never the data string
   const top = el('div',{className:'top'},
+    el('span',{className:'rk'+(rkHot?' hot':'')}),
     el('span',{className:'id',title:c.name ? c.name+' · '+c.session_id : c.session_id,
       textContent:c.name || c.session_id.slice(0,20)}));
   if(c.flagged) top.append(el('span',{className:'fl',textContent:String(c.flagged)}));
@@ -502,9 +538,11 @@ function renderTimeline(main, actions){
   if(!incremental){
     main.textContent='';
     fpVerdict = null; rowState = []; lastPrompt = null; turnN = 0;
+    collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null;
+    bigSession = actions.length > 60;   // fold turns by default only when the log is a wall
     main.append(viewBar());
     main.append(el('section',{className:'summary',id:'verdict'}));
-    buildFilterBar(main);   // filter bar + column labels, sticky over the rows
+    buildFilterBar(main);   // filter bar, sticky over the rows
     tbody = el('div',{className:'tl',role:'table','aria-label':'action timeline'});
     main.append(tbody);
   }
@@ -525,13 +563,34 @@ function renderTimeline(main, actions){
     }
   }
   refreshTools(actions);   // fold any newly-seen tools into the dropdown
-  applyFilter();           // re-apply the active filter to new/patched rows
+  refreshTurns();          // recompute per-turn step counts / span / risk from the rows
+  applyFilter();           // re-apply collapse + active filter to new/patched rows
 }
 
+// A turn boundary opens a sticky, collapsible section header (the turn outline). The
+// header lives OUTSIDE rowState — exactly like the old .turn divider — so the append-only
+// reconcile invariant is untouched. Its gist is the first observed action's plain-English
+// summary (evidence), which is the deliberate split from Story (Story leads with the user
+// prompt; the timeline never shows the prompt).
 function maybeDivider(a){
   if(!a.prompt_id || a.prompt_id === lastPrompt) return;   // null never opens/closes a turn
   lastPrompt = a.prompt_id; turnN++;
-  tbody.append(el('div',{className:'turn',textContent:'turn '+turnN}));
+  const key = a.prompt_id, folded = bigSession;            // fold new turns by default on a wall
+  if(folded) collapsedTurns.add(key);
+  const gist = (a.summary || a.target || '').split(String.fromCharCode(96)).join('');
+  const metaEl = el('span',{className:'th-meta'});
+  const riskEl = el('span',{className:'th-risk'}); riskEl.style.display = 'none';
+  const hdr = el('div',{className:'turnhead'+(folded?'':' open'),role:'button',tabIndex:0},
+    el('span',{className:'th-chev',textContent:'›'}),
+    el('span',{className:'th-n',textContent:'turn '+turnN}),
+    el('span',{className:'th-gist',textContent:gist,title:gist}),
+    metaEl, riskEl);
+  hdr.setAttribute('aria-expanded', String(!folded));
+  hdr._key = key; hdr._metaEl = metaEl; hdr._riskEl = riskEl;
+  hdr.onclick = ()=> toggleTurn(key);
+  hdr.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggleTurn(key); } };
+  turnHeadByKey.set(key, hdr); turns.push({key, hdr}); curTurnKey = key;
+  tbody.append(hdr);
 }
 
 // Every row reads in plain English. File ops keep the path (dir ellipsizes, base
@@ -573,12 +632,39 @@ function buildRowCells(a, tr, entering){
 function appendRow(a){
   maybeDivider(a);
   const tr = el('div',{role:'row',tabIndex:0});
+  tr._turnKey = curTurnKey;   // which turn this row belongs to (null pre-turn rows never fold)
   buildRowCells(a, tr, true);
   tr.onclick = ()=>toggle(a.seq, tr);
   tr.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggle(a.seq, tr); } };
   tbody.append(tr);
   rowState.push({fp: JSON.stringify(a), tr, a});
   if(expanded.has(a.seq)) insertDetail(a.seq, tr);
+}
+
+// Recompute each turn header's meta (step count · span) and risk dot from its rows. Walks
+// tbody once between .turnhead boundaries with compare-before-write, so a live append writes
+// only deltas and an idle poll never reaches here (the fpTimeline gate returns first).
+function refreshTurns(){
+  if(!tbody) return;
+  let hdr = null, steps = 0, firstTs = null, lastTs = null, flagged = false;
+  const flush = ()=>{ if(hdr) writeTurnMeta(hdr, steps, firstTs, lastTs, flagged); };
+  for(const n of tbody.children){
+    const cl = n.classList;
+    if(cl.contains('turnhead')){ flush(); hdr = n; steps = 0; firstTs = null; lastTs = null; flagged = false; continue; }
+    if(cl.contains('detailrow')) continue;
+    if(!hdr) continue;                     // pre-turn lifecycle rows have no header
+    const a = n._a; if(!a) continue;
+    steps++; if(firstTs == null) firstTs = a.ts; lastTs = a.ts;
+    if(isFlagged(a)) flagged = true;
+  }
+  flush();
+}
+function writeTurnMeta(hdr, steps, firstTs, lastTs, flagged){
+  let text = steps + ' step' + (steps === 1 ? '' : 's');
+  const span = fmtSpan(firstTs, lastTs);
+  if(span) text += ' · ' + span;
+  if(hdr._metaEl.textContent !== text) hdr._metaEl.textContent = text;
+  setDisp(hdr._riskEl, flagged);         // single marker; setDisp is compare-before-write
 }
 
 /* ── filters ─────────────────────────────────────────────────────── */
@@ -600,26 +686,45 @@ function rowMatches(a){
 }
 function setDisp(n, vis){ const d = vis ? '' : 'none'; if(n.style.display !== d) n.style.display = d; }
 
-// Walk tbody once: hide non-matching rows (and their open dossier), hide a turn
-// divider whose whole group filtered out, then refresh the "N of M shown" count.
+// One display-only walk of tbody. Two independent gates decide a row's visibility:
+//   match   = rowMatches(a)                     (the active flagged/tool/search filter)
+//   folded  = collapsedTurns.has(row._turnKey)  (the turn outline, overridden while filtering)
+// A turn header's visibility tracks whether ANY of its rows MATCH (collapse-independent),
+// which is the fix for the old divider bug: a collapsed turn's header must still show. An
+// active filter always wins over collapse so search hits are never hidden inside a fold.
 function applyFilter(){
   if(!tbody) return;
-  let shown = 0, total = 0, flaggedVis = 0, div = null, divVis = false;
+  const filterActive = !!(fltFlagged || fltTool || fltText);
+  let shown = 0, total = 0, flaggedMatch = 0;
+  let hdr = null, hdrKey = null, hdrMatch = false;
+  const flushHdr = ()=>{ if(hdr){ setDisp(hdr, filterActive ? hdrMatch : true);
+    hdr.classList.toggle('open', filterActive || !collapsedTurns.has(hdrKey)); } };
   const kids = tbody.children;
   for(let i=0;i<kids.length;i++){
     const n = kids[i], cl = n.classList;
-    if(cl.contains('turn')){ if(div) setDisp(div, divVis); div = n; divVis = false; continue; }
+    if(cl.contains('turnhead')){ flushHdr(); hdr = n; hdrKey = n._key; hdrMatch = false; continue; }
     if(cl.contains('detailrow')) continue;   // mirrors its row, set alongside it below
     total++;
-    const a = n._a, vis = rowMatches(a);
-    if(vis){ shown++; divVis = true; if(a && isFlagged(a)) flaggedVis++; }
+    const a = n._a, match = rowMatches(a);
+    if(match){ hdrMatch = true; if(a && isFlagged(a)) flaggedMatch++; }   // count flags by match, not visibility (collapse-aware jumpNext reveals them)
+    const vis = match && (filterActive || !collapsedTurns.has(n._turnKey));
+    if(vis) shown++;
     setDisp(n, vis);
     const nx = n.nextSibling;
     if(nx && nx.classList && nx.classList.contains('detailrow')) setDisp(nx, vis);
   }
-  if(div) setDisp(div, divVis);
-  if(shownCount){ const txt = shown+' of '+total+' shown'; if(shownCount.textContent !== txt) shownCount.textContent = txt; }
-  if(jumpBtn) jumpBtn.disabled = flaggedVis === 0;
+  flushHdr();
+  // collapse is not a filter, so the count reads only while an actual filter narrows the log
+  if(shownCount){ const txt = filterActive ? (shown+' of '+total+' shown') : ''; if(shownCount.textContent !== txt) shownCount.textContent = txt; }
+  if(jumpBtn) jumpBtn.disabled = flaggedMatch === 0;
+}
+
+// Fold/unfold one turn (display-only → no fetch, no rebuild, no scroll jump or dossier loss).
+function toggleTurn(key){
+  if(collapsedTurns.has(key)) collapsedTurns.delete(key); else collapsedTurns.add(key);
+  const hdr = turnHeadByKey.get(key);
+  if(hdr) hdr.setAttribute('aria-expanded', String(!collapsedTurns.has(key)));
+  applyFilter();
 }
 
 function syncFlagged(){
@@ -667,28 +772,44 @@ function buildFilterBar(main){
   bar.append(shownCount);
 
   head.append(bar);
-  head.append(el('div',{className:'thead',role:'row'},
-    el('div',{className:'c-time',textContent:'time'}),
-    el('div',{className:'c-tool',textContent:'tool'}),
-    el('div',{className:'c-tgt'}, el('span',{className:'dir',textContent:'target'})),
-    el('div',{className:'c-pad'})));
   main.append(head);
   syncFlagged();
+  measureTurnTop();   // pin turn headers just below this filter bar
+}
+
+// The sticky turn headers pin at the bottom edge of the filter bar. Measure it into
+// a CSS var so a wrapped/tall bar never overlaps the pinned header; re-measure on resize.
+function measureTurnTop(){
+  const head = document.querySelector('.tlhead');
+  if(!head) return;
+  const h = Math.round(head.getBoundingClientRect().height);
+  if(h) document.documentElement.style.setProperty('--turntop', h+'px');
 }
 
 // Scroll the next flagged row below the fold into view (wraps at the end); counts
 // only rows the filter leaves visible. Bound to the button and the 'n' key.
 function jumpNext(){
   if(!tbody) return;
-  const vis = rowState.filter(s=> isFlagged(s.a) && s.tr.style.display !== 'none');
-  if(!vis.length) return;
+  const cands = rowState.filter(s=> isFlagged(s.a) && rowMatches(s.a));   // filter-aware, collapse-independent
+  if(!cands.length) return;
   const main = document.getElementById('timeline'), head = document.querySelector('.tlhead');
   const fold = main.getBoundingClientRect().top + (head ? head.getBoundingClientRect().height : 0) + 4;
+  // a folded row has no position of its own → fall back to its turn header's position
+  const posOf = (s)=>{
+    if(s.tr.style.display !== 'none') return s.tr.getBoundingClientRect().top;
+    const h = turnHeadByKey.get(s.tr._turnKey);
+    return h ? h.getBoundingClientRect().top : Infinity;
+  };
   let target = null;
-  for(const s of vis){ if(s.tr.getBoundingClientRect().top > fold){ target = s.tr; break; } }
-  if(!target) target = vis[0].tr;   // past the last flagged row → wrap to the first
-  target.scrollIntoView({block:'center', behavior:'smooth'});
-  flashRow(target);
+  for(const s of cands){ if(posOf(s) > fold){ target = s; break; } }
+  if(!target) target = cands[0];   // past the last flagged row → wrap to the first
+  if(target.tr._turnKey != null && collapsedTurns.has(target.tr._turnKey)){
+    collapsedTurns.delete(target.tr._turnKey);
+    const h = turnHeadByKey.get(target.tr._turnKey); if(h) h.setAttribute('aria-expanded','true');
+    applyFilter();   // reveal the row's turn before scrolling to it
+  }
+  target.tr.scrollIntoView({block:'center', behavior:'smooth'});
+  flashRow(target.tr);
 }
 function flashRow(tr){ tr.classList.remove('flash'); void tr.offsetWidth; tr.classList.add('flash'); }
 
@@ -700,13 +821,37 @@ document.addEventListener('keydown', (e)=>{
   e.preventDefault(); jumpNext();
 });
 
+// '[' / ']' step through the turn outline (prev / next section). Timeline-only, same input guard.
+document.addEventListener('keydown', (e)=>{
+  if((e.key !== '[' && e.key !== ']') || e.metaKey || e.ctrlKey || e.altKey) return;
+  if(viewMode !== 'timeline' || !turns.length) return;
+  const tn = document.activeElement && document.activeElement.tagName;
+  if(tn === 'INPUT' || tn === 'SELECT' || tn === 'TEXTAREA') return;
+  e.preventDefault(); gotoTurn(e.key === ']' ? 1 : -1);
+});
+// Scroll the previous/next turn header to the pin line. Reads layout, writes no DOM → poll-safe.
+function gotoTurn(dir){
+  const main = document.getElementById('timeline');
+  if(!main) return;
+  const vis = turns.filter(t=> t.hdr.style.display !== 'none');   // skip filtered-out headers
+  if(!vis.length) return;
+  const top = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--turntop')) || 38;
+  const fold = main.getBoundingClientRect().top + top + 1;
+  let idx = -1;   // last header at/above the fold = the pinned turn; -1 = above the first
+  for(let i=0;i<vis.length;i++){ if(vis[i].hdr.getBoundingClientRect().top <= fold) idx = i; else break; }
+  const ni = Math.max(0, Math.min(vis.length-1, idx + dir));
+  vis[ni].hdr.scrollIntoView({block:'start', behavior:'smooth'});
+}
+window.addEventListener('resize', ()=>{ cancelAnimationFrame(_rz); _rz = requestAnimationFrame(measureTurnTop); });
+
 /* ── summary ─────────────────────────────────────────────────────── */
 function updateVerdict(actions){
   const v = document.getElementById('verdict');
   if(!v) return;
   const card = cardsById.get(current) || null;
   const flagN = actions.reduce((n,a)=>n+a.signals.filter(s=>ALERT.has(s)).length,0);
-  const fp = JSON.stringify([current, actions.length, flagN, card]);
+  const turnsN = new Set(actions.map(a=>a.prompt_id).filter(Boolean)).size;   // the total the turn outline indexes into
+  const fp = JSON.stringify([current, actions.length, turnsN, flagN, card]);
   if(fp === fpVerdict) return;
   fpVerdict = fp;
   v.textContent = '';
@@ -715,8 +860,12 @@ function updateVerdict(actions){
 
   const line = el('div',{className:'sline'});
   line.append(el('span',{className:'n',textContent:String(actions.length)}), ' actions');
+  if(turnsN){ line.append(el('span',{className:'sep',textContent:'·'}),
+    el('span',{className:'n',textContent:String(turnsN)}), ' turns'); }
   if(flagN){ line.append(el('span',{className:'sep',textContent:'·'}),
-    el('span',{className:'flag',textContent:flagN+' flagged'})); }
+    el('span',{className:'flag jump',role:'button',tabIndex:0,title:'jump to the next flagged action',
+      textContent:flagN+' flagged',onclick:jumpNext,
+      onkeydown:(e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); jumpNext(); }}})); }
   const span = card && fmtSpan(card.started, card.ended);
   if(span){ line.append(el('span',{className:'sep',textContent:'·'}), span); }
   const proj = card && basename(card.cwd);
@@ -907,6 +1056,7 @@ async function insertDetail(seq, row){
 // so idle polls cost nothing); per-turn expansion persists across rebuilds.
 function shortPath(p){ const parts=(p||'').split('/').filter(Boolean); return parts.length<=2 ? (p||'') : parts.slice(-2).join('/'); }
 function stripTicks(s){ return (s||'').split(String.fromCharCode(96)).join(''); }
+function fmtTokens(n){ return n>=1000 ? (n/1000).toFixed(1)+'k' : String(n); }
 // A labelled block of outcome rows (changed files / commits) — one shared shell.
 function group(label, rows){ const g = el('div',{className:'fgroup'});
   if(label) g.append(el('div',{className:'glabel',textContent:label}));
@@ -965,12 +1115,34 @@ function turnCard(t, i){
   const span = fmtSpan(t.started_at, t.ended_at);
   if(span) meta.append(el('span',{className:'sep',textContent:'·'}), span);
   if(t.flagged) meta.append(el('span',{className:'sep',textContent:'·'}), el('span',{className:'tflag',textContent:t.flagged+' flagged'}));
+  // R1: model + token cost for the turn, when the transcript reasoning was captured
+  if(t.turn_meta){
+    if(t.turn_meta.model) meta.append(el('span',{className:'sep',textContent:'·'}), t.turn_meta.model);
+    const u = t.turn_meta.usage || {};
+    const tok = (u.output_tokens||0) + (u.input_tokens||0);
+    if(tok) meta.append(el('span',{className:'sep',textContent:'·'}), fmtTokens(tok)+' tok');
+  }
   card.append(el('div',{className:'thd'}, el('span',{className:'tnum',textContent:'turn '+(i+1)}), meta));
 
   // the intent (or an honest, quiet note when it predates prompt capture)
   const hasPrompt = !!t.prompt;
   const text = hasPrompt ? t.prompt : (t.prompt_id ? 'no prompt recorded' : 'session activity');
   card.append(el('div',{className:'tprompt'+(hasPrompt?'':' muted'),textContent:text}));
+
+  // R1: the agent's reasoning (the "why"), collapsible, redacted
+  if(t.reasoning){
+    const rk = key+':why';
+    const rbody = el('div',{className:'treason'});
+    const rtog = el('div',{className:'tsteps-toggle',tabIndex:0});
+    const rpaint = (o)=>{ rtog.textContent = o ? '▾ hide reasoning' : '▸ why — agent reasoning'; };
+    const rfill = ()=>{ rbody.textContent=''; rbody.append(redactedPre(t.reasoning)); };
+    if(storyOpen.has(rk)) rfill();
+    rpaint(storyOpen.has(rk));
+    const rflip = ()=>{ if(storyOpen.has(rk)){ storyOpen.delete(rk); rbody.textContent=''; rpaint(false); } else { storyOpen.add(rk); rfill(); rpaint(true); } };
+    rtog.onclick = rflip;
+    rtog.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); rflip(); } };
+    card.append(rtog, rbody);
+  }
 
   // outcomes, each in a labelled group
   if(t.files_changed && t.files_changed.length) card.append(group('changed', t.files_changed.map(fileRow)));

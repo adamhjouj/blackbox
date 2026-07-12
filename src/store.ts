@@ -358,6 +358,14 @@ export class Store {
     );
   }
 
+  /** R1: has a reasoning digest already been captured for this turn? (Stop can
+   *  fire more than once — this keeps one reasoning event per prompt_id.) */
+  reasoningExists(sessionId: string, promptId: string): boolean {
+    return !!this.db
+      .prepare("SELECT 1 FROM events WHERE session_id = ? AND prompt_id = ? AND hook_event = 'ReasoningCapture' LIMIT 1")
+      .get(sessionId, promptId);
+  }
+
   /** The transcript file path for a session (from any event's payload) — lets the
    *  read layer resolve the human-readable session name. */
   sessionTranscriptPath(sessionId: string): string | null {

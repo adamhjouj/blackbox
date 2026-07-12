@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { canonical, hashString } from './hash';
 import { outputToText, scanOutputForInjection } from './injection';
 import { captureMutation, type BlobInput, type MutationFact, type SessionAnchor } from './mutation';
-import { redact, type RedactOptions } from './redact';
+import { redact, redactText, type RedactOptions } from './redact';
+import type { TurnIntent } from './transcript';
 import type { ActionType, NormalizedEvent, Phase } from './types';
 
 /** Map a raw hook_event_name to our coarse phase. */
@@ -62,6 +63,9 @@ const MAX_TARGET = 500;
  *  still bounded so a pathological paste can't bloat the hashed row. Full redacted
  *  prompt survives in `raw`; this is the display projection. */
 const MAX_PROMPT = 2000;
+/** The agent's reasoning digest (R1) — bounded so a very long chain of thought can't
+ *  bloat the hashed row. The full transcript stays on disk, read on demand for the UI. */
+const MAX_REASONING = 4000;
 
 /** Truncate on code-point boundaries so an astral char (emoji) is never split
  *  into a lone surrogate — splitting one would both corrupt the display string
@@ -272,4 +276,50 @@ function buildDetail(
   if (prompt) detail.prompt = prompt;
   if (parentToolUseId) detail.parent_tool_use_id = parentToolUseId;
   return Object.keys(detail).length ? JSON.stringify(detail) : null;
+}
+
+/**
+ * R1 — build a standalone `reasoning` event carrying the turn's captured intent:
+ * a REDACTED, bounded `detail.reasoning` digest + `detail.turn_meta` (model/usage/
+ * stop_reason). Appended async after Stop (off the hook path), keyed to the turn by
+ * `prompt_id`. A hashed fact — durable even if the transcript later rotates. The
+ * full verbatim transcript is never copied; the UI reads it on demand.
+ *
+ * The digest is the agent's stated words (mostly its `text` output). Redaction uses
+ * the same heuristic engine as everything else — HONEST LIMIT: an un-keyed prose
+ * secret ("the password is hunter2") or a URL-embedded credential can slip the
+ * heuristics. Prose secrets are rarer in an assistant's explanation than in a
+ * tool_input, but the UI must not present the digest as guaranteed-clean.
+ */
+export function reasoningEvent(sessionId: string, intent: TurnIntent, capturedAt: string): NormalizedEvent {
+  const { text, hits } = redactText(intent.reasoning || '');
+  const reasoning = truncate(text.trim(), MAX_REASONING);
+  const detail: Record<string, unknown> = {
+    turn_meta: { model: intent.model ?? null, usage: intent.usage ?? null, stop_reason: intent.stop_reason ?? null, assistant_messages: intent.assistant_messages },
+  };
+  if (reasoning) detail.reasoning = reasoning;
+  return {
+    event_id: randomUUID(),
+    session_id: sessionId,
+    tool_use_id: null,
+    prompt_id: intent.promptId,
+    phase: 'reasoning',
+    hook_event: 'ReasoningCapture',
+    tool_name: null,
+    action_type: 'session',
+    target: null,
+    agent_id: null,
+    agent_type: 'main',
+    cwd: null,
+    permission_mode: null,
+    success: null,
+    duration_ms: null,
+    ts: capturedAt,
+    captured_at: capturedAt,
+    raw: JSON.stringify({ kind: 'reasoning-capture', session_id: sessionId, prompt_id: intent.promptId }),
+    output_hash: null,
+    output_size_bytes: null,
+    redaction_count: hits.length,
+    detail: JSON.stringify(detail),
+  };
 }

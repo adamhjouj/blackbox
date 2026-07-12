@@ -16,6 +16,7 @@ export type Phase =
   | 'post'
   | 'failure'
   | 'stop'
+  | 'reasoning'
   | 'session_end'
   | 'other';
 

@@ -10,7 +10,8 @@ import {
   resolveRepoTop,
 } from './git-collector';
 import { sessionAnchor } from './mutation';
-import { normalize, normalizeAndCapture } from './normalize';
+import { normalize, normalizeAndCapture, reasoningEvent } from './normalize';
+import { readTurnIntent } from './transcript';
 import { blackboxDir, configPath } from './paths';
 import { eventDetail, sessionActions, sessionCards, sessionStory } from './read-api';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
@@ -174,6 +175,22 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     if (signingKeys && isSignableBoundary(e.phase)) signNow();
   };
 
+  // R1 deep intent: at Stop, async (off the hook path), tail-read the transcript,
+  // recover the turn's reasoning + model/usage, and append it as a hashed fact —
+  // one per turn. Best-effort: a transcript hiccup never affects recording.
+  const captureReasoning = (sessionId: string, promptId: string | null, transcriptPath: string): void => {
+    try {
+      const intent = readTurnIntent(transcriptPath, promptId);
+      if (!intent || (!intent.reasoning && !intent.model && !intent.usage)) return;
+      if (store.reasoningExists(sessionId, intent.promptId)) return; // one per turn
+      // NOT risk-scored: a reasoning event's only possible signal is a spurious
+      // secret-touch (from redacting the digest), which would seed false combos.
+      store.append(reasoningEvent(sessionId, intent, new Date().toISOString()));
+    } catch (err) {
+      log(`reasoning capture failed: ${(err as Error).message}`);
+    }
+  };
+
   const recordHook = (body: string, truncated: boolean): void => {
     const capturedAt = new Date().toISOString();
     if (truncated) {
@@ -209,6 +226,16 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     const appended = store.append(event, blob);
     scoreAndPersist(appended);
     maybeSign(appended);
+
+    // R1: a turn just finished — recover its reasoning from the transcript, async and
+    // off the hook path. A short delay lets Claude Code flush the turn's final
+    // assistant record (which can lag the Stop hook by a beat).
+    if (he === 'Stop') {
+      const sid = typeof payload.session_id === 'string' ? payload.session_id : appended.session_id;
+      const pid = typeof payload.prompt_id === 'string' ? payload.prompt_id : null;
+      const tp = typeof payload.transcript_path === 'string' ? payload.transcript_path : store.sessionTranscriptPath(sid);
+      if (tp) setTimeout(() => captureReasoning(sid, pid, tp), 1200).unref?.();
+    }
   };
 
   const recordGit = (headers: http.IncomingHttpHeaders, body: string): void => {
