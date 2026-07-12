@@ -281,6 +281,19 @@ const PAGE_CSS = `  :root {
   .covtype { flex:0 0 62px; font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--accent); font-weight:600; }
   .covpath { flex:0 0 auto; font-family:var(--mono); font-size:12px; color:var(--fg-1); }
   .covnote { flex:1 1 auto; min-width:0; color:var(--fg-3); font-size:11.5px; }
+  /* R4 provenance graph */
+  .graphctl { display:flex; align-items:center; gap:14px; padding:9px 18px; flex-wrap:wrap; border-bottom:1px solid var(--border-subtle); }
+  .graphctl .fb-tool { padding:5px 8px; }
+  .gcount { font-size:11.5px; color:var(--fg-4); font-variant-numeric:tabular-nums; }
+  .glegend { display:flex; gap:13px; margin-left:auto; flex-wrap:wrap; }
+  .gleg { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--fg-3); }
+  .gdot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+  .graphcanvas { display:block; width:100%; height:560px; cursor:grab; touch-action:none;
+    background:radial-gradient(620px 420px at 50% 42%, rgba(255,255,255,.02), transparent 70%); }
+  .graphcanvas:active { cursor:grabbing; }
+  .gpanel { padding:0 18px 24px; }
+  .gpanel .detailrow { margin-top:12px; }
+  .gpanel .detail { border:1px solid var(--border); border-radius:var(--r3); }
   .tsteps { display:flex; flex-direction:column; margin-top:-3px; }
   .srow { display:flex; align-items:center; gap:11px; padding:3px 8px; border-radius:var(--r1); cursor:pointer; }
   .srow:hover { background:var(--hover); }
@@ -345,8 +358,10 @@ const CLIENT_JS = `const ALERT = new Set(['dangerous-shell','destructive-git','a
 const RISKWORD = Object.assign(Object.create(null), { high:'high risk', medium:'medium risk', low:'low risk' });
 
 let current = null, expanded = new Set();
-let viewMode = 'story';               // 'story' (default lens) | 'timeline'
+let viewMode = 'story';               // 'story' (default lens) | 'timeline' | 'graph'
 let fpStory = null, storyOpen = new Set();   // fp gate + per-turn step-expansion (by turn key)
+let fpGraph = null, graphState = null, graphPrompt = '', graphTurns = [];   // R4 graph: fp gate · running sim · turn filter · turn options
+const NODE_COLOR = { prompt:'#8ab4f8', file:'#59b783', commit:'#6cc38a', step:'#8a919c', secret:'#e5595a', host:'#e5595a', mcp:'#b48ead' };
 let fpSessions = null, fpTimeline = null, fpVerdict = null, fpHud = null;
 let rowState = [];            // [{fp, tr, a}] parallel to the rendered action list
 let tbody = null;
@@ -419,6 +434,7 @@ function select(id){
   current = id; expanded = new Set();
   fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
   fpStory = null; storyOpen = new Set();
+  fpGraph = null; graphPrompt = ''; graphTurns = []; stopGraph();   // tear the graph down on session change
   lastPrompt = null; turnN = 0;
   collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false; flagCursor = -1; turnCursor = -1;
   for(const [sid, d] of sessEls) d.classList.toggle('active', sid === current);
@@ -426,13 +442,14 @@ function select(id){
 }
 
 // The main pane shows either the story (default) or the flat timeline.
-function loadView(){ return viewMode === 'story' ? loadStory() : loadTimeline(); }
+function loadView(){ return viewMode === 'story' ? loadStory() : viewMode === 'graph' ? loadGraph() : loadTimeline(); }
 function setView(mode){
   if(viewMode === mode) return;
   viewMode = mode;
   // reset every view's render state so the switch repaints cleanly from cache
   fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
   fpStory = null; lastPrompt = null; turnN = 0;
+  fpGraph = null; stopGraph();
   collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false; flagCursor = -1; turnCursor = -1;
   document.getElementById('timeline').textContent = '';
   loadView().catch(()=>{});
@@ -441,7 +458,7 @@ function viewBar(){
   const seg = el('div',{className:'viewtoggle',role:'tablist'});
   const mk = (mode, label)=> el('button',{type:'button',className:(viewMode===mode?'on':''),
     role:'tab','aria-selected':String(viewMode===mode),textContent:label,onclick:()=>setView(mode)});
-  seg.append(mk('story','Story'), mk('timeline','Timeline'));
+  seg.append(mk('story','Story'), mk('timeline','Timeline'), mk('graph','Graph'));
   return el('div',{className:'viewbar'}, seg);
 }
 
@@ -1262,6 +1279,147 @@ function stepRow(s){
   row.onclick = ()=> toggle(seq, row);
   row.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggle(seq,row); } };
   return row;
+}
+
+/* ── graph view (R4) — a hand-rolled force-directed canvas, zero deps ─ */
+// A read-only projection of the session (prompt · step · file · commit · risk nodes;
+// caused/changed/committed/spawned/read/sent/combo edges). The exfil combo is a red
+// path. Pan/zoom, hover-highlight a node's neighbourhood, click a node → its dossier.
+function stopGraph(){ if(graphState){ if(graphState.raf) cancelAnimationFrame(graphState.raf); if(graphState.cleanup) graphState.cleanup(); graphState=null; } }
+
+async function loadGraph(){
+  const main = document.getElementById('timeline');
+  if(!current){
+    const key = haveSessions ? 'sel' : 'armed';
+    if(fpGraph !== 'e:'+key){ fpGraph='e:'+key; stopGraph(); main.textContent=''; main.append(viewBar(), emptyState(key)); }
+    return;
+  }
+  const sid = current;
+  const q = graphPrompt ? ('?prompt='+encodeURIComponent(graphPrompt)) : '';
+  const g = await api('/api/session/'+encodeURIComponent(sid)+'/graph'+q);
+  if(current !== sid || viewMode !== 'graph') return;
+  const fp = JSON.stringify([sid, graphPrompt, g.counts]);
+  if(fp === fpGraph) return;   // stable graph → let the running sim keep going
+  renderGraph(main, g);
+  fpGraph = fp;
+}
+
+function graphLegend(){
+  const box = el('div',{className:'glegend'});
+  const items = [['prompt','prompt'],['step','step'],['file','file'],['commit','commit'],['secret','risk']];
+  for(const [type,label] of items){ box.append(el('span',{className:'gleg'},
+    el('span',{className:'gdot',style:'background:'+(NODE_COLOR[type]||'#8a919c')}), label)); }
+  return box;
+}
+function graphControls(g){
+  const bar = el('div',{className:'graphctl'});
+  const sel = el('select',{className:'fb-tool',title:'focus one turn',
+    onchange:()=>{ graphPrompt = sel.value; fpGraph = null; loadGraph().catch(()=>{}); }});
+  sel.append(el('option',{value:'',textContent:'whole session'}));
+  for(const t of graphTurns) sel.append(el('option',{value:t.id,textContent:(t.label||t.id).slice(0,44)}));
+  sel.value = graphPrompt;
+  bar.append(sel, el('span',{className:'gcount',textContent:g.counts.nodes+' nodes · '+g.counts.edges+' links'}), graphLegend());
+  return bar;
+}
+
+function renderGraph(main, g){
+  stopGraph();
+  main.textContent='';
+  main.append(viewBar());
+  if(!g.detailed) graphTurns = g.nodes.filter(n=>n.type==='prompt').map((n)=>({ id:String(n.id||'').slice(2), label:n.label }));
+  main.append(graphControls(g));
+  if((g.counts.nodes||0) <= 1){
+    main.append(el('div',{className:'empty'}, el('p',{textContent:'Not enough recorded relationships to graph — try the Story view, or pick a busier turn.'})));
+    return;
+  }
+
+  const hostEl = el('div',{className:'graphhost'});
+  const canvas = el('canvas',{className:'graphcanvas'});
+  hostEl.append(canvas);
+  const panel = el('div',{className:'gpanel'});
+  main.append(hostEl, panel);
+  const ctx = canvas.getContext('2d');
+
+  const nodes = g.nodes.map(n=>Object.assign({}, n));
+  const byId = {}; nodes.forEach(n=> byId[n.id]=n);
+  const edges = (g.edges||[]).filter(e=> byId[e.from] && byId[e.to]);
+  const N = nodes.length;
+  nodes.forEach((n,i)=>{ const a=i/N*6.2832; n.x=Math.cos(a)*200+(Math.random()-0.5)*50; n.y=Math.sin(a)*200+(Math.random()-0.5)*50; n.vx=0; n.vy=0; });
+  const adj = {}; nodes.forEach(n=> adj[n.id]=Object.create(null));
+  edges.forEach(e=>{ adj[e.from][e.to]=1; adj[e.to][e.from]=1; });
+
+  let view = { x:0, y:0, z:1 };
+  let hover = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const radius = (n)=> 4 + Math.min(9,(n.degree||0)*1.4) + (n.type==='prompt'?2:0);
+
+  function step(){
+    const REP = 1100, SPRING = 0.02, LEN = 72, GRAV = 0.004, DAMP = 0.86, CAP = 22;
+    for(let i=0;i<N;i++){ const a=nodes[i]; for(let j=i+1;j<N;j++){ const b=nodes[j];
+      let dx=a.x-b.x, dy=a.y-b.y; let d2=dx*dx+dy*dy+0.01; const d=Math.sqrt(d2); const f=REP/d2/d;
+      const fx=dx*f, fy=dy*f; a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy; } }
+    for(const e of edges){ const a=byId[e.from], b=byId[e.to]; let dx=b.x-a.x, dy=b.y-a.y;
+      const d=Math.sqrt(dx*dx+dy*dy)+0.01; const f=(d-LEN)*SPRING/d; const fx=dx*f, fy=dy*f;
+      a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy; }
+    for(const n of nodes){ n.vx-=n.x*GRAV; n.vy-=n.y*GRAV; n.vx*=DAMP; n.vy*=DAMP;
+      n.x+=Math.max(-CAP,Math.min(CAP,n.vx)); n.y+=Math.max(-CAP,Math.min(CAP,n.vy)); }
+  }
+  function draw(){
+    const w=canvas.width, h=canvas.height;
+    ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,w,h);
+    ctx.translate(w/2+view.x, h/2+view.y); ctx.scale(view.z, view.z);
+    for(const e of edges){ const a=byId[e.from], b=byId[e.to]; const hl = hover && (e.from===hover||e.to===hover);
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
+      ctx.strokeStyle = e.risk ? ('rgba(229,89,90,'+(hl?0.95:0.6)+')') : (hl?'rgba(255,255,255,0.4)':'rgba(255,255,255,0.11)');
+      ctx.lineWidth = e.risk?1.7:1; if(e.type==='combo') ctx.setLineDash([5,3]);
+      ctx.stroke(); ctx.setLineDash([]); }
+    for(const n of nodes){ const r=radius(n); const dim = hover && n.id!==hover && !adj[hover][n.id];
+      ctx.globalAlpha = dim?0.22:1;
+      ctx.beginPath(); ctx.arc(n.x,n.y,r,0,6.2832);
+      ctx.fillStyle = n.risk ? '#e5595a' : (NODE_COLOR[n.type]||'#8a919c'); ctx.fill();
+      if(n.id===hover){ ctx.lineWidth=2; ctx.strokeStyle='#f2f4f7'; ctx.stroke(); }
+      if(n.type!=='step' || n.id===hover){ ctx.globalAlpha = dim?0.28:0.85;
+        ctx.fillStyle = n.risk?'#e5595a':'#c6c6cd'; ctx.font='10px ui-sans-serif,system-ui,sans-serif';
+        ctx.fillText(String(n.label||'').slice(0,26), n.x+r+3, n.y+3); } }
+    ctx.globalAlpha=1;
+  }
+  function resize(){ const rect=hostEl.getBoundingClientRect(); canvas.width=Math.max(320,rect.width); canvas.height=560; draw(); }
+
+  function toWorld(sx,sy){ return { x:(sx-canvas.width/2-view.x)/view.z, y:(sy-canvas.height/2-view.y)/view.z }; }
+  function nodeAt(sx,sy){ const p=toWorld(sx,sy); let best=null, bd=1e9;
+    for(const n of nodes){ const dx=n.x-p.x, dy=n.y-p.y; const d=dx*dx+dy*dy; const r=radius(n)+4; if(d<r*r && d<bd){ bd=d; best=n; } }
+    return best; }
+  function localXY(e){ const rect=canvas.getBoundingClientRect(); return [e.clientX-rect.left, e.clientY-rect.top]; }
+
+  let drag=null;
+  canvas.onmousedown = (e)=>{ const [sx,sy]=localXY(e); drag={ sx, sy, px:view.x, py:view.y, moved:false }; };
+  canvas.onmousemove = (e)=>{ const [sx,sy]=localXY(e);
+    if(drag){ const dx=sx-drag.sx, dy=sy-drag.sy; if(Math.abs(dx)+Math.abs(dy)>3) drag.moved=true; view.x=drag.px+dx; view.y=drag.py+dy; if(!graphState.raf) draw(); return; }
+    const n=nodeAt(sx,sy); const id=n?n.id:null; if(id!==hover){ hover=id; canvas.style.cursor = n?'pointer':'grab'; if(!graphState.raf) draw(); } };
+  const endDrag = (e)=>{ if(drag && !drag.moved){ const [sx,sy]=localXY(e); const n=nodeAt(sx,sy); if(n && n.seq!=null) openGraphDossier(n.seq, panel); } drag=null; };
+  canvas.onmouseup = endDrag;
+  canvas.onmouseleave = ()=>{ drag=null; if(hover){ hover=null; if(!graphState.raf) draw(); } };
+  canvas.onwheel = (e)=>{ e.preventDefault(); const [sx,sy]=localXY(e); const before=toWorld(sx,sy);
+    view.z = Math.max(0.25, Math.min(3, view.z * (e.deltaY<0?1.1:0.9)));
+    const after=toWorld(sx,sy); view.x += (after.x-before.x)*view.z; view.y += (after.y-before.y)*view.z; if(!graphState.raf) draw(); };
+
+  const onResize = ()=> resize();
+  window.addEventListener('resize', onResize);
+  graphState = { raf:null, frames:0, cleanup:()=> window.removeEventListener('resize', onResize) };
+  resize();
+  function tickSim(){ if(!graphState) return; step(); step(); draw(); graphState.frames++;
+    graphState.raf = graphState.frames < 240 ? requestAnimationFrame(tickSim) : null; }
+  if(reduced){ const iters=Math.min(260,Math.max(60,Math.round(40000/N))); for(let k=0;k<iters;k++) step(); draw(); } else tickSim();
+}
+
+// Open one node's dossier below the canvas (reuses the timeline's insertDetail).
+function openGraphDossier(seq, panel){
+  panel.textContent='';
+  const anchor = el('div',{className:'ganchor'});
+  panel.append(anchor);
+  expanded.add(seq);
+  insertDetail(seq, anchor);
+  panel.scrollIntoView({ block:'nearest', behavior:'smooth' });
 }
 
 /* ── poll loop ───────────────────────────────────────────────────── */
