@@ -655,7 +655,7 @@ function refreshTurns(){
     if(!hdr) continue;                     // pre-turn lifecycle rows have no header
     const a = n._a; if(!a) continue;
     steps++; if(firstTs == null) firstTs = a.ts; lastTs = a.ts;
-    if(isFlagged(a)) flagged = true;
+    if(a.signals.some(s=>ALERT.has(s))) flagged = true;   // dot = a genuinely flagged action (matches the Brief count), not a mere failed call
   }
   flush();
 }
