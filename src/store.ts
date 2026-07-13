@@ -171,6 +171,21 @@ CREATE TABLE IF NOT EXISTS session_reconciliation (
 );
 `;
 
+// R8.2 corpus search — a re-derivable FTS5 index (never hashed; rebuildable like
+// the risk layer). `text` is FTS-indexed; the rest are UNINDEXED payload columns.
+// A one-row meta table tracks the incremental watermark. verify() never reads
+// these, so they can't affect byte-identity.
+const SEARCH_SCHEMA = `
+CREATE VIRTUAL TABLE IF NOT EXISTS search_idx USING fts5(
+  text, kind UNINDEXED, seq UNINDEXED, session_id UNINDEXED, ts UNINDEXED,
+  tokenize = 'unicode61'
+);
+CREATE TABLE IF NOT EXISTS search_meta (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  last_indexed_seq INTEGER NOT NULL
+);
+`;
+
 export interface ChainMeta {
   count: number;
   head_seq: number;
@@ -298,6 +313,7 @@ export class Store {
     this.db.exec(BLOB_SCHEMA);
     this.db.exec(SIG_SCHEMA);
     this.db.exec(RECON_SCHEMA);
+    this.db.exec(SEARCH_SCHEMA);
     this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -590,6 +606,47 @@ export class Store {
   /** The most recent signed checkpoint, or null. */
   latestSignature(): SignatureRow | null {
     return (this.db.prepare('SELECT * FROM signatures ORDER BY seq DESC LIMIT 1').get() as SignatureRow | undefined) ?? null;
+  }
+
+  // ---- R8.2 corpus search (FTS5, re-derivable) ---------------------------
+
+  /** The last event seq folded into the search index (0 if never indexed). */
+  searchLastIndexed(): number {
+    const row = this.db.prepare('SELECT last_indexed_seq FROM search_meta WHERE id = 1').get() as { last_indexed_seq: number } | undefined;
+    return row?.last_indexed_seq ?? 0;
+  }
+  private setSearchLastIndexed(seq: number): void {
+    this.db.prepare('INSERT INTO search_meta (id, last_indexed_seq) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET last_indexed_seq = ?').run(seq, seq);
+  }
+
+  /** Light events (no `raw`) after a seq, for incremental indexing. */
+  eventsAfter(afterSeq: number, limit: number): BlackboxEvent[] {
+    return this.db.prepare(`SELECT ${LIGHT_COLUMNS} FROM events WHERE seq > ? ORDER BY seq ASC LIMIT ?`).all(afterSeq, limit) as BlackboxEvent[];
+  }
+
+  /** Insert search rows + advance the watermark, in one transaction. */
+  searchIndexRows(rows: { seq: number; session_id: string; kind: string; ts: string; text: string }[], upTo: number): void {
+    const ins = this.db.prepare('INSERT INTO search_idx (text, kind, seq, session_id, ts) VALUES (@text, @kind, @seq, @session_id, @ts)');
+    const tx = this.db.transaction((rs: typeof rows) => {
+      for (const r of rs) ins.run(r);
+      this.setSearchLastIndexed(upTo);
+    });
+    tx(rows);
+  }
+
+  /** Drop the whole index (for a full `reindex`). */
+  searchReset(): void {
+    this.db.exec('DELETE FROM search_idx; DELETE FROM search_meta;');
+  }
+
+  /** Run an FTS MATCH; returns hits newest-first with a highlighted snippet. */
+  searchQuery(match: string, limit: number): { seq: number; session_id: string; kind: string; ts: string; snippet: string }[] {
+    return this.db
+      .prepare(
+        `SELECT seq, session_id, kind, ts, snippet(search_idx, 0, '[', ']', '…', 10) AS snippet
+           FROM search_idx WHERE search_idx MATCH ? ORDER BY seq DESC LIMIT ?`,
+      )
+      .all(match, limit) as { seq: number; session_id: string; kind: string; ts: string; snippet: string }[];
   }
 
   // ---- R2 reconciliation layer -------------------------------------------

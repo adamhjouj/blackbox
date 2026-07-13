@@ -18,6 +18,8 @@ import { readTurnIntent } from './transcript';
 import { captureWorktreeDelta } from './worktree';
 import { blackboxDir, configPath } from './paths';
 import { eventDetail, sessionActions, sessionCards, sessionTrace, sessionStory, verifyStatus } from './read-api';
+import { fleetOverview } from './fleet';
+import { indexNew, search } from './search';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
 import { RULESET_VERSION } from './risk-rules';
 import { ensureKeypair, isSignableBoundary, signHead, writeWatermark, type Keypair } from './sign';
@@ -198,6 +200,22 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     if (signingKeys && isSignableBoundary(e.phase)) signNow();
   };
 
+  // R8.2: keep the search index fresh, debounced + off the hook path — a burst of
+  // tool calls coalesces into one indexing pass a couple seconds later.
+  let indexTimer: NodeJS.Timeout | null = null;
+  const scheduleIndex = (): void => {
+    if (indexTimer) return;
+    indexTimer = setTimeout(() => {
+      indexTimer = null;
+      try {
+        indexNew(store);
+      } catch (err) {
+        log(`search index failed: ${(err as Error).message}`);
+      }
+    }, 2500);
+    indexTimer.unref?.();
+  };
+
   // R1 deep intent: at Stop, async (off the hook path), tail-read the transcript,
   // recover the turn's reasoning + model/usage, and append it as a hashed fact —
   // one per turn. Best-effort: a transcript hiccup never affects recording.
@@ -287,6 +305,7 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     const appended = store.append(event, blob);
     scoreAndPersist(appended);
     maybeSign(appended);
+    scheduleIndex();
 
     // R1: a turn just finished — recover its reasoning from the transcript, async and
     // off the hook path. A short delay lets Claude Code flush the turn's final
@@ -398,6 +417,17 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           // (verify() is byte-identical); the UI fetches it once per session-open.
           if (path === '/api/verify') {
             sendJson(res, 200, verifyStatus(store));
+            return;
+          }
+          // R8.2: corpus-wide FTS search. Read-only over the re-derivable index.
+          if (path === '/api/search') {
+            const q = new URL('http://localhost' + url).searchParams.get('q') ?? '';
+            sendJson(res, 200, search(store, q));
+            return;
+          }
+          // R8.3: fleet overview — one cached aggregation across all sessions.
+          if (path === '/api/fleet') {
+            sendJson(res, 200, fleetOverview(store));
             return;
           }
           const ms = path.match(/^\/api\/session\/(.+)\/events$/);
@@ -530,6 +560,14 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           if (r.sessions) log(`risk backfill: scored ${r.sessions} session(s)`);
         } catch (err) {
           log(`risk backfill failed: ${(err as Error).message}`);
+        }
+        // R8.2: fold any not-yet-indexed events into the search index (catches
+        // events recorded while a non-indexing binary ran). Off the startup path.
+        try {
+          const n = indexNew(store);
+          if (n) log(`search index: added ${n} row(s)`);
+        } catch (err) {
+          log(`search index failed: ${(err as Error).message}`);
         }
         // R3: checkpoint the current head on startup (catches downtime gaps).
         if (signingKeys) {

@@ -6,8 +6,10 @@ import { ANCHOR_REF, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAn
 import { disableAutostart, enableAutostart } from './autostart';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { canonical } from './hash';
+import { blastRadius } from './blast';
 import { fileHistory, reconstructAt } from './filestate';
 import { init, uninit, versionWarning } from './init';
+import { reindexAll, search } from './search';
 import { normalizeAndCapture } from './normalize';
 import { persistReconciliation } from './reconcile';
 import { buildForensicReport, buildReport, defaultReportSession } from './report';
@@ -834,6 +836,61 @@ function cmdReconcile(args: Args): number {
   }
 }
 
+function cmdReindex(args: Args): number {
+  const store = new Store(resolveDb(args.db));
+  try {
+    const n = reindexAll(store);
+    console.log(`reindexed ${n} searchable row(s)`);
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
+function cmdSearch(args: Args): number {
+  const q = args._.slice(1).join(' ').trim();
+  if (!q) {
+    console.error('usage: blackbox search <query>');
+    return 2;
+  }
+  const store = new Store(resolveDb(args.db));
+  try {
+    const { hits } = search(store, q);
+    if (!hits.length) {
+      console.log(`no matches for "${q}"`);
+      return 0;
+    }
+    console.log(`${hits.length} match(es) for "${q}":`);
+    for (const h of hits) console.log(`  seq ${String(h.seq).padStart(6)}  ${h.kind.padEnd(14)} ${h.session_id.slice(0, 8)}  ${h.snippet}`);
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
+function cmdBlast(args: Args): number {
+  const store = new Store(resolveDb(args.db));
+  try {
+    const sid = args.session ?? defaultReportSession(store);
+    if (!sid) {
+      console.error('blast: no sessions recorded (pass --session)');
+      return 2;
+    }
+    const b = blastRadius(store, sid);
+    console.log(`Blast radius — session ${sid.slice(0, 12)} (verdict: ${b.verdict})`);
+    console.log(`  ${b.files.length} file(s) changed · ${b.secrets.length} secret(s) in scope · ${b.hosts.length} external host(s) · ${b.commits.length} commit(s)`);
+    if (!b.checklist.length) {
+      console.log('  no containment actions — nothing flagged.');
+      return 0;
+    }
+    console.log('\nContainment checklist:');
+    for (const it of b.checklist) console.log(`  ${it.order}. [${it.severity.toUpperCase()}] ${it.action}  (seq ${it.seqs.join(', ')})`);
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 function cmdReport(args: Args): number {
   const store = new Store(resolveDb(args.db));
   try {
@@ -914,6 +971,12 @@ async function main(): Promise<number> {
       return cmdReconcile(args);
     case 'anchor':
       return cmdAnchor(args);
+    case 'reindex':
+      return cmdReindex(args);
+    case 'search':
+      return cmdSearch(args);
+    case 'blast':
+      return cmdBlast(args);
     case 'report':
       return cmdReport(args);
     case 'head':

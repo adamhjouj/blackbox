@@ -12,6 +12,7 @@
  * from the persisted layer with the same r2→r1 version fallback the UI uses.
  */
 import type { AnchorReceipt } from './anchor';
+import { blastRadius } from './blast';
 import { explainEvent, type Danger } from './explain';
 import { hashString } from './hash';
 import { sessionCards, sessionStory } from './read-api';
@@ -352,6 +353,15 @@ export function buildForensicReport(store: Store, sessionId: string, opts: Foren
   if (story.commits.length) {
     L.push('Commits:', '');
     for (const c of story.commits) L.push(`- \`${(c.sha ?? '').slice(0, 7)}\` ${c.subject ?? ''}`.trimEnd());
+    L.push('');
+  }
+
+  // ── containment (R8.1 blast radius) — the ordered "what to do now" list ────
+  const blast = blastRadius(store, sessionId);
+  if (blast.checklist.length) {
+    L.push('## Containment — ordered response', '');
+    L.push(`Scope: ${blast.files.length} file(s) changed · ${blast.secrets.length} secret(s) in scope · ${blast.hosts.length} external destination(s) · ${blast.commits.length} commit(s).`, '');
+    for (const it of blast.checklist) L.push(`${it.order}. **[${it.severity.toUpperCase()}]** ${it.action} _(seq ${it.seqs.join(', ')})_`);
     L.push('');
   }
 
