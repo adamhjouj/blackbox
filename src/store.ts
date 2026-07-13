@@ -435,6 +435,12 @@ export class Store {
     return !!this.db.prepare("SELECT 1 FROM events WHERE session_id = ? AND hook_event = 'WorktreeBase' LIMIT 1").get(sessionId);
   }
 
+  /** R7.1: has the environment snapshot already been captured? (SessionStart fires
+   *  on startup|resume|clear|compact — keep one EnvSnapshot per session.) */
+  envSnapshotExists(sessionId: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM events WHERE session_id = ? AND hook_event = 'EnvSnapshot' LIMIT 1").get(sessionId);
+  }
+
   /** R1: has a reasoning digest already been captured for this turn? (Stop can
    *  fire more than once — this keeps one reasoning event per prompt_id.) */
   reasoningExists(sessionId: string, promptId: string): boolean {

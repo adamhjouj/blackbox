@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { canonical, hashString } from './hash';
 import { outputToText, scanOutputForInjection } from './injection';
 import { captureMutation, type BlobInput, type MutationFact, type SessionAnchor } from './mutation';
+import type { EnvSnapshot } from './envsnap';
 import { redact, redactText, type RedactOptions } from './redact';
 import type { TurnIntent } from './transcript';
 import type { ActionType, NormalizedEvent, Phase } from './types';
@@ -371,4 +372,38 @@ export function worktreeDeltaEvent(sessionId: string, delta: WorktreeDelta, capt
  *  reconciler doesn't blame the agent for the developer's pre-existing changes. */
 export function worktreeBaseEvent(sessionId: string, delta: WorktreeDelta, capturedAt: string): NormalizedEvent {
   return worktreeEvent(sessionId, delta, capturedAt, 'WorktreeBase', 'session_start', 'worktree_base');
+}
+
+/**
+ * R7.1 — the environment/toolchain snapshot as a standalone SessionStart fact
+ * (`detail.env`). Copies the reasoning/worktree synthetic-event shape: phase
+ * `session_start` + action_type `session` (so it's excluded from action/card
+ * counts) with hook_event `EnvSnapshot` distinguishing it. Rule-inert by design
+ * (redaction_count 0; no r1/r2 rule reads it) so inline vs rescore never drift.
+ */
+export function envSnapshotEvent(sessionId: string, env: EnvSnapshot, capturedAt: string): NormalizedEvent {
+  return {
+    event_id: randomUUID(),
+    session_id: sessionId,
+    tool_use_id: null,
+    prompt_id: null,
+    phase: 'session_start',
+    hook_event: 'EnvSnapshot',
+    tool_name: null,
+    action_type: 'session',
+    target: null,
+    agent_id: null,
+    agent_type: 'main',
+    cwd: null,
+    permission_mode: null,
+    success: null,
+    duration_ms: null,
+    ts: capturedAt,
+    captured_at: capturedAt,
+    raw: JSON.stringify({ kind: 'EnvSnapshot', session_id: sessionId }),
+    output_hash: null,
+    output_size_bytes: null,
+    redaction_count: 0,
+    detail: JSON.stringify({ env }),
+  };
 }

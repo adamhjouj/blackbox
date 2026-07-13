@@ -10,7 +10,8 @@ import {
   resolveRepoTop,
 } from './git-collector';
 import { sessionAnchor } from './mutation';
-import { normalize, normalizeAndCapture, reasoningEvent, worktreeBaseEvent, worktreeDeltaEvent } from './normalize';
+import { collectEnv } from './envsnap';
+import { envSnapshotEvent, normalize, normalizeAndCapture, reasoningEvent, worktreeBaseEvent, worktreeDeltaEvent } from './normalize';
 import { emitReceipt, loadAnchorConfig, receiptFromSignature } from './anchor';
 import { persistReconciliation } from './reconcile';
 import { readTurnIntent } from './transcript';
@@ -227,6 +228,17 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
       log(`baseline capture failed: ${(err as Error).message}`);
     }
   };
+  // R7.1: at SessionStart, snapshot the environment/toolchain (versions, MCP
+  // inventory, hooks + manifest hashes) as a rule-inert fact. Its own slot, off the
+  // hook path and independent of the git baseline, so non-git sessions get it too.
+  const captureEnv = (sessionId: string, cwd: string | null): void => {
+    try {
+      if (store.envSnapshotExists(sessionId)) return; // one per session (SessionStart repeats)
+      store.append(envSnapshotEvent(sessionId, collectEnv(cwd), new Date().toISOString()));
+    } catch (err) {
+      log(`env snapshot failed: ${(err as Error).message}`);
+    }
+  };
   const captureWorktree = (sessionId: string, cwd: string | null): void => {
     try {
       if (!store.worktreeDeltaExists(sessionId)) {
@@ -292,6 +304,7 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
       const cwd = typeof payload.cwd === 'string' ? payload.cwd : appended.cwd;
       const base = anchor?.head_sha ?? null;
       if (cwd && base) setTimeout(() => captureBaseline(sid, cwd, base), 300).unref?.();
+      setTimeout(() => captureEnv(sid, cwd), 350).unref?.(); // own slot — fires even for non-git sessions
     }
     // R2: the session ended — capture git ground truth + reconcile, async.
     if (he === 'SessionEnd') {
