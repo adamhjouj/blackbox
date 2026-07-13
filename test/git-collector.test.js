@@ -3,7 +3,13 @@
 // report + forensic case-file — so it must be redacted before persistence. Requires dist/.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const { mkdtempSync, rmSync, writeFileSync, existsSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const { normalizeGit } = require('../dist/git-collector.js');
+const { captureWorktreeDelta } = require('../dist/worktree.js');
+const { GIT_SAFE_FLAGS } = require('../dist/git-safe.js');
 
 test('normalizeGit redacts a secret in the commit subject/author before persistence', () => {
   const key = 'sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -22,4 +28,37 @@ test('normalizeGit redacts a secret in the commit subject/author before persiste
   assert.ok(d.git.commit.subject.includes('[REDACTED'), 'commit subject should be redacted');
   assert.ok(d.git.commit.author.includes('[REDACTED'), 'commit author should be redacted');
   assert.equal(d.git.commit.sha, 'a'.repeat(40), 'sha is not a secret — kept verbatim');
+});
+
+// W0.1b — a malicious repo can set core.fsmonitor to an arbitrary program that git
+// EXECUTES the next time it refreshes the index. The daemon reads hook-supplied,
+// agent-controlled repo paths, so `git diff`/`ls-files` in captureWorktreeDelta must
+// not run that program. GIT_SAFE_FLAGS (`-c core.fsmonitor=false`) neutralises it.
+test('W0.1b: GIT_SAFE_FLAGS pins core.fsmonitor=false and core.hooksPath', () => {
+  assert.deepEqual([...GIT_SAFE_FLAGS], ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null']);
+});
+
+test('W0.1b: captureWorktreeDelta does NOT execute a hostile core.fsmonitor', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bb-fsmon-'));
+  const canary = join(dir, 'PWNED');
+  try {
+    const git = (...args) => execFileSync('git', ['-C', dir, ...args], { stdio: 'ignore' });
+    git('init', '-q');
+    git('config', 'user.email', 't@t');
+    git('config', 'user.name', 't');
+    writeFileSync(join(dir, 'a.txt'), 'one\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'init');
+    const base = execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    // arm the exploit + make the worktree dirty so a diff/refresh is forced
+    git('config', 'core.fsmonitor', 'touch ' + canary);
+    writeFileSync(join(dir, 'a.txt'), 'one\ntwo\n');
+
+    const delta = captureWorktreeDelta(dir, base);
+    assert.ok(!existsSync(canary), 'hostile core.fsmonitor EXECUTED — the daemon is exploitable');
+    // the capture itself still works (the change is seen)
+    assert.ok(delta && delta.files.some((f) => f.path === 'a.txt'), 'worktree delta should still capture the edit');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

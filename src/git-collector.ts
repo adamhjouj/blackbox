@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { GIT_SAFE_FLAGS } from './git-safe';
 import { redactText } from './redact';
 import type { NormalizedEvent } from './types';
 
@@ -8,14 +9,14 @@ const ZERO = /^0+$/;
 
 /** Run a git command in a repo; throws on non-zero (callers guard). */
 function git(repo: string, args: string[]): string {
-  return execFileSync('git', ['-C', repo, ...args], {
+  return execFileSync('git', ['-C', repo, ...GIT_SAFE_FLAGS, ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
 }
 function gitOk(repo: string, args: string[]): boolean {
   try {
-    execFileSync('git', ['-C', repo, ...args], { stdio: 'ignore' });
+    execFileSync('git', ['-C', repo, ...GIT_SAFE_FLAGS, ...args], { stdio: 'ignore' });
     return true;
   } catch {
     return false;

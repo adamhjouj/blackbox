@@ -29,9 +29,38 @@ export interface RedactionResult {
 const WALK_FIELDS = ['tool_input', 'tool_response', 'tool_output', 'error', 'last_assistant_message', 'prompt', 'user_input', 'message'];
 
 /** key = value / key: value where the key names a credential — catches even
- *  low-entropy secrets (e.g. `DB_PASSWORD=hunter2`) and slash-bearing values. */
+ *  low-entropy secrets (e.g. `DB_PASSWORD=hunter2`) and slash-bearing values.
+ *  Quantifiers are BOUNDED ({0,64} / {0,16}) not `*`: unbounded `[a-z0-9_]*\s*`
+ *  before the required `[:=]` is a polynomial-ReDoS gadget — a ~0.5MB run of
+ *  keyword-ish chars with no delimiter forced O(n²) backtracking and could stall
+ *  the single-writer daemon. Real keys/whitespace are far under these caps. */
 const ASSIGNMENT_RE =
-  /(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|credential)s?[a-z0-9_]*["'`]?\s*[:=]\s*["'`]?([^\s"'`,;)]{6,})/gi;
+  /(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|credential)s?[a-z0-9_]{0,64}["'`]?\s{0,16}[:=]\s{0,16}["'`]?([^\s"'`,;)]{6,})/gi;
+
+/**
+ * Structure-anchored credential rules for secrets the entropy net MISSES because
+ * the value is hex/low-entropy and lives in a known SHAPE rather than a `key=val`
+ * assignment. Each captures the secret as its LAST group so only that span is
+ * replaced (prefix-preserving, like ASSIGNMENT_RE) — the surrounding structure
+ * (scheme, username, `Bearer`) is kept for readability. Linear-time and anchored
+ * so `host:port` and scp-style `user@host:path` never match.
+ *
+ * This is the fix for the hex-exemption leak: `isLikelySecret` exempts 7–64-char
+ * hex (git shas / digests), so a hex password in a URL / `-u` / auth header would
+ * otherwise reach the store verbatim. Narrowing the hex exemption instead would
+ * flood real shas/checksums with false redactions and STILL miss the 64-hex case.
+ */
+const CONTEXT_RULES: { re: RegExp; type: SecretType }[] = [
+  // scheme://user:SECRET@host — password in URL userinfo. The (?=@) lookahead is
+  // load-bearing: without it, redis://host:6379 would redact the PORT. Every
+  // quantifier is BOUNDED: an unbounded scheme/userinfo before the required `://`
+  // (or `@`) is itself an O(n²) ReDoS gadget on a long delimiter-free run.
+  { re: /([a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/@]{1,256}:)([^\s:/@]{1,256})(?=@)/gi, type: 'url-userinfo' },
+  // curl -u user:SECRET  /  --user user:SECRET  (requires a colon → bare -u prompts, no secret)
+  { re: /((?:--user|-u)[=\s]{1,8}["'`]?[^\s:"'`]{1,256}:)([^\s"'`]{1,4096})/gi, type: 'basic-auth' },
+  // Authorization: Bearer|Basic|Token SECRET  (also Proxy-Authorization)
+  { re: /((?:proxy-)?authorization\s{0,8}:\s{0,8}(?:bearer|basic|token)\s{1,8})([A-Za-z0-9._~+/=-]{1,4096})/gi, type: 'auth-header' },
+];
 
 /** Base64/base64url secrets often contain '/', which the path-safe entropy pass
  *  excludes. Distinguish a base64 blob from a real filesystem path. */
@@ -86,6 +115,16 @@ function redactString(s: string, path: string, hits: RedactionHit[], opts: Redac
     record(hits, 'assigned-secret', path, val);
     return m.slice(0, m.length - val.length) + PLACEHOLDER('assigned-secret');
   });
+  // Structure-anchored context secrets (URL userinfo, curl -u, Authorization) —
+  // run BEFORE the entropy passes so a hex/low-entropy value in a known shape is
+  // caught here instead of slipping through the hex exemption. Secret is the last
+  // capture group, so replace only that suffix span.
+  for (const rule of CONTEXT_RULES) {
+    out = out.replace(rule.re, (m, _prefix: string, secret: string) => {
+      record(hits, rule.type, path, secret);
+      return m.slice(0, m.length - secret.length) + PLACEHOLDER(rule.type);
+    });
+  }
 
   const minLen = opts.entropyMinLen ?? 24;
   const minBits = opts.entropyMinBits ?? 3.5;

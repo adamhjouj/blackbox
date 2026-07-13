@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { GIT_SAFE_FLAGS } from './git-safe';
 import { hashString } from './hash';
 import { redactText } from './redact';
 import type { ActionType } from './types';
@@ -226,7 +227,7 @@ export function sessionAnchor(cwd: string | null): SessionAnchor {
   if (!cwd) return { head_sha: null, branch: null, reason: 'no-cwd' };
   const run = (args: string[]): string | null => {
     try {
-      return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 250 }).trim();
+      return execFileSync('git', ['-C', cwd, ...GIT_SAFE_FLAGS, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 250 }).trim();
     } catch {
       return null;
     }

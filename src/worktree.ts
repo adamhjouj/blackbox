@@ -14,6 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { GIT_SAFE_FLAGS } from './git-safe';
 import { redactText } from './redact';
 
 const MAX_FILES = 500; // cap the delta so a giant refactor can't bloat the fact
@@ -47,8 +48,9 @@ export function captureWorktreeDelta(cwd: string | null, baseSha: string | null)
   if (!cwd || !baseSha) return null;
   const at = (repo: string, args: string[]): string | null => {
     try {
-      // core.quotePath=false keeps non-ASCII filenames verbatim (git otherwise C-quotes them).
-      return execFileSync('git', ['-C', repo, '-c', 'core.quotePath=false', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 16 * 1024 * 1024 });
+      // core.quotePath=false keeps non-ASCII filenames verbatim (git otherwise C-quotes them);
+      // GIT_SAFE_FLAGS neutralise a hostile repo's core.fsmonitor exec on index refresh.
+      return execFileSync('git', ['-C', repo, ...GIT_SAFE_FLAGS, '-c', 'core.quotePath=false', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 16 * 1024 * 1024 });
     } catch {
       return null;
     }

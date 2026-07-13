@@ -21,6 +21,10 @@ export type SecretType =
   | 'pem-private-key'
   | 'aws-secret-key'
   | 'assigned-secret'
+  // structure-anchored context secrets (value may be hex/low-entropy, caught by SHAPE)
+  | 'url-userinfo'
+  | 'basic-auth'
+  | 'auth-header'
   | 'high-entropy'
   | 'path-sensitive-content'
   | 'redactor-error';
