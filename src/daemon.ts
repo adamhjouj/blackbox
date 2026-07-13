@@ -15,7 +15,7 @@ import { persistReconciliation } from './reconcile';
 import { readTurnIntent } from './transcript';
 import { captureWorktreeDelta } from './worktree';
 import { blackboxDir, configPath } from './paths';
-import { eventDetail, sessionActions, sessionCards, sessionTree, sessionStory } from './read-api';
+import { eventDetail, sessionActions, sessionCards, sessionTrace, sessionStory } from './read-api';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
 import { RULESET_VERSION } from './risk-rules';
 import { ensureKeypair, isSignableBoundary, signHead, writeWatermark, type Keypair } from './sign';
@@ -385,7 +385,7 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             sendJson(res, 200, sessionStory(store, id));
             return;
           }
-          const mgraph = path.match(/^\/api\/session\/(.+)\/graph$/);
+          const mgraph = path.match(/^\/api\/session\/(.+)\/(?:graph|trace)$/);
           if (mgraph) {
             let id: string;
             try {
@@ -394,9 +394,11 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
               sendJson(res, 400, { ok: false, error: 'bad session id' });
               return;
             }
-            const q = url.split('?')[1];
-            const prompt = q ? new URLSearchParams(q).get('prompt') : null;
-            sendJson(res, 200, sessionTree(store, id, prompt));
+            const qp = new URLSearchParams(url.split('?')[1] ?? '');
+            const depthRaw = qp.get('depth');
+            const depth = depthRaw === 'all' ? undefined : depthRaw ? Number(depthRaw) : null;
+            const expand = (qp.get('expand') ?? '').split(',').filter(Boolean);
+            sendJson(res, 200, sessionTrace(store, id, { root: qp.get('root'), depth: Number.isFinite(depth as number) ? (depth as number) : null, whole: qp.get('whole') === '1' || depthRaw === 'all', expand }));
             return;
           }
           const me = path.match(/^\/api\/event\/(\d+)$/);

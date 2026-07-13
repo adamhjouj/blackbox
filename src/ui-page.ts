@@ -290,9 +290,17 @@ const PAGE_CSS = `  :root {
   .gdot { width:8px; height:8px; border-radius:50%; display:inline-block; }
   .ghint { display:block; padding:9px 18px 0; font-size:11px; color:var(--fg-4); }
   .gexpand { font-weight:500; }
-  .treescroll { position:relative; overflow:auto; height:560px;
-    background:radial-gradient(760px 520px at 30% 14%, rgba(255,255,255,.02), transparent 72%); border-bottom:1px solid var(--border-subtle); }
-  .treecanvas { display:block; }
+  .fb-tool.on { color:var(--fg); border-color:var(--border-strong); background:var(--surface-2); }
+  .dagscroll { position:relative; overflow:hidden; height:560px; touch-action:none;
+    background:radial-gradient(760px 520px at 32% 16%, rgba(255,255,255,.022), transparent 72%); border-bottom:1px solid var(--border-subtle); }
+  .dagsvg { display:block; width:100%; height:100%; cursor:grab; }
+  .dagsvg.panning { cursor:grabbing; }
+  .dagsvg text { user-select:none; -webkit-user-select:none; }
+  .dnode { cursor:pointer; }
+  .dnode rect { transition:stroke .12s ease, filter .12s ease; }
+  .dnode.hov rect { filter:brightness(1.14); }
+  .dnode.root rect { stroke-width:2px; }
+  .dedge { fill:none; stroke-linecap:round; }
   .gpanel { padding:14px 18px 24px; }
   .gpanel .detailrow { margin-top:12px; }
   .gpanel .detail { border:1px solid var(--border); border-radius:var(--r3); }
@@ -307,7 +315,7 @@ const PAGE_CSS = `  :root {
     border-radius:var(--r2); padding:5px 11px; cursor:pointer; }
   .gfull-close:hover { color:var(--fg); border-color:var(--border-strong); }
   .gfull-stage { flex:1 1 auto; }
-  .gfull-stage.treescroll { height:auto; border-bottom:none; }
+  .gfull-stage.dagscroll { height:auto; border-bottom:none; }
   .gfull-panel { position:absolute; left:0; right:0; bottom:0; max-height:46%; overflow:auto;
     background:linear-gradient(to top, var(--bg) 84%, rgba(11,13,16,0)); padding:0 18px 18px; }
   .gfull-panel:empty { display:none; }
@@ -377,16 +385,15 @@ const RISKWORD = Object.assign(Object.create(null), { high:'high risk', medium:'
 let current = null, expanded = new Set();
 let viewMode = 'story';               // 'story' (default lens) | 'timeline' | 'graph'
 let fpStory = null, storyOpen = new Set();   // fp gate + per-turn step-expansion (by turn key)
-let fpGraph = null, graphState = null, graphPrompt = '', graphTurns = [], graphFull = false;   // R4 graph: fp gate · mounts+model · turn filter · turn options · fullscreen open
-const NODE_COLOR = { prompt:'#8ab4f8', file:'#59b783', commit:'#6cc38a', step:'#8a919c', secret:'#e5595a', host:'#e5595a', mcp:'#b48ead' };
-// R4 graph render palette (dark-only, tuned off the design tokens). Kept here so the
-// canvas never hardcodes a raw rgba white — edges/labels read against --bg consistently.
+let fpGraph = null, graphState = null, graphRoot = null, graphDepth = 2, graphWhole = false, graphExpand = [], graphFull = false;   // R4 trace: fp gate · mount+model · root · depth · whole-session · expanded dirs · fullscreen
+// R4 provenance-trace palette (dark-only, tuned off the design tokens). Node fill/border/
+// dot by KIND; edge stroke by RELATION so the graph carries meaning at a glance.
 const G_RISK = '#e5595a';
 const G_SANS = '-apple-system,BlinkMacSystemFont,system-ui,sans-serif';
-const G_TREE_EDGE = 'rgba(122,128,140,0.42)', G_TREE_EDGE_HI = 'rgba(210,214,222,0.8)', G_RISK_LINE = 'rgba(229,89,90,0.72)';
-const TREE_FILL = { session:'#141821', prompt:'#131a26', file:'#111c16', commit:'#111c17', subagent:'#191426', secret:'#201417', host:'#201417', mcp:'#191426' };
-const TREE_BORDER = { session:'#2c313b', prompt:'#31405c', file:'#254a38', commit:'#264a39', subagent:'#3d3557', secret:'#5e2f31', host:'#5e2f31', mcp:'#3d3557' };
-const TREE_DOT = { session:'#9098a4', prompt:'#8ab4f8', file:'#59b783', commit:'#6cc38a', subagent:'#b48ead', secret:'#e5595a', host:'#e5595a', mcp:'#b48ead' };
+const DAG_DOT = { prompt:'#8ab4f8', step:'#d3a24a', file:'#59b783', dir:'#5a9bd6', commit:'#6cc38a', finding:'#e5595a', host:'#e5595a', session:'#9098a4' };
+const DAG_FILL = { prompt:'#141d2c', step:'#1e1a10', file:'#101c15', dir:'#101823', commit:'#101c16', finding:'#251214', host:'#251214', session:'#141821' };
+const DAG_BORDER = { prompt:'#32415d', step:'#4c4123', file:'#26493a', commit:'#274b3a', dir:'#294466', finding:'#7c2f31', host:'#7c2f31', session:'#2c313b' };
+const DAG_EDGE = { caused:'rgba(138,148,160,0.5)', wrote:'rgba(89,183,131,0.6)', read:'rgba(122,128,140,0.42)', committed:'rgba(108,195,138,0.66)', flagged:'rgba(229,89,90,0.82)', sent:'rgba(229,89,90,0.7)', contains:'rgba(90,155,214,0.55)' };
 let fpSessions = null, fpTimeline = null, fpVerdict = null, fpHud = null;
 let rowState = [];            // [{fp, tr, a}] parallel to the rendered action list
 let tbody = null;
@@ -459,7 +466,7 @@ function select(id){
   current = id; expanded = new Set();
   fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
   fpStory = null; storyOpen = new Set();
-  fpGraph = null; graphPrompt = ''; graphTurns = []; stopGraph();   // tear the graph down on session change
+  fpGraph = null; graphRoot = null; graphDepth = 2; graphWhole = false; graphExpand = []; stopGraph();   // tear the graph down on session change
   lastPrompt = null; turnN = 0;
   collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false; flagCursor = -1; turnCursor = -1;
   for(const [sid, d] of sessEls) d.classList.toggle('active', sid === current);
@@ -1306,10 +1313,12 @@ function stepRow(s){
   return row;
 }
 
-/* ── graph view (R4) — a hand-rolled force-directed canvas, zero deps ─ */
-// A read-only projection of the session (prompt · step · file · commit · risk nodes;
-// caused/changed/committed/spawned/read/sent/combo edges). The exfil combo is a red
-// path. Pan/zoom, hover-highlight a node's neighbourhood, click a node → its dossier.
+/* ── graph view (R4) — the provenance TRACE: a deterministic layered DAG ─ */
+// A read-only projection of the session into a causal DAG (prompt · step · file ·
+// dir · commit · finding · host), laid out server-side with a hand-rolled Sugiyama
+// so evidence never moves between reloads. The DEFAULT lens is a trace rooted at a
+// finding (its ancestry + descendants), not a whole-session dump. Click a node to
+// re-root the trace there; double-click for its evidence dossier. Zoom/pan/fit.
 function stopGraph(){
   if(!graphState) return;
   if(graphState.mounts) for(const m of graphState.mounts) m.destroy();
@@ -1318,212 +1327,268 @@ function stopGraph(){
   graphState = null;
 }
 
+function traceQuery(){
+  const p = new URLSearchParams();
+  if(graphWhole){ p.set('whole','1'); }
+  else { if(graphRoot) p.set('root', graphRoot); p.set('depth', graphDepth>=9999?'all':String(graphDepth)); }
+  if(graphExpand.length) p.set('expand', graphExpand.join(','));
+  const s = p.toString();
+  return s ? '?'+s : '';
+}
+
+// A trace-parameter change (re-root, depth, whole, expand) → refetch + rerender,
+// keeping the fullscreen explorer live if it owns the view.
+function applyTraceChange(){
+  fpGraph = null;
+  if(graphFull && graphState && graphState.reloadFull) graphState.reloadFull();
+  else loadGraph().catch(function(){});
+}
+function rerootTo(id){ graphRoot = id; graphWhole = false; applyTraceChange(); }
+function toggleExpand(id){ const i=graphExpand.indexOf(id); if(i>=0) graphExpand.splice(i,1); else graphExpand.push(id); applyTraceChange(); }
+function activeMount(){ return graphState && graphState.mounts && graphState.mounts[graphState.mounts.length-1]; }
+
 async function loadGraph(){
   const main = document.getElementById('timeline');
-  if(graphFull) return;   // a fullscreen explorer owns the tree — don't churn the pane beneath it
+  if(graphFull) return;   // the fullscreen explorer owns the view — don't churn the pane beneath it
   if(!current){
     const key = haveSessions ? 'sel' : 'armed';
     if(fpGraph !== 'e:'+key){ fpGraph='e:'+key; stopGraph(); main.textContent=''; main.append(viewBar(), emptyState(key)); }
     return;
   }
   const sid = current;
-  const q = graphPrompt ? ('?prompt='+encodeURIComponent(graphPrompt)) : '';
-  const tree = await api('/api/session/'+encodeURIComponent(sid)+'/graph'+q);
+  const tv = await api('/api/session/'+encodeURIComponent(sid)+'/trace'+traceQuery());
   if(current !== sid || viewMode !== 'graph' || graphFull) return;
-  const fp = JSON.stringify([sid, graphPrompt, tree.counts]);
-  if(fp === fpGraph) return;   // stable tree → keep the current view/collapse state
-  renderTree(main, tree);
+  if(!graphWhole && !graphRoot && tv.root) graphRoot = tv.root;   // adopt the server's default root so polls stay stable
+  const fp = JSON.stringify([sid, graphRoot, graphDepth, graphWhole, graphExpand, tv.counts]);
+  if(fp === fpGraph) return;   // stable trace → keep the current view/zoom
+  renderDag(main, tv);
   fpGraph = fp;
 }
 
+function kindDot(kind){ return DAG_DOT[kind] || '#8a919c'; }
 function graphLegend(){
   const box = el('div',{className:'glegend'});
-  for(const spec of [['prompt','prompt'],['file','file'],['commit','commit'],['subagent','subagent'],['secret','risk']]){
-    box.append(el('span',{className:'gleg'}, el('span',{className:'gdot',style:'background:'+(TREE_DOT[spec[0]]||'#8a919c')}), spec[1]));
+  for(const spec of [['prompt','prompt'],['step','step'],['file','file'],['commit','commit'],['finding','finding']]){
+    box.append(el('span',{className:'gleg'}, el('span',{className:'gdot',style:'background:'+kindDot(spec[0])}), spec[1]));
   }
   return box;
 }
 
-function graphControls(tree){
+// control builders, shared by the inline bar and the fullscreen bar
+function rootSelect(tv){
+  const sel = el('select',{className:'fb-tool',title:'trace root',
+    onchange:()=>{ if(sel.value){ graphRoot=sel.value; graphWhole=false; graphExpand=[]; applyTraceChange(); } }});
+  // If the trace is rooted at a node that isn't a finding/turn (you clicked a file or
+  // step to re-root), surface it as the selected option so the selector never blanks.
+  const listed = new Set(tv.roots.map((r)=>r.id));
+  if(!graphWhole && tv.root && !listed.has(tv.root)){
+    const rn = (tv.nodes||[]).find((n)=>n.id===tv.root);
+    sel.append(el('option',{value:tv.root,textContent:'⦿ '+((rn&&rn.label)||tv.root).slice(0,44)}));
+  }
+  for(const r of tv.roots){ const flag=r.kind==='finding'?'⚑ ':''; sel.append(el('option',{value:r.id,textContent:flag+(r.label||r.id).slice(0,46)})); }
+  sel.value = graphWhole ? '' : (graphRoot || tv.root || '');
+  sel.disabled = graphWhole;
+  return sel;
+}
+function depthSelect(){
+  const sel = el('select',{className:'fb-tool',title:'trace depth (causal hops from the root)',
+    onchange:()=>{ graphDepth = sel.value==='all' ? 9999 : Number(sel.value); graphWhole=false; applyTraceChange(); }});
+  for(const d of ['1','2','3','all']) sel.append(el('option',{value:d,textContent:'depth '+d}));
+  sel.value = graphWhole ? 'all' : (graphDepth>=9999 ? 'all' : String(graphDepth));
+  sel.disabled = graphWhole;
+  return sel;
+}
+function wholeButton(){
+  return el('button',{type:'button',className:'fb-tool'+(graphWhole?' on':''),
+    textContent: graphWhole ? '← back to trace' : 'whole session',
+    title: graphWhole ? 'return to the rooted trace' : 'show the whole session (not the default)',
+    onclick:()=>{ graphWhole=!graphWhole; graphExpand=[]; applyTraceChange(); }});
+}
+
+function graphControls(tv){
   const bar = el('div',{className:'graphctl'});
-  if(!tree.detailed){ graphTurns = ((tree.root && tree.root.children) || []).map((n)=>({ id:String(n.id||'').slice(2), label:n.label })); }
-  const sel = el('select',{className:'fb-tool',title:'focus one turn',
-    onchange:()=>{ graphPrompt = sel.value; fpGraph = null; loadGraph().catch(()=>{}); }});
-  sel.append(el('option',{value:'',textContent:'whole session'}));
-  for(const t of graphTurns) sel.append(el('option',{value:t.id,textContent:'turn · '+(t.label||t.id).slice(0,38)}));
-  sel.value = graphPrompt;
-  const active = ()=> graphState && graphState.mounts && graphState.mounts[graphState.mounts.length-1];
-  const expand = el('button',{type:'button',className:'fb-tool',textContent:'expand all',title:'open every branch',onclick:()=>{ const m=active(); if(m) m.expandAll(); }});
-  const fit = el('button',{type:'button',className:'fb-tool',textContent:'fit',title:'fit the tree to view',onclick:()=>{ const m=active(); if(m) m.fit(); }});
-  const full = el('button',{type:'button',className:'fb-tool gexpand',textContent:'⤢ fullscreen',title:'open the fullscreen explorer',onclick:()=> openGraphFull()});
-  bar.append(sel, expand, fit, full, el('span',{className:'gcount',textContent:tree.counts.nodes+' nodes'}), graphLegend());
+  const fit = el('button',{type:'button',className:'fb-tool',textContent:'fit',title:'fit the trace to view',onclick:()=>{ const m=activeMount(); if(m) m.fit(); }});
+  const full = el('button',{type:'button',className:'fb-tool gexpand',textContent:'⤢ fullscreen',title:'open the fullscreen explorer',onclick:()=>openGraphFull()});
+  bar.append(rootSelect(tv), depthSelect(), wholeButton(), fit, full,
+    el('span',{className:'gcount',textContent: tv.counts.nodes+' nodes · '+tv.counts.edges+' edges'}), graphLegend());
   return bar;
 }
 
-function renderTree(main, tree){
+function renderDag(main, tv){
   stopGraph();
   main.textContent='';
   main.append(viewBar());
-  main.append(graphControls(tree));
-  const root = tree.root;
-  if(!root || (root.type==='session' && !root.children.length)){
-    main.append(el('div',{className:'empty'}, el('p',{textContent:'No recorded activity to show yet — run a prompt, or pick another session.'})));
+  main.append(graphControls(tv));
+  if(!tv.nodes || !tv.nodes.length){
+    main.append(el('div',{className:'empty'}, el('p',{textContent:'No causal trace to show yet — run a prompt, or pick another session.'})));
     return;
   }
-  const container = el('div',{className:'treescroll'});
-  const canvas = el('canvas',{className:'treecanvas'});
-  const hint = el('div',{className:'ghint',textContent:'click a node to open / collapse it · leaf nodes open the evidence'});
-  container.append(canvas);
+  const container = el('div',{className:'dagscroll'});
+  const hint = el('div',{className:'ghint',textContent:'click a node to trace from it · double-click for its evidence · drag to pan · scroll to zoom'});
   const panel = el('div',{className:'gpanel'});
   main.append(container, hint, panel);
-
-  // collapse state: the overview shows session -> turns (outcomes collapsed); a single
-  // turn opens fully. Kept on graphState so a stable poll never resets the user's view.
-  const collapsed = new Set();
-  if(!tree.detailed) for(const t of root.children) if(t.children.length) collapsed.add(t.id);
-
-  const mount = mountTree(canvas, container, root, collapsed, { panel: panel });
-  graphState = { mounts:[mount], tree: tree, collapsed: collapsed, overlay: null };
+  const mount = mountDag(container, tv, { panel: panel, onReroot: rerootTo, onExpand: toggleExpand });
+  graphState = { mounts:[mount], tv: tv, overlay:null };
 }
 
-// Render one interactive provenance tree onto a canvas inside a scroll container.
-// Deterministic tidy layout (top-down): leaves are placed left-to-right, parents
-// centre over their children — no physics, always readable. DPR-sharp; the container
-// scrolls, a zoom fits it to the pane. Returns a controller for teardown/fit.
-function mountTree(canvas, container, root, collapsed, opts){
+// Render one positioned DAG as SVG (crisp at any zoom; hit-testing is per-element).
+// The server hands us x/y/w/h + routed edge points — the client only draws + navigates.
+function mountDag(container, tv, opts){
   opts = opts || {};
-  const ctx = canvas.getContext('2d');
-  const NODE_W=252, NODE_H=44, H_GAP=22, V_GAP=38, PAD=24, BAND_GAP=28;
-  let dpr=1, zoom=1, treeW=1, treeH=1, hover=null, selected=null, term='';
+  const NS='http://www.w3.org/2000/svg';
+  const mk=(t,a)=>{ const n=document.createElementNS(NS,t); if(a) for(const k in a) n.setAttribute(k,a[k]); return n; };
+  const W=Math.max(tv.width,1), H=Math.max(tv.height,1);
   const listeners=[]; const on=(t,e,f,o)=>{ t.addEventListener(e,f,o); listeners.push([t,e,f,o]); };
 
-  // The session overview is a FOREST: each turn is its own top-down tree, stacked
-  // vertically (so a busy session reads as a scrollable list, not a 28-wide row). A
-  // single turn (?prompt) is one tree with the prompt at the root.
-  const forest = root.type==='session';
-  const roots = ()=> forest ? visKids(root) : [root];
-  const visKids = (n)=> collapsed.has(n.id) ? [] : n.children;
-  function eachVisible(cb){ for(const r of roots()){ (function rec(n,parent){ cb(n,parent); const k=visKids(n); for(let i=0;i<k.length;i++) rec(k[i], n); })(r, null); } }
-  const isMatch = (n)=> !!term && String(n.label||'').toLowerCase().indexOf(term) >= 0;
+  const svg = mk('svg',{'class':'dagsvg'});
+  const defs = mk('defs',{});
+  for(const m of [['arr','rgba(150,158,168,0.85)'],['arrRisk','rgba(229,89,90,0.9)'],['arrGood','rgba(108,195,138,0.85)']]){
+    const mark = mk('marker',{id:m[0],viewBox:'0 0 8 8',refX:'6.5',refY:'4',markerWidth:'6',markerHeight:'6',orient:'auto-start-reverse'});
+    const pth = mk('path',{d:'M0 0 L8 4 L0 8 z',fill:m[1]});
+    mark.append(pth); defs.append(mark);
+  }
+  svg.append(defs);
+  const gEdges = mk('g',{}); const gNodes = mk('g',{}); const g = mk('g',{});
+  g.append(gEdges, gNodes); svg.append(g);
+  container.append(svg);
 
-  function layout(){
-    let maxRight = 0, yTop = PAD;
-    for(const r of roots()){
-      let cursor = PAD, maxDepth = 0;
-      (function place(n,depth){
-        n._depth=depth; if(depth>maxDepth) maxDepth=depth;
-        const kids=visKids(n);
-        if(!kids.length){ n._x=cursor+NODE_W/2; cursor+=NODE_W+H_GAP; }
-        else { for(let i=0;i<kids.length;i++) place(kids[i], depth+1); n._x=(kids[0]._x + kids[kids.length-1]._x)/2; }
-        n._y = yTop + depth*(NODE_H+V_GAP) + NODE_H/2;
-      })(r, 0);
-      yTop += (maxDepth+1)*(NODE_H+V_GAP) - V_GAP + BAND_GAP;
-      if(cursor - H_GAP > maxRight) maxRight = cursor - H_GAP;
+  const byId={}; for(const n of tv.nodes) byId[n.id]=n;
+  let tx=0, ty=0, z=1;
+  function apply(){ g.setAttribute('transform','translate('+tx+' '+ty+') scale('+z+')'); }
+
+  // ── edges ──
+  const EW = { caused:1.4, wrote:1.5, read:1.3, committed:1.7, flagged:2.1, sent:1.9, contains:1.4 };
+  const EDASH = { read:'4 3', sent:'5 4' };
+  function edgeMarker(rel){ return rel==='flagged'||rel==='sent' ? 'arrRisk' : (rel==='wrote'||rel==='committed' ? 'arrGood' : 'arr'); }
+  function edgeD(e){
+    const from=byId[e.from], to=byId[e.to]; if(!from||!to) return '';
+    const p0={ x: from.x+from.w, y: from.y+from.h/2 };
+    const pN={ x: to.x, y: to.y+to.h/2 };
+    const mids = (e.points&&e.points.length>2) ? e.points.slice(1,-1) : [];
+    const stops = mids.concat([pN]);
+    let d='M '+r2(p0.x)+' '+r2(p0.y); let prev=p0;
+    for(const s of stops){ const mx=(prev.x+s.x)/2; d+=' C '+r2(mx)+' '+r2(prev.y)+' '+r2(mx)+' '+r2(s.y)+' '+r2(s.x)+' '+r2(s.y); prev=s; }
+    return d;
+  }
+  function r2(v){ return Math.round(v*10)/10; }
+  for(const e of tv.edges){
+    const path = mk('path',{'class':'dedge',d:edgeD(e),stroke:(DAG_EDGE[e.rel]||'rgba(138,148,160,0.5)'),
+      'stroke-width':String(EW[e.rel]||1.4),'marker-end':'url(#'+edgeMarker(e.rel)+')'});
+    if(EDASH[e.rel]) path.setAttribute('stroke-dasharray', EDASH[e.rel]);
+    path.setAttribute('data-a', e.from); path.setAttribute('data-b', e.to);
+    gEdges.append(path);
+  }
+
+  // ── nodes ──
+  function fitText(s,w){ s=String(s==null?'':s); const max=Math.max(3,Math.floor((w-44)/6.6)); return s.length>max ? s.slice(0,Math.max(1,max-1))+'…' : s; }
+  let clickTimer=null;
+  for(const n of tv.nodes){
+    const isRoot = n.id===tv.root;
+    const gn = mk('g',{'class':'dnode'+(isRoot?' root':''),transform:'translate('+r2(n.x)+' '+r2(n.y)+')'});
+    gn.append(mk('title',{})); gn.lastChild.textContent = (n.label||'') + (n.sub?(' — '+n.sub):'');
+    const rect = mk('rect',{x:'0',y:'0',width:String(n.w),height:String(n.h),rx:'10',
+      fill:(DAG_FILL[n.kind]||'#141821'), stroke:(n.risk?G_RISK:(isRoot?'#e6e8ec':(DAG_BORDER[n.kind]||'#2a2e36'))),
+      'stroke-width':String(isRoot?2:1.2)});
+    if(n.risk) rect.setAttribute('filter','drop-shadow(0 0 7px rgba(229,89,90,0.42))');
+    gn.append(rect);
+    gn.append(mk('circle',{cx:'16',cy:String(n.h/2),r:'4.5',fill:(n.risk?G_RISK:kindDot(n.kind))}));
+    const hasSub = !!n.sub;
+    const t1 = mk('text',{x:'30',y:String(hasSub? n.h/2-5 : n.h/2),'dominant-baseline':'middle',
+      'font-family':G_SANS,'font-size':'12.5','font-weight':'600',fill:(n.risk?'#f2d3d3':'#e6e8ec')});
+    t1.textContent = fitText(n.label, n.w);
+    gn.append(t1);
+    if(hasSub){ const t2 = mk('text',{x:'30',y:String(n.h/2+9),'dominant-baseline':'middle',
+      'font-family':G_SANS,'font-size':'10.5',fill:(n.risk?'rgba(229,89,90,0.92)':'#7c828c')});
+      t2.textContent = fitText(n.sub, n.w); gn.append(t2); }
+    if(n.kind==='dir'){ const opened = graphExpand.indexOf(n.id)>=0;
+      const chev = mk('text',{x:String(n.w-16),y:String(n.h/2),'dominant-baseline':'middle','text-anchor':'middle',
+        'font-family':G_SANS,'font-size':'12','font-weight':'700',fill:'#5a9bd6'}); chev.textContent = opened?'−':'+'; gn.append(chev); }
+
+    gn.addEventListener('pointerenter',()=>{ gn.classList.add('hov'); highlight(n.id,true); });
+    gn.addEventListener('pointerleave',()=>{ gn.classList.remove('hov'); highlight(n.id,false); });
+    gn.addEventListener('click',(ev)=>{ ev.stopPropagation();
+      if(n.kind==='dir'){ if(opts.onExpand) opts.onExpand(n.id); return; }
+      if(clickTimer) return;
+      clickTimer = setTimeout(()=>{ clickTimer=null; if(opts.onReroot) opts.onReroot(n.id); }, 210); });
+    gn.addEventListener('dblclick',(ev)=>{ ev.stopPropagation();
+      if(clickTimer){ clearTimeout(clickTimer); clickTimer=null; }
+      if(n.seq!=null && opts.panel) openGraphDossier(n.seq, opts.panel); });
+    gNodes.append(gn);
+  }
+  function highlight(id,on2){
+    for(const p of gEdges.childNodes){ const a=p.getAttribute('data-a'), b=p.getAttribute('data-b');
+      if(a===id||b===id){ p.setAttribute('opacity', on2?'1':'1'); p.setAttribute('stroke-width', String((Number(p.getAttribute('stroke-width'))||1.4)+(on2?0.6:-0.6))); } }
+  }
+
+  // ── zoom / pan / fit ──
+  function fit(){
+    const cw=container.clientWidth||900, ch=container.clientHeight||560;
+    // fit BOTH dimensions so a small trace shows whole; floor the zoom so a huge
+    // whole-session view stays legible (the user pans it) rather than microscopic.
+    z = Math.max(0.4, Math.min((cw-28)/W, (ch-24)/H, 1.3));
+    const sh=H*z, sw=W*z;
+    tx = Math.max(14, (cw-sw)/2);
+    if(sh <= ch-20){ ty = (ch-sh)/2; }
+    else { // taller than the view: centre on the root node so it's always in frame
+      const rn = byId[tv.root] || tv.nodes[0];
+      const ry = (rn.y + rn.h/2) * z;
+      ty = Math.min(14, Math.max(ch - sh - 14, ch/2 - ry));
     }
-    treeW = Math.max(maxRight + PAD, NODE_W + PAD*2);
-    treeH = Math.max(yTop - BAND_GAP + PAD, NODE_H + PAD*2);
+    apply();
   }
+  function zoomAt(cx,cy,f){ const nz=Math.max(0.15, Math.min(2.6, z*f)); const k=nz/z; tx=cx-(cx-tx)*k; ty=cy-(cy-ty)*k; z=nz; apply(); }
+  on(svg,'wheel',(e)=>{ e.preventDefault(); const r=svg.getBoundingClientRect(); zoomAt(e.clientX-r.left, e.clientY-r.top, e.deltaY<0?1.12:0.893); },{passive:false});
+  let panning=false, sx=0, sy=0, stx=0, sty=0, moved=0;
+  on(svg,'pointerdown',(e)=>{ if(e.target.closest && e.target.closest('.dnode')) return; panning=true; moved=0; sx=e.clientX; sy=e.clientY; stx=tx; sty=ty; svg.classList.add('panning'); try{ svg.setPointerCapture(e.pointerId); }catch(_){} });
+  on(svg,'pointermove',(e)=>{ if(!panning) return; const dx=e.clientX-sx, dy=e.clientY-sy; moved=Math.max(moved,Math.abs(dx)+Math.abs(dy)); tx=stx+dx; ty=sty+dy; apply(); });
+  on(svg,'pointerup',(e)=>{ panning=false; svg.classList.remove('panning'); try{ svg.releasePointerCapture(e.pointerId); }catch(_){} });
+  on(svg,'pointercancel',()=>{ panning=false; svg.classList.remove('panning'); });
+  on(svg,'dblclick',(e)=>{ if(!(e.target.closest && e.target.closest('.dnode'))) fit(); });
 
-  function trunc(text, maxpx){ text=String(text||''); if(ctx.measureText(text).width<=maxpx) return text;
-    let lo=0, hi=text.length; while(lo<hi){ const mid=(lo+hi+1)>>1; if(ctx.measureText(text.slice(0,mid)+'…').width<=maxpx) lo=mid; else hi=mid-1; }
-    return text.slice(0,Math.max(0,lo))+'…'; }
-  function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
-
-  function drawNode(n){
-    const w=NODE_W, h=NODE_H, x=n._x-w/2, y=n._y-h/2;
-    const sel=n.id===selected, hov=n.id===hover, match=isMatch(n);
-    ctx.globalAlpha = (term && !match) ? 0.34 : 1;
-    if(n.risk){ ctx.save(); ctx.shadowColor='rgba(229,89,90,0.55)'; ctx.shadowBlur=13; roundRect(x,y,w,h,10); ctx.fillStyle=TREE_FILL[n.type]||'#171a1f'; ctx.fill(); ctx.restore(); }
-    roundRect(x,y,w,h,10); ctx.fillStyle=TREE_FILL[n.type]||'#171a1f'; ctx.fill();
-    roundRect(x,y,w,h,10); ctx.lineWidth = sel?2:(match?1.8:1.2);
-    ctx.strokeStyle = sel?'#f2f4f7':(match?'#8ab4f8':(n.risk?G_RISK:(hov?'#4a4f59':(TREE_BORDER[n.type]||'#2a2e36')))); ctx.stroke();
-    ctx.beginPath(); ctx.arc(x+15, y+h/2, 4.5, 0, 6.2832); ctx.fillStyle = n.risk?G_RISK:(TREE_DOT[n.type]||'#8a919c'); ctx.fill();
-    const tx=x+28, avail=w-28-(n.children.length?24:12);
-    ctx.textBaseline='middle';
-    ctx.font='600 12.5px '+G_SANS; ctx.fillStyle = n.risk?'#f2d3d3':'#e6e8ec';
-    ctx.fillText(trunc(n.label, avail), tx, n.sub? y+h/2-8 : y+h/2);
-    if(n.sub){ ctx.font='10.5px '+G_SANS; ctx.fillStyle = n.risk?'rgba(229,89,90,0.9)':'#7c828c'; ctx.fillText(trunc(n.sub, avail), tx, y+h/2+9); }
-    if(n.children.length){ const c=collapsed.has(n.id); ctx.font='700 10.5px '+G_SANS; ctx.fillStyle=c?'#aeb4be':'#565b64';
-      ctx.fillText(c ? ('▸'+n.children.length) : '▾', x+w-23, y+h/2); }
-    ctx.globalAlpha=1;
-  }
-
-  function draw(){
-    ctx.setTransform(dpr*zoom,0,0,dpr*zoom,0,0);
-    ctx.clearRect(0,0,treeW,treeH);
-    eachVisible((n,parent)=>{ if(!parent) return;
-      const x1=parent._x, y1=parent._y+NODE_H/2, x2=n._x, y2=n._y-NODE_H/2, my=(y1+y2)/2;
-      const on2 = hover && (n.id===hover||parent.id===hover);
-      ctx.globalAlpha = (term && !(isMatch(n)||isMatch(parent))) ? 0.3 : 1;
-      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.bezierCurveTo(x1,my, x2,my, x2,y2);
-      ctx.strokeStyle = n.risk ? G_RISK_LINE : (on2? G_TREE_EDGE_HI : G_TREE_EDGE); ctx.lineWidth = n.risk?1.7:1.3; ctx.stroke(); });
-    ctx.globalAlpha=1;
-    eachVisible((n)=> drawNode(n));
-  }
-
-  function applyZoom(z){ zoom=Math.max(0.3, Math.min(1.5, z));
-    canvas.width=Math.round(treeW*zoom*dpr); canvas.height=Math.round(treeH*zoom*dpr);
-    canvas.style.width=(treeW*zoom)+'px'; canvas.style.height=(treeH*zoom)+'px'; draw(); }
-  function relayout(){ layout(); applyZoom(zoom); }
-  function fitWidth(){ layout(); const cw=(container.clientWidth||900)-28; applyZoom(Math.min(cw/treeW, 1)); }
-  function fit(){ layout(); const cw=(container.clientWidth||900)-28, ch=(container.clientHeight||520)-28; applyZoom(Math.max(0.3, Math.min(cw/treeW, ch/treeH, 1))); }
-
-  function localXY(e){ const r=canvas.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top]; }
-  function nodeAt(cx,cy){ const x=cx/zoom, y=cy/zoom; let hit=null; eachVisible((n)=>{ if(Math.abs(x-n._x)<=NODE_W/2 && Math.abs(y-n._y)<=NODE_H/2) hit=n; }); return hit; }
-
-  on(canvas,'click',(e)=>{ const p=localXY(e), n=nodeAt(p[0],p[1]); if(!n) return; selected=n.id;
-    if(n.children.length){ if(collapsed.has(n.id)) collapsed.delete(n.id); else collapsed.add(n.id); relayout(); }
-    else if(n.seq!=null && opts.panel){ openGraphDossier(n.seq, opts.panel); draw(); }
-    else draw(); });
-  on(canvas,'mousemove',(e)=>{ const p=localXY(e), n=nodeAt(p[0],p[1]), id=n?n.id:null; canvas.style.cursor=n?'pointer':'default'; if(id!==hover){ hover=id; draw(); } });
-  on(canvas,'mouseleave',()=>{ if(hover){ hover=null; draw(); } });
-  on(canvas,'dblclick',(e)=>{ const p=localXY(e); if(!nodeAt(p[0],p[1])) fit(); });
-  on(window,'resize', ()=>{ const z=zoom; layout(); applyZoom(z); });
-
-  dpr = Math.max(1, Math.min(3, window.devicePixelRatio||1));
-  fitWidth();
+  setTimeout(fit, 0);
 
   return {
-    destroy(){ for(const L of listeners) L[0].removeEventListener(L[1],L[2],L[3]); listeners.length=0; },
-    fit: fit, fitWidth: fitWidth, relayout: relayout,
-    expandAll(){ (function open(n){ if(n.children.length){ collapsed.delete(n.id); for(const c of n.children) open(c); } })(root); relayout(); },
-    setSearch(v){ term=String(v||'').trim().toLowerCase();
-      if(term){ const path=[]; let first=null;
-        (function rec(n){ path.push(n); if(isMatch(n)){ for(const a of path) if(a!==n) collapsed.delete(a.id); if(!first) first=n; } for(const c of n.children) rec(c); path.pop(); })(root);
-        relayout();
-        if(first){ container.scrollTo({ left:first._x*zoom-container.clientWidth/2, top:first._y*zoom-container.clientHeight/2, behavior:'smooth' }); }
-      } else draw(); },
+    destroy(){ for(const L of listeners) L[0].removeEventListener(L[1],L[2],L[3]); listeners.length=0; if(clickTimer) clearTimeout(clickTimer); if(svg.parentNode) svg.parentNode.removeChild(svg); },
+    fit: fit,
   };
 }
 
-// Fullscreen explorer: a bigger tree over the same model (shared collapse state) with
-// a search box. One overlay at a time; fully torn down on close.
+// Fullscreen explorer: the same trace with more room + the same controls. One overlay
+// at a time; re-fetches on any trace change so the view stays live. Torn down on close.
 function openGraphFull(){
-  if(!graphState || !graphState.tree || graphFull) return;
+  if(!graphState || !graphState.tv || graphFull) return;
   const overlay = el('div',{className:'gfull'});
   const bar = el('div',{className:'gfull-bar'});
-  const search = el('input',{className:'gsearch',type:'search',placeholder:'search nodes…',spellcheck:false});
-  const expand = el('button',{type:'button',className:'fb-tool',textContent:'expand all'});
-  const fit = el('button',{type:'button',className:'fb-tool',textContent:'fit'});
-  const closeBtn = el('button',{type:'button',className:'gfull-close',textContent:'✕ close',title:'close (Esc)'});
-  bar.append(el('span',{className:'gfull-title',textContent:'provenance tree'}), search, expand, fit, closeBtn);
-  const stage = el('div',{className:'gfull-stage treescroll'});
-  const canvas = el('canvas',{className:'treecanvas'});
+  const stage = el('div',{className:'gfull-stage dagscroll'});
   const panel = el('div',{className:'gpanel gfull-panel'});
-  stage.append(canvas);
+  const closeBtn = el('button',{type:'button',className:'gfull-close',textContent:'✕ close',title:'close (Esc)'});
   overlay.append(bar, stage, panel);
   document.body.append(overlay);
   graphFull = true;
 
-  const mount = mountTree(canvas, stage, graphState.tree.root, graphState.collapsed, { panel: panel });
-  graphState.overlay = overlay; graphState.mounts.push(mount);
-  expand.onclick = ()=> mount.expandAll();
-  fit.onclick = ()=> mount.fit();
-  search.oninput = ()=> mount.setSearch(search.value);
+  function rebuildBar(tv){
+    bar.textContent='';
+    const fit = el('button',{type:'button',className:'fb-tool',textContent:'fit',onclick:()=>{ const m=activeMount(); if(m) m.fit(); }});
+    bar.append(el('span',{className:'gfull-title',textContent:'provenance trace'}), rootSelect(tv), depthSelect(), wholeButton(), fit,
+      el('span',{className:'gcount',textContent: tv.counts.nodes+' nodes · '+tv.counts.edges+' edges'}), closeBtn);
+  }
+  async function mountFull(){
+    if(!current) return;
+    const tv = await api('/api/session/'+encodeURIComponent(current)+'/trace'+traceQuery());
+    if(!graphFull) return;
+    if(!graphWhole && !graphRoot && tv.root) graphRoot = tv.root;
+    const old = graphState.mounts.pop(); if(old) old.destroy();
+    rebuildBar(tv);
+    const mount = mountDag(stage, tv, { panel: panel, onReroot: rerootTo, onExpand: toggleExpand });
+    graphState.mounts.push(mount);
+    graphState.tv = tv;
+  }
+  graphState.overlay = overlay;
+  graphState.reloadFull = mountFull;
   closeBtn.onclick = ()=> closeGraphFull();
   const esc = (e)=>{ if(e.key==='Escape') closeGraphFull(); };
   document.addEventListener('keydown', esc); overlay._esc = esc;
-  setTimeout(()=>{ try { mount.fitWidth(); search.focus(); } catch(_){} }, 40);
+  mountFull().catch(function(){});
 }
 
 function closeGraphFull(){
@@ -1531,8 +1596,9 @@ function closeGraphFull(){
   const full = graphState.mounts.pop(); if(full) full.destroy();
   const o = graphState.overlay;
   if(o){ if(o._esc) document.removeEventListener('keydown', o._esc); o.remove(); }
-  graphState.overlay = null; graphFull = false;
-  for(const m of graphState.mounts) m.relayout();
+  graphState.overlay = null; graphState.reloadFull = null; graphFull = false;
+  fpGraph = null;
+  loadGraph().catch(function(){});
 }
 
 // Open one node's evidence dossier below the tree (reuses the timeline's insertDetail).

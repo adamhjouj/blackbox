@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { actionSummary, explainEvent } from './explain';
-import { buildTree, type SessionTree } from './graph';
+import { buildTrace, ALL_DEPTH, type TraceView } from './graph';
 import { buildStory, type EventDetail, type SessionStory } from './provenance';
 import { RECON_VERSION, type Coverage, type Discrepancy } from './reconcile';
 import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
@@ -347,13 +347,23 @@ export function sessionStory(store: Store, sessionId: string): SessionStory {
   return story;
 }
 
-/** R4 — the provenance graph for a session (optionally a single turn's subgraph).
- *  Pure read-time projection of the story + risk combos into a rooted tree; nothing is written. */
-export function sessionTree(store: Store, sessionId: string, promptId?: string | null): SessionTree {
+/** R4 — the provenance TRACE for a session: a causal DAG rooted at a finding (or a
+ *  chosen node), showing ancestry + descendants out to `depth` hops, laid out
+ *  deterministically. A pure read-time projection of the story + risk combos —
+ *  nothing is written, nothing hashed, `verify()` untouched. */
+export interface TraceParams {
+  root?: string | null;
+  depth?: number | null; // hop radius; ALL_DEPTH / whole for "all"
+  whole?: boolean; // the whole session instead of a rooted trace
+  expand?: string[]; // aggregate 'dir' nodes the user has opened
+}
+export function sessionTrace(store: Store, sessionId: string, params?: TraceParams): TraceView {
   const story = sessionStory(store, sessionId);
   const ruleset = resolveRuleset(store, sessionId);
   const combos = safeArray<ComboEvidence>(store.sessionRisk(sessionId, ruleset)?.combos ?? null);
-  return buildTree(story, combos, promptId);
+  const p = params ?? {};
+  const depth = p.whole ? ALL_DEPTH : p.depth ?? null;
+  return buildTrace(story, combos, { root: p.root ?? null, depth, whole: !!p.whole, expand: p.expand ?? [] });
 }
 
 export interface MutationView {
