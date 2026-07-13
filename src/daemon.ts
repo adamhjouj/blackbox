@@ -18,6 +18,7 @@ import { readTurnIntent } from './transcript';
 import { captureWorktreeDelta } from './worktree';
 import { blackboxDir, configPath } from './paths';
 import { eventDetail, sessionActions, sessionCards, sessionTrace, sessionStory, verifyStatus } from './read-api';
+import { blastRadius } from './blast';
 import { fleetOverview } from './fleet';
 import { indexNew, search } from './search';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
@@ -428,6 +429,19 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           // R8.3: fleet overview — one cached aggregation across all sessions.
           if (path === '/api/fleet') {
             sendJson(res, 200, fleetOverview(store));
+            return;
+          }
+          // R8.1: blast radius + containment checklist for one session.
+          const mb = path.match(/^\/api\/session\/(.+)\/blast$/);
+          if (mb) {
+            let id: string;
+            try {
+              id = decodeURIComponent(mb[1]!);
+            } catch {
+              sendJson(res, 400, { ok: false, error: 'bad session id' });
+              return;
+            }
+            sendJson(res, 200, blastRadius(store, id));
             return;
           }
           const ms = path.match(/^\/api\/session\/(.+)\/events$/);

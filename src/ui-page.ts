@@ -73,6 +73,32 @@ const PAGE_CSS = `  :root {
   #sessions { flex:1; overflow:auto; min-height:0; padding:2px 8px 14px; }
   main { flex:1; overflow:auto; min-width:0; position:relative; }   /* offset parent for turn-jump's offsetTop math */
 
+  /* R8.3 fleet strip */
+  .fleet:empty { display:none; }
+  .fleet { padding:2px 14px 8px; }
+  .fl-row { display:flex; flex-wrap:wrap; gap:6px 12px; align-items:baseline; }
+  .fl-stat { display:inline-flex; align-items:baseline; gap:4px; font-size:11px; color:var(--fg-4); }
+  .fl-stat b { font-size:13px; color:var(--fg-2); font-variant-numeric:tabular-nums; }
+  .fl-stat.hot b { color:var(--hot,#e5595a); }
+  .fl-stat.warn b { color:var(--warn,#d3a24a); }
+  /* R8.2 corpus search results */
+  .corpus:empty { display:none; }
+  .corpus { padding:2px 8px 8px; border-bottom:1px solid var(--line,#242830); margin:0 6px 6px; }
+  .corpus-head { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--fg-4); padding:4px 5px; }
+  .corpus-hit { padding:6px 7px; border-radius:var(--r2); cursor:pointer; font-size:12px; line-height:1.35; }
+  .corpus-hit:hover { background:var(--bg-3,#1a1e26); }
+  .ch-kind { display:inline-block; font-size:10px; color:var(--fg-4); margin-right:6px; text-transform:uppercase; letter-spacing:.03em; }
+  .ch-snip mark { background:transparent; color:var(--accent,#8ab4f8); font-weight:600; }
+  /* R8.1 containment checklist */
+  .containment { margin:10px 0 4px; padding:12px 14px; border:1px solid var(--accent-line,#7c2f31); border-radius:var(--r2); background:var(--bg-2,#141821); }
+  .cont-h { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--fg-3); }
+  .cont-list { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:5px; }
+  .cont-item { font-size:13px; line-height:1.4; }
+  .cont-sev { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; padding:1px 5px; border-radius:3px; margin-right:7px; vertical-align:1px; }
+  .sev-high .cont-sev { background:rgba(229,89,90,.16); color:#e5595a; }
+  .sev-medium .cont-sev { background:rgba(211,162,74,.16); color:#d3a24a; }
+  .sev-low .cont-sev { background:rgba(144,152,164,.16); color:var(--fg-4); }
+
   /* session rows */
   .sess { padding:9px 11px; border-radius:var(--r2); cursor:pointer; margin-bottom:1px;
     border-left:2px solid transparent; transition:background .12s ease; }
@@ -540,7 +566,7 @@ function resetSessionState(){
 function select(id){
   if(current === id) return;
   current = id; expanded = new Set();
-  resetSessionState(); storyOpen = new Set();
+  resetSessionState(); storyOpen = new Set(); fpBlast = null;   // R8: re-fetch containment for the new session
   fpGraph = null; graphRoot = null; graphDepth = 2; graphWhole = false; graphExpand = []; stopGraph();   // tear the graph down on session change
   fltFlagged = true; fltTool = ''; fltText = '';   // land each session risk-first (renderSession relaxes it for a clean session)
   for(const [sid, d] of sessEls) d.classList.toggle('active', sid === current);
@@ -697,6 +723,7 @@ async function loadSession(){
   renderSession(main, story, card);
   fpSession = fp;               // commit only after a successful render
   loadVerify();                 // chain badge, fetched off the poll path
+  loadBlast(sid);               // R8.1 containment checklist, off the poll path
 }
 
 // The forensic "chain verified" signal. verify() walks the whole chain, so it is
@@ -1650,16 +1677,101 @@ function openGraphDossier(seq, panel){
   panel.scrollIntoView({ block:'nearest', behavior:'smooth' });
 }
 /* ── poll loop ───────────────────────────────────────────────────── */
+// ---- R8 analytics: fleet strip \\u00B7 corpus search \\u00B7 containment ----
+let fpFleet = null;
+async function loadFleet(){
+  let f; try { f = await api('/api/fleet'); } catch { return; }
+  const fp = JSON.stringify(f); if(fp === fpFleet) return; fpFleet = fp;
+  const box = document.getElementById('fleet'); if(!box) return;
+  box.textContent = '';
+  if(!f.sessions) return;
+  const v = f.verdicts || {};
+  const stat = (label, n, cls)=> el('span',{className:'fl-stat '+(cls||'')}, el('b',{textContent:String(n)}), el('i',{textContent:label}));
+  const row = el('div',{className:'fl-row'});
+  row.append(stat('sessions', f.sessions));
+  if(v.high) row.append(stat('high', v.high, 'hot'));
+  if(v.medium) row.append(stat('med', v.medium, 'warn'));
+  if(f.anti_forensics) row.append(stat('tamper', f.anti_forensics, 'hot'));
+  if(f.hosts && f.hosts.length) row.append(stat('hosts', f.hosts.length));
+  box.append(row);
+}
+
+let corpusTimer = null;
+function wireCorpus(){
+  const s = document.getElementById('railSearch'); if(!s) return;
+  s.addEventListener('input', ()=>{
+    if(corpusTimer) clearTimeout(corpusTimer);
+    const q = s.value.trim();
+    corpusTimer = setTimeout(function(){ corpusSearch(q); }, 300);
+  });
+}
+async function corpusSearch(q){
+  const box = document.getElementById('corpus'); if(!box) return;
+  if(q.length < 2){ box.textContent = ''; return; }
+  let r; try { r = await api('/api/search?q=' + encodeURIComponent(q)); } catch { return; }
+  box.textContent = '';
+  if(!r.hits || !r.hits.length) return;
+  box.append(el('div',{className:'corpus-head',textContent: r.hits.length + ' match' + (r.hits.length===1?'':'es') + ' in the log'}));
+  r.hits.slice(0,30).forEach(function(h){
+    const hit = el('div',{className:'corpus-hit',tabIndex:0});
+    const snip = el('span',{className:'ch-snip'});
+    renderSnippet(snip, h.snippet);
+    hit.append(el('span',{className:'ch-kind',textContent:h.kind}), snip);
+    hit.onclick = function(){ select(h.session_id); };
+    hit.onkeydown = function(e){ if(e.key==='Enter'){ select(h.session_id); } };
+    box.append(hit);
+  });
+}
+// FTS snippet marks matches with [ ]; render as <mark> WITHOUT innerHTML.
+function renderSnippet(node, snip){
+  const s = String(snip || ''); let i = 0;
+  while(i < s.length){
+    const a = s.indexOf('[', i);
+    if(a < 0){ node.append(document.createTextNode(s.slice(i))); break; }
+    if(a > i) node.append(document.createTextNode(s.slice(i, a)));
+    const b = s.indexOf(']', a);
+    if(b < 0){ node.append(document.createTextNode(s.slice(a))); break; }
+    node.append(el('mark',{textContent: s.slice(a+1, b)}));
+    i = b + 1;
+  }
+}
+
+let fpBlast = null;
+async function loadBlast(sid){
+  let b; try { b = await api('/api/session/' + encodeURIComponent(sid) + '/blast'); } catch { return; }
+  if(current !== sid) return;
+  const exists = document.getElementById('containment');
+  const fp = sid + ':' + JSON.stringify(b.checklist || []);
+  if(fp === fpBlast && exists) return;
+  fpBlast = fp;
+  if(exists) exists.remove();
+  if(!b.checklist || !b.checklist.length) return;
+  const panel = el('section',{className:'containment',id:'containment'});
+  panel.append(el('h3',{className:'cont-h',textContent:'Containment \\u2014 ordered response'}));
+  const ol = el('ol',{className:'cont-list'});
+  b.checklist.forEach(function(it){
+    const li = el('li',{className:'cont-item sev-' + it.severity});
+    li.append(el('span',{className:'cont-sev',textContent: it.severity}), el('span',{className:'cont-act',textContent: it.action}));
+    ol.append(li);
+  });
+  panel.append(ol);
+  const main = document.getElementById('timeline'); if(!main) return;
+  if(main.firstChild && main.firstChild.nextSibling) main.insertBefore(panel, main.firstChild.nextSibling);
+  else main.append(panel);
+}
+
 async function render(){
   let linkOk = true;
   try { updateHud(await api('/health')); } catch { linkOk = false; }
   try { await loadSessions(); } catch {}
+  try { await loadFleet(); } catch {}
   try { await loadView(); } catch {}
   refreshRel();
   setLink(linkOk);
 }
 function tick(){ render().catch(()=>{}).finally(()=>setTimeout(tick, 3000)); }  // self-scheduling: a slow fetch can't overlap the next poll
 wireRail();   // one-time: wire the rail's search + sort controls
+wireCorpus(); // one-time: corpus (full-log) search on the same input
 tick();
 `;
 
@@ -1686,10 +1798,12 @@ ${PAGE_CSS}</style>
 <div class="wrap">
   <aside>
     <div class="railhead"><span>sessions</span><span id="sessCount"></span></div>
+    <div id="fleet" class="fleet"></div>
     <div class="railctl">
-      <input id="railSearch" type="search" class="rail-search" placeholder="search sessions…" spellcheck="false" autocomplete="off" aria-label="search sessions">
+      <input id="railSearch" type="search" class="rail-search" placeholder="search sessions + the log…" spellcheck="false" autocomplete="off" aria-label="search sessions and the log">
       <button id="railSort" type="button" class="rail-sort" title="sort: risk-first or most recent">risk</button>
     </div>
+    <div id="corpus" class="corpus"></div>
     <div id="sessions"><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div></div>
   </aside>
   <main id="timeline"></main>
