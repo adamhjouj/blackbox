@@ -31,4 +31,3 @@ export function resolveDb(flag?: string): string {
 export const pidPath = () => join(blackboxDir(), 'daemon.pid');
 export const logPath = () => join(blackboxDir(), 'daemon.log');
 export const configPath = () => join(blackboxDir(), 'config.json');
-export const spoolDir = () => join(blackboxDir(), 'spool');

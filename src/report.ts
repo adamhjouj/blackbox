@@ -15,25 +15,16 @@ import type { AnchorReceipt } from './anchor';
 import { blastRadius } from './blast';
 import { explainEvent, type Danger } from './explain';
 import { hashString } from './hash';
-import { sessionCards, sessionStory } from './read-api';
+import { safeParse } from './json';
+import { isPre, isPost, sessionCards, sessionName, sessionStory } from './read-api';
 import { RECON_VERSION } from './reconcile';
 import { redactText } from './redact';
-import { sessionTitleFromTranscript } from './transcript';
 import type { ComboFire } from './risk-engine';
 import { KNOWN_RULESETS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
 import type { Store } from './store';
 import type { Watermark } from './sign';
 import { verify } from './verify';
 import type { BlackboxEvent } from './types';
-
-function safeParse<T>(s: string | null, fallback: T): T {
-  if (!s) return fallback;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return fallback;
-  }
-}
 
 // Version-fallback read (mirrors read-api.resolveRuleset): after an r2 bump but
 // before backfill a session only has r1 rows — report those rather than blank
@@ -57,8 +48,6 @@ function toolInputOf(raw: string): Record<string, unknown> | null {
   }
 }
 
-const isPre = (e: BlackboxEvent): boolean => e.hook_event === 'PreToolUse';
-const isPost = (e: BlackboxEvent): boolean => e.hook_event === 'PostToolUse' || e.hook_event === 'PostToolUseFailure';
 
 /** Deduped action count for the header line — a Pre/Post pair is one action, a
  *  standalone event is one, and bare session-lifecycle markers don't count. */
@@ -104,13 +93,6 @@ const COMBO_LABEL: Record<string, string> = {
   'tool-poisoning': 'Tool poisoning',
   'anti-forensics': 'Anti-forensics (recorder tampered with)',
 };
-
-// Human-readable session name: the user's /rename (customTitle), else the AI title
-// (aiTitle), via the same bounded tail read read-api uses (never the whole file).
-function sessionName(store: Store, sessionId: string): string | null {
-  const tp = store.sessionTranscriptPath(sessionId);
-  return tp ? sessionTitleFromTranscript(tp) : null;
-}
 
 /** One RISK-flagged action, collapsed across its Pre/Post rows. */
 interface FlaggedEntry {

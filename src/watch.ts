@@ -187,7 +187,7 @@ export function watchGlobal(): { hooksDir: string; priorHooksPath: string } {
   // persist prior so uninstall can restore it — but never overwrite an already-saved
   // real prior with '' (would lose the user's original hooksPath on a second run).
   const cfgPath = configPath();
-  const existing = existsSafe(cfgPath) ? (JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>) : {};
+  const existing = existsSync(cfgPath) ? (JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>) : {};
   const savedPrior = typeof existing.priorHooksPath === 'string' && existing.priorHooksPath ? existing.priorHooksPath : prior;
   writeFileSync(cfgPath, JSON.stringify({ ...existing, priorHooksPath: savedPrior }, null, 2) + '\n');
   execFileSync('git', ['config', '--global', 'core.hooksPath', dir]);
@@ -209,12 +209,4 @@ export function unwatchGlobal(): { restored: string | null } {
     /* already gone */
   }
   return { restored: prior || null };
-}
-
-function existsSafe(p: string): boolean {
-  try {
-    return existsSync(p);
-  } catch {
-    return false;
-  }
 }

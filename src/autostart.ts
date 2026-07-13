@@ -7,7 +7,6 @@ import { logPath } from './paths';
 export const LAUNCH_AGENT_LABEL = 'com.blackbox.daemon';
 
 export interface PlistOptions {
-  label?: string;
   nodePath: string;
   cliPath: string;
   port: number;
@@ -26,7 +25,6 @@ function xmlEscape(s: string): string {
  * is the caller's job, so this stays unit-testable without touching launchctl.
  */
 export function buildLaunchAgentPlist(opts: PlistOptions): string {
-  const label = opts.label ?? LAUNCH_AGENT_LABEL;
   const argv = [opts.nodePath, opts.cliPath, 'start', '--foreground', '--port', String(opts.port)];
   if (opts.db) argv.push('--db', opts.db);
   const argXml = argv.map((a) => `      <string>${xmlEscape(a)}</string>`).join('\n');
@@ -36,7 +34,7 @@ export function buildLaunchAgentPlist(opts: PlistOptions): string {
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>${xmlEscape(label)}</string>
+    <string>${LAUNCH_AGENT_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
 ${argXml}
@@ -54,8 +52,8 @@ ${argXml}
 `;
 }
 
-export function launchAgentPath(label = LAUNCH_AGENT_LABEL): string {
-  return join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+export function launchAgentPath(): string {
+  return join(homedir(), 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
 }
 
 export interface AutostartResult {

@@ -9,6 +9,7 @@
  * (diffstat is aggregate), so commits are listed as artifacts to review, not
  * attributed to individual files.
  */
+import { safeParse } from './json';
 import { isSensitivePath } from './redact-rules';
 import { KNOWN_RULESETS, commandReadsSensitiveFile, isAuthPath, rulesetNum } from './risk-rules';
 import type { BlackboxEvent } from './types';
@@ -48,14 +49,6 @@ export interface BlastRadius {
 
 const SEV_RANK: Record<Severity, number> = { high: 0, medium: 1, low: 2 };
 
-function safeParse<T>(s: string | null): T | null {
-  if (!s) return null;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return null;
-  }
-}
 function resolveRs(store: Store, sid: string): string {
   for (const rs of [...KNOWN_RULESETS].sort((a, b) => rulesetNum(b) - rulesetNum(a))) if (store.sessionRisk(sid, rs)) return rs;
   return KNOWN_RULESETS[KNOWN_RULESETS.length - 1]!;

@@ -52,7 +52,7 @@ function mergeUsage(acc: Record<string, number> | null, u: Record<string, unknow
 /** Read at most the last `tailBytes` of a file as UTF-8, dropping the partial
  *  first line when the cut lands mid-line. Both transcript readers use this so
  *  neither loads a multi-MB `.jsonl` in full on the read/HTTP path. */
-export function readTail(path: string, tailBytes: number = TAIL_BYTES): string | null {
+function readTail(path: string): string | null {
   let fd: number;
   try {
     fd = openSync(path, 'r');
@@ -61,7 +61,7 @@ export function readTail(path: string, tailBytes: number = TAIL_BYTES): string |
   }
   try {
     const size = fstatSync(fd).size;
-    const start = Math.max(0, size - tailBytes);
+    const start = Math.max(0, size - TAIL_BYTES);
     const len = size - start;
     if (len <= 0) return null;
     const buf = Buffer.alloc(len);

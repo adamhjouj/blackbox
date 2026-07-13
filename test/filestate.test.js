@@ -7,7 +7,6 @@ const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
-const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { normalizeAndCapture, worktreeDeltaEvent } = require('../dist/normalize.js');
 const { fileHistory, reconstructAt } = require('../dist/filestate.js');

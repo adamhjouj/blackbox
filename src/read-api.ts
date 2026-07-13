@@ -1,4 +1,5 @@
 import { actionSummary, explainEvent } from './explain';
+import { safeParse } from './json';
 import { buildTrace, ALL_DEPTH, type TraceView } from './graph';
 import { buildStory, type EventDetail, type SessionStory } from './provenance';
 import { RECON_VERSION, type Coverage, type Discrepancy } from './reconcile';
@@ -59,19 +60,10 @@ export interface SessionCard {
   name: string | null; // human-readable session name (user /rename, else AI title)
 }
 
-const isPre = (e: BlackboxEvent): boolean => e.hook_event === 'PreToolUse';
-const isPost = (e: BlackboxEvent): boolean => e.hook_event === 'PostToolUse' || e.hook_event === 'PostToolUseFailure';
+export const isPre = (e: BlackboxEvent): boolean => e.hook_event === 'PreToolUse';
+export const isPost = (e: BlackboxEvent): boolean => e.hook_event === 'PostToolUse' || e.hook_event === 'PostToolUseFailure';
 
 const VERDICT_RANK: Record<string, number> = { high: 0, medium: 1, low: 2, none: 3, unscored: 4 };
-
-function safeParse<T>(s: string | null, fallback: T): T {
-  if (!s) return fallback;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return fallback;
-  }
-}
 
 /** Parse a stored JSON array, tolerating BOTH parse errors and a non-array shape.
  *  The risk layer is untrusted (re-derivable, not chained), so a corrupt/tampered
@@ -89,7 +81,7 @@ function safeArray<T>(s: string | null): T[] {
 // too — but every send still counts in the egress total and appears in the per-event
 // dossier, so nothing is truly hidden from a reviewer.
 const NON_HOST_TLD = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp', 'db', 'sqlite', 'sqlite3', 'log', 'lock', 'map', 'css', 'scss', 'less', 'md', 'txt', 'csv', 'pdf', 'zip', 'gz', 'tar']);
-function looksLikeHost(h: string): boolean {
+export function looksLikeHost(h: string): boolean {
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return true; // IPv4
   if (h.includes(':') && /^[0-9a-f:]+$/i.test(h)) return true; // IPv6-ish
   const parts = h.split('.');
@@ -158,7 +150,7 @@ function sessionCwd(store: Store, sessionId: string): string | null {
  *  BOUNDED tail read (never the whole multi-MB file on the HTTP path). Cached
  *  once found (names rarely change; a daemon restart re-resolves). */
 const nameCache = new Map<string, string>();
-function sessionName(store: Store, sessionId: string): string | null {
+export function sessionName(store: Store, sessionId: string): string | null {
   const cached = nameCache.get(sessionId);
   if (cached) return cached;
   const tp = store.sessionTranscriptPath(sessionId);

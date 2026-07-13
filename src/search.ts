@@ -79,17 +79,16 @@ export function reindexAll(store: Store): number {
 
 /** Run a search. Sanitises the FTS query (raw first, then a quoted-phrase fallback
  *  so punctuation / syntax errors degrade instead of throwing). LIMIT-bounded. */
-export function search(store: Store, query: string, limit = 200): { hits: SearchHit[]; total: number } {
+export function search(store: Store, query: string, limit = 200): { hits: SearchHit[] } {
   const q = query.trim();
-  if (!q) return { hits: [], total: 0 };
+  if (!q) return { hits: [] };
   const attempts = [q, '"' + q.replace(/"/g, ' ') + '"']; // raw, then quoted phrase
   for (const m of attempts) {
     try {
-      const hits = store.searchQuery(m, limit);
-      return { hits, total: hits.length };
+      return { hits: store.searchQuery(m, limit) };
     } catch {
       /* FTS syntax error — try the safer form */
     }
   }
-  return { hits: [], total: 0 };
+  return { hits: [] };
 }

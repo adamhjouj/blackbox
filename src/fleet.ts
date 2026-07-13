@@ -4,7 +4,8 @@
  * hosts reached (with first-seen), and the most-touched sensitive paths. Head-seq
  * cached (append-only store), pure read — no capture change.
  */
-import { sessionCards } from './read-api';
+import { safeParse } from './json';
+import { looksLikeHost, sessionCards } from './read-api';
 import { KNOWN_RULESETS, rulesetNum } from './risk-rules';
 import type { Store } from './store';
 
@@ -24,20 +25,6 @@ export interface FleetOverview {
   /** most-touched sensitive paths. */
   top_paths: { path: string; count: number }[];
   head_seq: number;
-}
-
-function looksLikeHost(h: string): boolean {
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return true;
-  const parts = h.split('.');
-  return parts.length >= 2 && /^[a-z]{2,}$/i.test(parts[parts.length - 1]!);
-}
-function safeParse<T>(s: string | null): T | null {
-  if (!s) return null;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return null;
-  }
 }
 
 let cache: { head: number; fleet: FleetOverview } | null = null;
