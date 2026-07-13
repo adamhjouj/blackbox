@@ -6,6 +6,7 @@ import { ANCHOR_REF, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAn
 import { disableAutostart, enableAutostart } from './autostart';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { canonical } from './hash';
+import { fileHistory } from './filestate';
 import { init, uninit, versionWarning } from './init';
 import { normalizeAndCapture } from './normalize';
 import { persistReconciliation } from './reconcile';
@@ -37,6 +38,7 @@ interface Args {
   to?: string;
   useAnchors?: boolean;
   anchorTarget?: string;
+  at?: number;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -58,6 +60,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--forensic') out.forensic = true;
     else if (a === '--anchor') out.anchor = argv[++i];
     else if (a === '--to') out.to = argv[++i];
+    else if (a === '--at') out.at = Number(argv[++i]);
     else if (a === '--anchors') {
       out.useAnchors = true;
       const nx = argv[i + 1];
@@ -371,6 +374,53 @@ function cmdHead(args: Args): number {
   }
   console.log(`seq ${meta.head_seq}  count ${meta.count}  head ${meta.head_hash}`);
   return 0;
+}
+
+function cmdFile(args: Args): number {
+  const path = args._[1];
+  if (!path) {
+    console.error('usage: blackbox file <path> --session <id> [--at <seq>]');
+    return 2;
+  }
+  const store = new Store(resolveDb(args.db));
+  try {
+    const sessionId = args.session ?? defaultReportSession(store);
+    if (!sessionId) {
+      console.error('file: no sessions recorded (pass --session)');
+      return 2;
+    }
+    const h = fileHistory(store, sessionId, path);
+    if (!h.mutations.length) {
+      console.log(`no recorded mutations for ${path} in session ${sessionId}`);
+      return 0;
+    }
+    // --at prints one mutation's stored patch/body (NOT a reconstructed file state —
+    // full point-in-time reconstruction is a gated follow-up).
+    if (args.at !== undefined && !Number.isNaN(args.at)) {
+      const m = h.mutations.find((x) => x.seq === args.at);
+      if (!m) {
+        console.error(`file: no mutation at seq ${args.at} for ${path} (seqs: ${h.mutations.map((x) => x.seq).join(', ')})`);
+        return 2;
+      }
+      if (m.content == null) {
+        console.log(`(seq ${m.seq}: content not stored — ${m.skip_reason ?? 'pruned'})`);
+        return 0;
+      }
+      console.log(m.content);
+      return 0;
+    }
+    console.log(`File history — ${h.path}  (session ${sessionId})`);
+    if (h.base_sha) console.log(`  git base: ${h.base_sha}`);
+    for (const m of h.mutations) {
+      const marks = [m.redacted ? 'redacted' : null, m.stored ? null : m.skip_reason ?? 'not-stored'].filter(Boolean).join(', ');
+      console.log(`  seq ${String(m.seq).padStart(5)}  ${m.action.padEnd(10)} ${(m.tool ?? '—').padEnd(10)} +${m.diffstat.insertions} −${m.diffstat.deletions}${marks ? '  [' + marks + ']' : ''}`);
+    }
+    if (h.end_sha256) console.log(`  end sha256: ${h.end_sha256}`);
+    console.log(`  ${h.mutations.length} mutation(s) — use \`--at <seq>\` to print one's stored patch/body`);
+    return 0;
+  } finally {
+    store.close();
+  }
 }
 
 function cmdWatch(args: Args): number {
@@ -842,6 +892,8 @@ async function main(): Promise<number> {
       return cmdReport(args);
     case 'head':
       return cmdHead(args);
+    case 'file':
+      return cmdFile(args);
     case 'list':
       return cmdList(args);
     case 'audit':
