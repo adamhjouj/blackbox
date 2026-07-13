@@ -81,12 +81,13 @@ function safeArray<T>(s: string | null): T[] {
   return Array.isArray(v) ? (v as T[]) : [];
 }
 
-// A conservative guard for the blast-radius egress list. The scheme-less host
+// A conservative guard for the blast-radius egress SUMMARY list. The scheme-less host
 // detector mis-extracts "hosts" from analyzed code/fixtures (`x.db`, `foo.png`,
 // truncated `127…`); reject anything without a dot, a bare/truncated token, or a
-// final label that is provably a file extension rather than a TLD. Real IPs are
-// kept. It can NEVER hide a genuine host (no TLD is an image extension), so it is
-// safe for a security view; residual code tokens (e.g. `.fsmonitor`) are left in.
+// final label that is provably a file extension rather than a TLD. Real IPs are kept.
+// This trims the summary only — punycode (`xn--…`) and trailing-dot FQDNs are dropped
+// too — but every send still counts in the egress total and appears in the per-event
+// dossier, so nothing is truly hidden from a reviewer.
 const NON_HOST_TLD = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp', 'db', 'sqlite', 'sqlite3', 'log', 'lock', 'map', 'css', 'scss', 'less', 'md', 'txt', 'csv', 'pdf', 'zip', 'gz', 'tar']);
 function looksLikeHost(h: string): boolean {
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return true; // IPv4
@@ -513,27 +514,31 @@ let verifyCache: { head: number; status: VerifyStatus } | null = null;
 export function verifyStatus(store: Store): VerifyStatus {
   const head = headSeq(store);
   if (verifyCache && verifyCache.head === head) return verifyCache.status;
-  const meta = store.chainMeta();
-  const sig = store.latestSignature();
-  const pub = loadPublicKey();
   let ok = false;
   let break_reason: string | null = null;
+  let head_seq = 0;
+  let count = 0;
+  let signed = false;
+  let latest_sig_seq: number | null = null;
+  let latest_sig_ts: string | null = null;
+  // Everything (incl. the key/signature reads) is inside the try: a corrupt key or
+  // signature file must degrade to a "verify-error" badge, never 500 the endpoint.
   try {
+    const meta = store.chainMeta();
+    head_seq = meta?.head_seq ?? 0;
+    count = meta?.count ?? 0;
+    const sig = store.latestSignature();
+    const pub = loadPublicKey();
+    signed = !!sig && !!pub;
+    latest_sig_seq = sig?.seq ?? null;
+    latest_sig_ts = sig?.ts ?? null;
     const vr = verify(store, { trustedPublicKey: pub, watermark: loadWatermark() });
     ok = vr.ok;
     break_reason = vr.ok ? null : (vr.break?.reason ?? 'broken');
   } catch {
     break_reason = 'verify-error';
   }
-  const status: VerifyStatus = {
-    ok,
-    break_reason,
-    head_seq: meta?.head_seq ?? 0,
-    count: meta?.count ?? 0,
-    signed: !!sig && !!pub,
-    latest_sig_seq: sig?.seq ?? null,
-    latest_sig_ts: sig?.ts ?? null,
-  };
+  const status: VerifyStatus = { ok, break_reason, head_seq, count, signed, latest_sig_seq, latest_sig_ts };
   verifyCache = { head, status };
   return status;
 }

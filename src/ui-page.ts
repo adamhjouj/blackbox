@@ -471,7 +471,6 @@ const DAG_FILL = { prompt:'#141d2c', step:'#1e1a10', file:'#101c15', dir:'#10182
 const DAG_BORDER = { prompt:'#32415d', step:'#4c4123', file:'#26493a', commit:'#274b3a', dir:'#294466', finding:'#7c2f31', host:'#7c2f31', session:'#2c313b' };
 const DAG_EDGE = { caused:'rgba(138,148,160,0.5)', wrote:'rgba(89,183,131,0.6)', read:'rgba(122,128,140,0.42)', committed:'rgba(108,195,138,0.66)', flagged:'rgba(229,89,90,0.82)', sent:'rgba(229,89,90,0.7)', contains:'rgba(90,155,214,0.55)' };
 let fpSessions = null, fpHud = null;
-let bigSession = false;           // large session → turns start collapsed (fold the wall by default)
 // session-view turn state — survives the 3s poll; reset on session/view switch + full render.
 const turnEls = [];               // [{key, card, head, t, flagged, num, text, tools}] in render order (filter + keyboard jump)
 let flagCursor = -1;              // next-flag cursor into the flagged turn cards (seeded from the viewport, then steps)
@@ -536,7 +535,7 @@ function setLink(ok){
 
 /* ── sessions ────────────────────────────────────────────────────── */
 function resetSessionState(){
-  fpSession = null; turnEls.length = 0; bigSession = false; flagCursor = -1; turnCursor = -1;
+  fpSession = null; turnEls.length = 0; flagCursor = -1; turnCursor = -1;
 }
 function select(id){
   if(current === id) return;
@@ -736,7 +735,6 @@ function renderSession(main, story, card){
   main.append(viewBar());
   const turnsData = story.turns || [];
   // risk-first: land on flagged turns only; a clean session (nothing flagged) shows all.
-  bigSession = turnsData.length > 24;
   if(!turnsData.some(isFlaggedTurn)) fltFlagged = false;
 
   main.append(overviewBand(story, card));
