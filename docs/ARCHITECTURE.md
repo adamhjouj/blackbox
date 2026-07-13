@@ -110,6 +110,11 @@ If any field you're counting on is missing or shaped differently than the refere
 - **Git deltas** — hooks tell you a `git commit` bash command ran; a tiny git watcher (or just `git` calls triggered on commit-shaped commands) enriches it with the actual commit SHA, branch, and diffstat. Small, worth it.
 - **Remote/HTTP MCP servers** — hooks capture the *call* your local Claude Code makes regardless of transport, so you're actually fine here for the record. True network-level egress inspection (what a remote server then does) is proxy territory → **[LATER]**.
 
+> **Reconciliation note (what actually shipped).** This section predates the built collector layer; the current reality:
+> - **Git deltas shipped as a `reference-transaction` hook** (`git-collector.ts` + `watch.ts`), not a poller — every ref update with old→new SHA, correlated to the session. Ground-truth *file* changes are captured at SessionEnd by **R2 reconciliation** (`worktree.ts`/`reconcile.ts`), diffing the worktree against the session-start git anchor.
+> - **The `lsof`/`nettop`/ppid network+process poller was cut**: prototyped in `experiments/four-collectors-demo/`, never shipped in `src/`. A ~1s poll can't attribute a sub-second exfil, so it would produce false alarms in exactly the case the tool must be believed. Network/process visibility is a deferred opt-in **Tier-2** capability (`docs/FORENSIC-COLLECTORS.md`).
+> - **Field-name drift** (docs say `tool_output`/`tool_error`; live payloads use `tool_response`/`error`) is handled by storing the verbatim payload in `raw` and deriving normalized columns with a tolerant parser (`normalize.ts`) — see `docs/DAY1-FINDINGS.md`.
+
 ---
 
 ## 3. Component breakdown
