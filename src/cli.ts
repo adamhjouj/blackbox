@@ -6,7 +6,7 @@ import { ANCHOR_REF, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAn
 import { disableAutostart, enableAutostart } from './autostart';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { canonical } from './hash';
-import { fileHistory } from './filestate';
+import { fileHistory, reconstructAt } from './filestate';
 import { init, uninit, versionWarning } from './init';
 import { normalizeAndCapture } from './normalize';
 import { persistReconciliation } from './reconcile';
@@ -39,6 +39,7 @@ interface Args {
   useAnchors?: boolean;
   anchorTarget?: string;
   at?: number;
+  rebuild?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -61,6 +62,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--anchor') out.anchor = argv[++i];
     else if (a === '--to') out.to = argv[++i];
     else if (a === '--at') out.at = Number(argv[++i]);
+    else if (a === '--rebuild') out.rebuild = true;
     else if (a === '--anchors') {
       out.useAnchors = true;
       const nx = argv[i + 1];
@@ -394,8 +396,22 @@ function cmdFile(args: Args): number {
       console.log(`no recorded mutations for ${path} in session ${sessionId}`);
       return 0;
     }
-    // --at prints one mutation's stored patch/body (NOT a reconstructed file state —
-    // full point-in-time reconstruction is a gated follow-up).
+    // --at --rebuild reconstructs the file's bytes at that seq (gated: prints the
+    // confidence + a divergence reason when it can't stand behind a full state).
+    if (args.rebuild && args.at !== undefined && !Number.isNaN(args.at)) {
+      const r = reconstructAt(store, sessionId, path, args.at);
+      if (r.confidence === 'unavailable' || (r.confidence === 'partial' && r.content == null)) {
+        console.error(`file --rebuild: cannot reconstruct ${path} at seq ${args.at} (${r.confidence})`);
+        if (r.divergence) console.error(`  ${r.divergence.reason} (at seq ${r.divergence.seq})`);
+        return 2;
+      }
+      if (r.confidence !== 'exact') {
+        console.error(`  [${r.confidence}${r.divergence ? ` — stopped at seq ${r.divergence.seq}: ${r.divergence.reason}` : ' — UNVERIFIED'}]`);
+      }
+      process.stdout.write(r.content ?? '');
+      return r.confidence === 'partial' ? 1 : 0;
+    }
+    // --at (no --rebuild) prints one mutation's stored patch/body.
     if (args.at !== undefined && !Number.isNaN(args.at)) {
       const m = h.mutations.find((x) => x.seq === args.at);
       if (!m) {

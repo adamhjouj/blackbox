@@ -11,6 +11,7 @@
  * (dirty-base detection, multi-match stops, ghost-mutation demotion, end-hash
  * validation) so it can never present a file state that never existed on disk.
  */
+import { createHash } from 'node:crypto';
 import type { DiffStat, MutationFact } from './mutation';
 import type { Store } from './store';
 import type { BlackboxEvent } from './types';
@@ -111,4 +112,136 @@ export function fileHistory(store: Store, sessionId: string, query: string): Fil
     end_sha256: endSha(store, sessionId, query),
     mutations,
   };
+}
+
+// ── point-in-time reconstruction (R7.2b) ─────────────────────────────────────
+// Rebuild a file's exact bytes at an arbitrary seq by replaying the recorded
+// patches onto a recorded snapshot. GATED behind honesty: it NEVER emits a state
+// it can't stand behind — it stops (and says why) rather than fabricate one.
+
+export interface Reconstruction {
+  path: string;
+  seq: number;
+  /** the reconstructed bytes, or the last good state when it had to stop. */
+  content: string | null;
+  /**
+   * exact       — landed on a stored full-body write, or replay matched the
+   *               end-of-session on-disk hash.
+   * replayed    — patches applied cleanly, but UNVERIFIED (no ground-truth hash
+   *               to confirm no unrecorded write intervened).
+   * partial     — replay hit a divergence and stopped; `content` is the last good
+   *               state, `divergence` says where + why.
+   * unavailable — no in-session snapshot to anchor from (pre-session state needs
+   *               the git base, not reconstructed here) or the anchor wasn't stored.
+   */
+  confidence: 'exact' | 'replayed' | 'partial' | 'unavailable';
+  divergence?: { seq: number; reason: string };
+}
+
+interface Hunk {
+  oldStr: string;
+  newStr: string;
+}
+
+/** Re-derive each hunk's old/new snippet from the stored unified-diff-style patch
+ *  (mutation.ts writes exactly one prefix char per line: ' ' context, '-' old,
+ *  '+' new; MultiEdit joins several `@@` hunks). Verified unambiguous. */
+function parseHunks(patch: string): Hunk[] {
+  const hunks: Hunk[] = [];
+  let cur: { old: string[]; nw: string[] } | null = null;
+  for (const line of patch.split('\n')) {
+    if (line.startsWith('@@')) {
+      if (cur) hunks.push({ oldStr: cur.old.join('\n'), newStr: cur.nw.join('\n') });
+      cur = { old: [], nw: [] };
+      continue;
+    }
+    if (!cur) continue;
+    const p = line[0];
+    const rest = line.slice(1);
+    if (p === ' ') {
+      cur.old.push(rest);
+      cur.nw.push(rest);
+    } else if (p === '-') {
+      cur.old.push(rest);
+    } else if (p === '+') {
+      cur.nw.push(rest);
+    }
+  }
+  if (cur) hunks.push({ oldStr: cur.old.join('\n'), newStr: cur.nw.join('\n') });
+  return hunks;
+}
+
+/** Apply a patch's hunks to `content`, Edit-semantics: each old snippet replaced
+ *  ONCE. Index-based splice (never String.replace — `$&`/`$'` hazard). Stops on a
+ *  0-match (diverged) or >=2-match (ambiguous — the reconstructed base isn't proven
+ *  to be the true state, so uniqueness isn't guaranteed). */
+function applyPatch(content: string, patch: string): { content: string; ok: boolean; reason?: string } {
+  let out = content;
+  for (const h of parseHunks(patch)) {
+    if (h.oldStr === '') return { content: out, ok: false, reason: 'a pure-insertion hunk has no anchor to locate' };
+    const first = out.indexOf(h.oldStr);
+    if (first === -1) return { content: out, ok: false, reason: 'the recorded old text is absent — the file diverged from the reconstructed base (likely an unrecorded write)' };
+    if (out.indexOf(h.oldStr, first + 1) !== -1) return { content: out, ok: false, reason: 'the recorded old text matches in >=2 places — ambiguous, cannot place the edit safely' };
+    out = out.slice(0, first) + h.newStr + out.slice(first + h.oldStr.length);
+  }
+  return { content: out, ok: true };
+}
+
+function stop(path: string, seq: number, content: string | null, divSeq: number, reason: string): Reconstruction {
+  return { path, seq, content, confidence: 'partial', divergence: { seq: divSeq, reason } };
+}
+
+/**
+ * Reconstruct the file's bytes as of `atSeq`. Anchors on the latest in-session
+ * full-body Write at/before atSeq, then replays the patches after it. Refuses
+ * (never fabricates) when it can't anchor or hits a divergence.
+ */
+export function reconstructAt(store: Store, sessionId: string, query: string, atSeq: number): Reconstruction {
+  const h = fileHistory(store, sessionId, query);
+  const upto = h.mutations.filter((m) => m.seq <= atSeq);
+  if (!upto.length) return { path: query, seq: atSeq, content: null, confidence: 'unavailable' };
+
+  let anchorIdx = -1;
+  for (let i = upto.length - 1; i >= 0; i--) {
+    if (upto[i]!.kind === 'body') {
+      anchorIdx = i;
+      break;
+    }
+  }
+  if (anchorIdx === -1) {
+    return {
+      path: query,
+      seq: atSeq,
+      content: null,
+      confidence: 'unavailable',
+      divergence: { seq: upto[0]!.seq, reason: 'no in-session snapshot before this seq; the pre-session state would need the git base (not reconstructed here)' },
+    };
+  }
+  const anchor = upto[anchorIdx]!;
+  if (anchor.content == null) {
+    return { path: query, seq: atSeq, content: null, confidence: 'unavailable', divergence: { seq: anchor.seq, reason: `the snapshot at seq ${anchor.seq} was not stored (${anchor.skip_reason ?? 'pruned'})` } };
+  }
+
+  let content = anchor.content;
+  for (let i = anchorIdx + 1; i < upto.length; i++) {
+    const m = upto[i]!;
+    if (m.redacted) return stop(query, atSeq, content, m.seq, 'a redacted mutation cannot be replayed (its content was scrubbed at capture)');
+    if (m.tool === 'NotebookEdit') return stop(query, atSeq, content, m.seq, 'NotebookEdit cell sources are not line-replayable');
+    if (m.content == null) return stop(query, atSeq, content, m.seq, `the patch at seq ${m.seq} was not stored (${m.skip_reason ?? 'pruned'})`);
+    const r = applyPatch(content, m.content);
+    if (!r.ok) return stop(query, atSeq, content, m.seq, r.reason!);
+    content = r.content;
+  }
+
+  // Clean replay. Landing exactly on the anchoring Write (no patches after) is
+  // exact. Otherwise it's replayed-but-unverified — unless we reached the file's
+  // final mutation and it matches the R2 end-of-session on-disk hash, which both
+  // CONFIRMS the replay and CATCHES a silent (ghost) divergence when it doesn't.
+  const last = h.mutations[h.mutations.length - 1]!;
+  if (upto[upto.length - 1]!.seq === last.seq && h.end_sha256) {
+    const got = 'sha256:' + createHash('sha256').update(content, 'utf8').digest('hex');
+    if (got === h.end_sha256) return { path: query, seq: atSeq, content, confidence: 'exact' };
+    return stop(query, atSeq, content, last.seq, 'the reconstruction does not match the end-of-session on-disk hash — an unrecorded write intervened');
+  }
+  return { path: query, seq: atSeq, content, confidence: anchorIdx === upto.length - 1 ? 'exact' : 'replayed' };
 }
