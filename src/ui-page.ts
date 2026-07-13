@@ -288,12 +288,41 @@ const PAGE_CSS = `  :root {
   .glegend { display:flex; gap:13px; margin-left:auto; flex-wrap:wrap; }
   .gleg { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--fg-3); }
   .gdot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+  .graphhost { position:relative; }
   .graphcanvas { display:block; width:100%; height:560px; cursor:grab; touch-action:none;
-    background:radial-gradient(620px 420px at 50% 42%, rgba(255,255,255,.02), transparent 70%); }
+    background:radial-gradient(680px 460px at 50% 40%, rgba(255,255,255,.022), transparent 72%); }
   .graphcanvas:active { cursor:grabbing; }
+  .graphcanvas:focus-visible { outline:2px solid rgba(233,233,238,.4); outline-offset:-2px; }
+  .ghint { position:absolute; left:16px; bottom:11px; font-size:11px; color:var(--fg-4); pointer-events:none; opacity:.85; }
+  .gtip { position:absolute; z-index:6; pointer-events:none; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:var(--r1); padding:3px 8px; font-size:11px; color:var(--fg-1); max-width:280px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .gexpand { font-weight:500; }
   .gpanel { padding:0 18px 24px; }
   .gpanel .detailrow { margin-top:12px; }
   .gpanel .detail { border:1px solid var(--border); border-radius:var(--r3); }
+  /* fullscreen graph explorer */
+  .gfull { position:fixed; inset:0; z-index:50; background:var(--bg); display:flex; flex-direction:column; }
+  .gfull-bar { flex:none; display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--border); }
+  .gfull-title { font-size:12px; color:var(--fg-2); font-weight:600; letter-spacing:-.01em; }
+  .gsearch { flex:0 0 220px; background:var(--surface); border:1px solid var(--border); border-radius:var(--r2);
+    color:var(--fg); font:12px var(--sans); padding:5px 9px; }
+  .gsearch:focus { outline:none; border-color:var(--border-strong); }
+  .gchips { display:flex; gap:7px; flex-wrap:wrap; }
+  .gchip { font-size:11px; color:var(--fg-3); background:transparent; border:1px solid var(--border); border-radius:20px;
+    padding:3px 11px; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+  .gchip::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--chip,#8a919c); opacity:.35; }
+  .gchip.on { color:var(--fg-1); border-color:var(--border-strong); }
+  .gchip.on::before { opacity:1; }
+  .gfull-close { margin-left:auto; font-size:12px; color:var(--fg-2); background:transparent; border:1px solid var(--border);
+    border-radius:var(--r2); padding:5px 11px; cursor:pointer; }
+  .gfull-close:hover { color:var(--fg); border-color:var(--border-strong); }
+  .gfull-stage { flex:1 1 auto; position:relative; overflow:hidden; }
+  .gfull-canvas { height:100%; background:radial-gradient(900px 620px at 50% 42%, rgba(255,255,255,.02), transparent 72%); }
+  .gminimap { position:absolute; right:16px; bottom:16px; width:190px; height:120px; z-index:4;
+    background:rgba(13,15,18,.82); border:1px solid var(--border); border-radius:var(--r2); cursor:pointer; }
+  .gfull-panel { position:absolute; left:0; right:0; bottom:0; max-height:46%; overflow:auto;
+    background:linear-gradient(to top, var(--bg) 84%, rgba(11,13,16,0)); padding:0 18px 18px; }
+  .gfull-panel:empty { display:none; }
   .tsteps { display:flex; flex-direction:column; margin-top:-3px; }
   .srow { display:flex; align-items:center; gap:11px; padding:3px 8px; border-radius:var(--r1); cursor:pointer; }
   .srow:hover { background:var(--hover); }
@@ -360,8 +389,13 @@ const RISKWORD = Object.assign(Object.create(null), { high:'high risk', medium:'
 let current = null, expanded = new Set();
 let viewMode = 'story';               // 'story' (default lens) | 'timeline' | 'graph'
 let fpStory = null, storyOpen = new Set();   // fp gate + per-turn step-expansion (by turn key)
-let fpGraph = null, graphState = null, graphPrompt = '', graphTurns = [];   // R4 graph: fp gate · running sim · turn filter · turn options
+let fpGraph = null, graphState = null, graphPrompt = '', graphTurns = [], graphFull = false;   // R4 graph: fp gate · mounts+model · turn filter · turn options · fullscreen open
 const NODE_COLOR = { prompt:'#8ab4f8', file:'#59b783', commit:'#6cc38a', step:'#8a919c', secret:'#e5595a', host:'#e5595a', mcp:'#b48ead' };
+// R4 graph render palette (dark-only, tuned off the design tokens). Kept here so the
+// canvas never hardcodes a raw rgba white — edges/labels read against --bg consistently.
+const G_EDGE = 'rgba(201,205,214,0.16)', G_EDGE_HI = 'rgba(233,233,238,0.72)', G_EDGE_COMMIT = 'rgba(108,195,138,0.34)';
+const G_RISK = '#e5595a', G_LABEL = '#b7bbc4', G_HALO = '#0b0d10';
+const G_FONT = '10px -apple-system,BlinkMacSystemFont,system-ui,sans-serif';
 let fpSessions = null, fpTimeline = null, fpVerdict = null, fpHud = null;
 let rowState = [];            // [{fp, tr, a}] parallel to the rendered action list
 let tbody = null;
@@ -1285,10 +1319,17 @@ function stepRow(s){
 // A read-only projection of the session (prompt · step · file · commit · risk nodes;
 // caused/changed/committed/spawned/read/sent/combo edges). The exfil combo is a red
 // path. Pan/zoom, hover-highlight a node's neighbourhood, click a node → its dossier.
-function stopGraph(){ if(graphState){ if(graphState.raf) cancelAnimationFrame(graphState.raf); if(graphState.cleanup) graphState.cleanup(); graphState=null; } }
+function stopGraph(){
+  if(!graphState) return;
+  if(graphState.mounts) for(const m of graphState.mounts) m.destroy();
+  if(graphState.overlay){ const o=graphState.overlay; if(o._esc) document.removeEventListener('keydown', o._esc); o.remove(); }
+  graphFull = false;
+  graphState = null;
+}
 
 async function loadGraph(){
   const main = document.getElementById('timeline');
+  if(graphFull) return;   // a fullscreen explorer owns the graph — don't churn the pane beneath it
   if(!current){
     const key = haveSessions ? 'sel' : 'armed';
     if(fpGraph !== 'e:'+key){ fpGraph='e:'+key; stopGraph(); main.textContent=''; main.append(viewBar(), emptyState(key)); }
@@ -1297,7 +1338,7 @@ async function loadGraph(){
   const sid = current;
   const q = graphPrompt ? ('?prompt='+encodeURIComponent(graphPrompt)) : '';
   const g = await api('/api/session/'+encodeURIComponent(sid)+'/graph'+q);
-  if(current !== sid || viewMode !== 'graph') return;
+  if(current !== sid || viewMode !== 'graph' || graphFull) return;
   const fp = JSON.stringify([sid, graphPrompt, g.counts]);
   if(fp === fpGraph) return;   // stable graph → let the running sim keep going
   renderGraph(main, g);
@@ -1318,7 +1359,12 @@ function graphControls(g){
   sel.append(el('option',{value:'',textContent:'whole session'}));
   for(const t of graphTurns) sel.append(el('option',{value:t.id,textContent:(t.label||t.id).slice(0,44)}));
   sel.value = graphPrompt;
-  bar.append(sel, el('span',{className:'gcount',textContent:g.counts.nodes+' nodes · '+g.counts.edges+' links'}), graphLegend());
+  const activeMount = ()=> graphState && graphState.mounts && graphState.mounts[graphState.mounts.length-1];
+  const fit = el('button',{type:'button',className:'fb-tool',textContent:'fit',title:'frame the whole graph',
+    onclick:()=>{ const m=activeMount(); if(m) m.fit(); }});
+  const expand = el('button',{type:'button',className:'fb-tool gexpand',textContent:'⤢ fullscreen',title:'open the fullscreen explorer',
+    onclick:()=> openGraphFull()});
+  bar.append(sel, fit, expand, el('span',{className:'gcount',textContent:g.counts.nodes+' nodes · '+g.counts.edges+' links'}), graphLegend());
   return bar;
 }
 
@@ -1332,84 +1378,326 @@ function renderGraph(main, g){
     main.append(el('div',{className:'empty'}, el('p',{textContent:'Not enough recorded relationships to graph — try the Story view, or pick a busier turn.'})));
     return;
   }
-
-  const hostEl = el('div',{className:'graphhost'});
-  const canvas = el('canvas',{className:'graphcanvas'});
-  hostEl.append(canvas);
+  const host = el('div',{className:'graphhost'});
+  const canvas = el('canvas',{className:'graphcanvas',tabIndex:0});
+  const hint = el('div',{className:'ghint',textContent:'drag a node to pin · scroll to zoom · double-click to fit'});
+  host.append(canvas, hint);
   const panel = el('div',{className:'gpanel'});
-  main.append(hostEl, panel);
-  const ctx = canvas.getContext('2d');
+  main.append(host, panel);
 
-  const nodes = g.nodes.map(n=>Object.assign({}, n));
-  const byId = {}; nodes.forEach(n=> byId[n.id]=n);
-  const edges = (g.edges||[]).filter(e=> byId[e.from] && byId[e.to]);
-  const N = nodes.length;
-  nodes.forEach((n,i)=>{ const a=i/N*6.2832; n.x=Math.cos(a)*200+(Math.random()-0.5)*50; n.y=Math.sin(a)*200+(Math.random()-0.5)*50; n.vx=0; n.vy=0; });
-  const adj = {}; nodes.forEach(n=> adj[n.id]=Object.create(null));
-  edges.forEach(e=>{ adj[e.from][e.to]=1; adj[e.to][e.from]=1; });
+  const model = buildGraphModel(g);
+  const mount = mountGraph(canvas, host, model, {
+    panel: panel,
+    onPrompt: g.detailed ? null : (n)=>{ graphPrompt = String(n.id||'').slice(2); fpGraph = null; loadGraph().catch(()=>{}); },
+  });
+  graphState = { mounts:[mount], model: model, overlay: null };
+}
+
+// Turn a /graph payload into a mutable simulation model. Node positions are seeded
+// from rank (vertical flow) and turn (horizontal time) so the layout starts from a
+// sane shape instead of a random ring, then the force sim only has to refine it.
+function buildGraphModel(g){
+  const nodes = g.nodes.map((n)=> Object.assign({}, n, { x:0, y:0, vx:0, vy:0, pinned:false }));
+  const byId = Object.create(null); nodes.forEach((n)=> byId[n.id]=n);
+  const edges = (g.edges||[]).filter((e)=> byId[e.from] && byId[e.to]);
+  const adj = Object.create(null); nodes.forEach((n)=> adj[n.id]=Object.create(null));
+  edges.forEach((e)=>{ adj[e.from][e.to]=1; adj[e.to][e.from]=1; });
+  let turns = 1; for(const n of nodes){ const t=(n.turn||0)+1; if(t>turns) turns=t; }
+  nodes.forEach((n,i)=>{
+    const rx = turns>1 ? ((n.turn||0)-(turns-1)/2) : 0;
+    const ry = (n.rank||0)-1.3;
+    const jx = ((i*2654435761)%1000)/1000 - 0.5, jy = ((i*40503)%1000)/1000 - 0.5;
+    n.x = rx*130 + jx*46; n.y = ry*150 + jy*46;
+  });
+  return { nodes, byId, edges, adj, turns };
+}
+
+// Mount one interactive graph onto a canvas. Owns its force sim, draw loop and all
+// listeners; returns a controller so the caller can pause/resume/destroy it. Zero
+// deps: Barnes–Hut repulsion + springs + a gentle time bias, hand-rolled. Retina-
+// sharp (DPR-scaled buffer; all hit-testing in CSS px).
+function mountGraph(canvas, hostEl, model, opts){
+  opts = opts || {};
+  const ctx = canvas.getContext('2d');
+  const nodes = model.nodes, edges = model.edges, byId = model.byId, adj = model.adj;
+  const N = nodes.length || 1;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   let view = { x:0, y:0, z:1 };
-  let hover = null;
-  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const radius = (n)=> 4 + Math.min(9,(n.degree||0)*1.4) + (n.type==='prompt'?2:0);
+  let hover = null, selected = null;
+  const hidden = Object.create(null);   // node types toggled off in the fullscreen filters
+  let term = '';                        // active search term (lowercased)
+  let cssW = 320, cssH = 560, dpr = 1;
+  let raf = null, running = true, settle = 0, autoFitted = false, miniT = null;
+  const listeners = [];
+  const on = (t,ev,fn,o)=>{ t.addEventListener(ev,fn,o); listeners.push([t,ev,fn,o]); };
+
+  const tip = el('div',{className:'gtip'}); tip.style.display='none'; hostEl.append(tip);
+  const radius = (n)=> 4 + Math.min(10,(n.degree||0)*1.4) + (n.type==='prompt'?2.5:0);
+  const visible = (n)=> !hidden[n.type];
+  const matches = (n)=> !!term && String(n.label||'').toLowerCase().indexOf(term) >= 0;
+
+  // ── Barnes–Hut repulsion: build a quadtree once per step, approximate far cells ──
+  function repulsion(){
+    let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+    for(const n of nodes){ if(n.x<minx)minx=n.x; if(n.y<miny)miny=n.y; if(n.x>maxx)maxx=n.x; if(n.y>maxy)maxy=n.y; }
+    if(!isFinite(minx)) return ()=>[0,0];
+    const size = Math.max(maxx-minx, maxy-miny, 1);
+    const root = { x:minx, y:miny, s:size, m:0, cx:0, cy:0, n:null, q:null };
+    function insert(cell,nd){
+      if(cell.m===0){ cell.n=nd; cell.cx=nd.x; cell.cy=nd.y; cell.m=1; return; }
+      if(cell.s < 0.002){ cell.cx=(cell.cx*cell.m+nd.x)/(cell.m+1); cell.cy=(cell.cy*cell.m+nd.y)/(cell.m+1); cell.m++; return; }
+      if(!cell.q){ cell.q=[null,null,null,null]; const ex=cell.n; cell.n=null; place(cell,ex); }
+      place(cell,nd);
+      cell.cx=(cell.cx*cell.m+nd.x)/(cell.m+1); cell.cy=(cell.cy*cell.m+nd.y)/(cell.m+1); cell.m++;
+    }
+    function place(cell,nd){
+      const half=cell.s/2, i=(nd.x>=cell.x+half?1:0)+(nd.y>=cell.y+half?2:0);
+      let k=cell.q[i];
+      if(!k){ k={ x:cell.x+((i&1)?half:0), y:cell.y+((i&2)?half:0), s:half, m:0, cx:0, cy:0, n:null, q:null }; cell.q[i]=k; }
+      insert(k,nd);
+    }
+    for(const n of nodes) insert(root,n);
+    const REP=1300, THETA2=0.81;
+    return function(n){
+      let fx=0, fy=0; const stack=[root];
+      while(stack.length){
+        const c=stack.pop(); if(!c || c.m===0) continue;
+        let dx=n.x-c.cx, dy=n.y-c.cy, d2=dx*dx+dy*dy;
+        if(c.n){ if(c.n===n) continue; if(d2<1)d2=1; const d=Math.sqrt(d2), f=REP*c.m/(d2*d); fx+=dx*f; fy+=dy*f; continue; }
+        if((c.s*c.s) < THETA2*d2){ if(d2<1)d2=1; const d=Math.sqrt(d2), f=REP*c.m/(d2*d); fx+=dx*f; fy+=dy*f; }
+        else if(c.q){ for(let i=0;i<4;i++) if(c.q[i]) stack.push(c.q[i]); }
+      }
+      return [fx,fy];
+    };
+  }
 
   function step(){
-    const REP = 1100, SPRING = 0.02, LEN = 72, GRAV = 0.004, DAMP = 0.86, CAP = 22;
-    for(let i=0;i<N;i++){ const a=nodes[i]; for(let j=i+1;j<N;j++){ const b=nodes[j];
-      let dx=a.x-b.x, dy=a.y-b.y; let d2=dx*dx+dy*dy+0.01; const d=Math.sqrt(d2); const f=REP/d2/d;
-      const fx=dx*f, fy=dy*f; a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy; } }
-    for(const e of edges){ const a=byId[e.from], b=byId[e.to]; let dx=b.x-a.x, dy=b.y-a.y;
-      const d=Math.sqrt(dx*dx+dy*dy)+0.01; const f=(d-LEN)*SPRING/d; const fx=dx*f, fy=dy*f;
-      a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy; }
-    for(const n of nodes){ n.vx-=n.x*GRAV; n.vy-=n.y*GRAV; n.vx*=DAMP; n.vy*=DAMP;
-      n.x+=Math.max(-CAP,Math.min(CAP,n.vx)); n.y+=Math.max(-CAP,Math.min(CAP,n.vy)); }
+    const SPRING=0.02, GRAV=0.008, DAMP=0.85, CAP=15, XK=0.022, YK=0.03, COL=130, BAND=155;
+    const T = model.turns, force = repulsion();
+    for(const n of nodes){ if(n.pinned) continue; const f=force(n); n.vx+=f[0]; n.vy+=f[1]; }
+    for(const e of edges){ const a=byId[e.from], b=byId[e.to];
+      let dx=b.x-a.x, dy=b.y-a.y; const d=Math.sqrt(dx*dx+dy*dy)+0.01;
+      const rest = 60 + radius(a) + radius(b);
+      const f=(d-rest)*SPRING*Math.min(2.5, e.weight||1)/d, ux=dx*f, uy=dy*f;
+      if(!a.pinned){ a.vx+=ux; a.vy+=uy; } if(!b.pinned){ b.vx-=ux; b.vy-=uy; } }
+    for(const n of nodes){ if(n.pinned) continue;
+      const tx = T>1 ? ((n.turn||0)-(T-1)/2)*COL : 0;
+      const ty = ((n.rank||0)-1.3)*BAND;
+      n.vx += (tx-n.x)*XK; n.vy += (ty-n.y)*YK;   // the hybrid: bias toward the time/flow grid
+      n.vx -= n.x*GRAV;                            // a touch of horizontal center-pull
+      n.vx*=DAMP; n.vy*=DAMP;
+      n.x += Math.max(-CAP,Math.min(CAP,n.vx)); n.y += Math.max(-CAP,Math.min(CAP,n.vy)); }
   }
-  function draw(){
-    const w=canvas.width, h=canvas.height;
-    ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,w,h);
-    ctx.translate(w/2+view.x, h/2+view.y); ctx.scale(view.z, view.z);
-    for(const e of edges){ const a=byId[e.from], b=byId[e.to]; const hl = hover && (e.from===hover||e.to===hover);
-      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
-      ctx.strokeStyle = e.risk ? ('rgba(229,89,90,'+(hl?0.95:0.6)+')') : (hl?'rgba(255,255,255,0.4)':'rgba(255,255,255,0.11)');
-      ctx.lineWidth = e.risk?1.7:1; if(e.type==='combo') ctx.setLineDash([5,3]);
-      ctx.stroke(); ctx.setLineDash([]); }
-    for(const n of nodes){ const r=radius(n); const dim = hover && n.id!==hover && !adj[hover][n.id];
-      ctx.globalAlpha = dim?0.22:1;
-      ctx.beginPath(); ctx.arc(n.x,n.y,r,0,6.2832);
-      ctx.fillStyle = n.risk ? '#e5595a' : (NODE_COLOR[n.type]||'#8a919c'); ctx.fill();
-      if(n.id===hover){ ctx.lineWidth=2; ctx.strokeStyle='#f2f4f7'; ctx.stroke(); }
-      if(n.type!=='step' || n.id===hover){ ctx.globalAlpha = dim?0.28:0.85;
-        ctx.fillStyle = n.risk?'#e5595a':'#c6c6cd'; ctx.font='10px ui-sans-serif,system-ui,sans-serif';
-        ctx.fillText(String(n.label||'').slice(0,26), n.x+r+3, n.y+3); } }
+
+  function toWorld(sx,sy){ return { x:(sx-cssW/2-view.x)/view.z, y:(sy-cssH/2-view.y)/view.z }; }
+  function localXY(e){ const rect=canvas.getBoundingClientRect(); return [e.clientX-rect.left, e.clientY-rect.top]; }
+  function nodeAt(sx,sy){ const p=toWorld(sx,sy); let best=null, bd=1e9;
+    for(const n of nodes){ if(!visible(n)) continue; const dx=n.x-p.x, dy=n.y-p.y, d=dx*dx+dy*dy, r=radius(n)+5; if(d<r*r && d<bd){ bd=d; best=n; } }
+    return best; }
+
+  function drawEdge(a,b,e,hot,dim){
+    let dx=b.x-a.x, dy=b.y-a.y; const len=Math.sqrt(dx*dx+dy*dy)||1;
+    const mx=(a.x+b.x)/2, my=(a.y+b.y)/2, nx=-dy/len, ny=dx/len, bend=Math.min(16, len*0.11);
+    const cx=mx+nx*bend, cy=my+ny*bend;
+    const col = e.risk ? G_RISK : (e.type==='committed' ? G_EDGE_COMMIT : (hot ? G_EDGE_HI : G_EDGE));
+    ctx.globalAlpha = dim?0.09:1;
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.quadraticCurveTo(cx,cy,b.x,b.y);
+    ctx.strokeStyle = col; ctx.lineWidth = (e.risk?1.6:1) + Math.min(2,((e.weight||1)-1)*0.5);
+    if(e.type==='combo') ctx.setLineDash([5,4]);
+    ctx.stroke(); ctx.setLineDash([]);
+    if(e.type==='caused'||e.type==='changed'||e.type==='committed'||e.type==='spawned'||e.type==='sent'){
+      const ang=Math.atan2(b.y-cy, b.x-cx), r=radius(b)+2, ax=b.x-Math.cos(ang)*r, ay=b.y-Math.sin(ang)*r, s=4.4;
+      ctx.globalAlpha = dim?0.09:0.85; ctx.fillStyle=col;
+      ctx.beginPath(); ctx.moveTo(ax,ay);
+      ctx.lineTo(ax-Math.cos(ang-0.42)*s, ay-Math.sin(ang-0.42)*s);
+      ctx.lineTo(ax-Math.cos(ang+0.42)*s, ay-Math.sin(ang+0.42)*s);
+      ctx.closePath(); ctx.fill();
+    }
     ctx.globalAlpha=1;
   }
-  function resize(){ const rect=hostEl.getBoundingClientRect(); canvas.width=Math.max(320,rect.width); canvas.height=560; draw(); }
 
-  function toWorld(sx,sy){ return { x:(sx-canvas.width/2-view.x)/view.z, y:(sy-canvas.height/2-view.y)/view.z }; }
-  function nodeAt(sx,sy){ const p=toWorld(sx,sy); let best=null, bd=1e9;
-    for(const n of nodes){ const dx=n.x-p.x, dy=n.y-p.y; const d=dx*dx+dy*dy; const r=radius(n)+4; if(d<r*r && d<bd){ bd=d; best=n; } }
-    return best; }
-  function localXY(e){ const rect=canvas.getBoundingClientRect(); return [e.clientX-rect.left, e.clientY-rect.top]; }
+  function drawNode(n,isHover,dim){
+    const r=radius(n);
+    ctx.globalAlpha = dim?0.20:1;
+    if(n.risk){ const gr=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,r*3.2);
+      gr.addColorStop(0,'rgba(229,89,90,0.32)'); gr.addColorStop(1,'rgba(229,89,90,0)');
+      ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(n.x,n.y,r*3.2,0,6.2832); ctx.fill(); }
+    ctx.beginPath(); ctx.arc(n.x,n.y,r,0,6.2832);
+    ctx.fillStyle = n.risk ? G_RISK : (NODE_COLOR[n.type]||'#8a919c'); ctx.fill();
+    if(n.pinned){ ctx.lineWidth=1.5; ctx.strokeStyle='rgba(233,233,238,0.5)'; ctx.beginPath(); ctx.arc(n.x,n.y,r+2.5,0,6.2832); ctx.stroke(); }
+    if(isHover || n.id===selected){ ctx.lineWidth=2; ctx.strokeStyle='#f2f4f7'; ctx.beginPath(); ctx.arc(n.x,n.y,r,0,6.2832); ctx.stroke(); }
+    const big = n.type==='prompt'||n.type==='commit'||n.risk||(n.degree||0)>=3;
+    if(isHover || matches(n) || big || view.z>1.35){
+      const txt=String(n.label||'').slice(0,28);
+      ctx.font=G_FONT; ctx.textBaseline='middle';
+      const lx=n.x+r+4, ly=n.y;
+      ctx.globalAlpha = dim?0.22:0.94;
+      ctx.lineWidth=3; ctx.lineJoin='round'; ctx.strokeStyle=G_HALO; ctx.strokeText(txt,lx,ly);
+      ctx.fillStyle = n.risk?G_RISK:G_LABEL; ctx.fillText(txt,lx,ly);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function draw(){
+    ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,cssW,cssH);
+    ctx.save(); ctx.translate(cssW/2+view.x, cssH/2+view.y); ctx.scale(view.z, view.z);
+    for(const e of edges){ const a=byId[e.from], b=byId[e.to]; if(!visible(a)||!visible(b)) continue;
+      const hot = hover && (e.from===hover||e.to===hover);
+      const dim = (hover && !hot) || (term && !(matches(a)||matches(b)));
+      drawEdge(a,b,e,!!hot,!!dim); }
+    for(const n of nodes){ if(!visible(n)) continue;
+      const isHover = n.id===hover;
+      const neigh = hover && (isHover || adj[hover][n.id]);
+      const dim = (hover && !neigh) || (term && !matches(n));
+      drawNode(n,isHover,!!dim); }
+    ctx.restore();
+    if(opts.minimap) drawMini();
+  }
+
+  function drawMini(){
+    const mc=opts.minimap.getContext('2d'), MW=190, MH=120;
+    mc.setTransform(dpr,0,0,dpr,0,0); mc.clearRect(0,0,MW,MH);
+    let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+    for(const n of nodes){ if(!visible(n))continue; if(n.x<minx)minx=n.x; if(n.y<miny)miny=n.y; if(n.x>maxx)maxx=n.x; if(n.y>maxy)maxy=n.y; }
+    if(!isFinite(minx)){ miniT=null; return; }
+    const pad=12, s=Math.min((MW-pad*2)/Math.max(1,maxx-minx), (MH-pad*2)/Math.max(1,maxy-miny)), ox=pad-minx*s, oy=pad-miny*s;
+    miniT = { s:s, ox:ox, oy:oy };
+    for(const n of nodes){ if(!visible(n))continue; mc.globalAlpha=0.9; mc.fillStyle=n.risk?G_RISK:(NODE_COLOR[n.type]||'#8a919c');
+      mc.beginPath(); mc.arc(n.x*s+ox, n.y*s+oy, n.risk?2.4:1.5, 0, 6.2832); mc.fill(); }
+    mc.globalAlpha=1;
+    const wl=toWorld(0,0), wr=toWorld(cssW,cssH);
+    mc.strokeStyle='rgba(233,233,238,0.5)'; mc.lineWidth=1;
+    mc.strokeRect(wl.x*s+ox, wl.y*s+oy, (wr.x-wl.x)*s, (wr.y-wl.y)*s);
+  }
+
+  function fit(){
+    let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+    for(const n of nodes){ if(!visible(n))continue; if(n.x<minx)minx=n.x; if(n.y<miny)miny=n.y; if(n.x>maxx)maxx=n.x; if(n.y>maxy)maxy=n.y; }
+    if(!isFinite(minx)) return;
+    const w=Math.max(1,maxx-minx), h=Math.max(1,maxy-miny), pad=64;
+    view.z = Math.max(0.2, Math.min(2.2, Math.min((cssW-pad)/w, (cssH-pad)/h)));
+    view.x = -((minx+maxx)/2)*view.z; view.y = -((miny+maxy)/2)*view.z;
+    if(!raf) draw();
+  }
+
+  function resize(){
+    const rect=hostEl.getBoundingClientRect();
+    dpr = Math.max(1, Math.min(3, window.devicePixelRatio||1));
+    cssW = Math.max(320, Math.floor(rect.width||320));
+    cssH = opts.fullscreen ? Math.max(360, Math.floor(rect.height||560)) : 560;
+    canvas.width = Math.round(cssW*dpr); canvas.height = Math.round(cssH*dpr);
+    canvas.style.width = cssW+'px'; canvas.style.height = cssH+'px';
+    if(opts.minimap){ opts.minimap.width=Math.round(190*dpr); opts.minimap.height=Math.round(120*dpr); opts.minimap.style.width='190px'; opts.minimap.style.height='120px'; }
+    draw();
+  }
+
+  function tickSim(){
+    if(!running){ raf=null; return; }
+    step(); step();
+    let ke=0; for(const n of nodes){ ke += n.vx*n.vx + n.vy*n.vy; }
+    draw();
+    if(ke/N < 0.04){ settle++; } else settle=0;
+    if(settle > 18){ raf=null; if(!autoFitted){ autoFitted=true; fit(); } return; }
+    raf = requestAnimationFrame(tickSim);
+  }
+  function reheat(){ settle=0; if(running && !raf) raf=requestAnimationFrame(tickSim); }
+
+  // ── interactions ──────────────────────────────────────────────────
+  function updateTip(n,sx,sy){ if(!n){ tip.style.display='none'; return; } tip.textContent=n.type+' · '+String(n.label||''); tip.style.display='block'; tip.style.left=(sx+13)+'px'; tip.style.top=(sy+13)+'px'; }
 
   let drag=null;
-  canvas.onmousedown = (e)=>{ const [sx,sy]=localXY(e); drag={ sx, sy, px:view.x, py:view.y, moved:false }; };
-  canvas.onmousemove = (e)=>{ const [sx,sy]=localXY(e);
-    if(drag){ const dx=sx-drag.sx, dy=sy-drag.sy; if(Math.abs(dx)+Math.abs(dy)>3) drag.moved=true; view.x=drag.px+dx; view.y=drag.py+dy; if(!graphState.raf) draw(); return; }
-    const n=nodeAt(sx,sy); const id=n?n.id:null; if(id!==hover){ hover=id; canvas.style.cursor = n?'pointer':'grab'; if(!graphState.raf) draw(); } };
-  const endDrag = (e)=>{ if(drag && !drag.moved){ const [sx,sy]=localXY(e); const n=nodeAt(sx,sy); if(n && n.seq!=null) openGraphDossier(n.seq, panel); } drag=null; };
-  canvas.onmouseup = endDrag;
-  canvas.onmouseleave = ()=>{ drag=null; if(hover){ hover=null; if(!graphState.raf) draw(); } };
-  canvas.onwheel = (e)=>{ e.preventDefault(); const [sx,sy]=localXY(e); const before=toWorld(sx,sy);
-    view.z = Math.max(0.25, Math.min(3, view.z * (e.deltaY<0?1.1:0.9)));
-    const after=toWorld(sx,sy); view.x += (after.x-before.x)*view.z; view.y += (after.y-before.y)*view.z; if(!graphState.raf) draw(); };
+  on(canvas,'mousedown',(e)=>{ const p=localXY(e), n=nodeAt(p[0],p[1]);
+    if(n){ drag={ node:n, moved:false }; n.pinned=true; }
+    else drag={ pan:true, sx:p[0], sy:p[1], px:view.x, py:view.y, moved:false }; });
+  on(canvas,'mousemove',(e)=>{ const p=localXY(e), sx=p[0], sy=p[1];
+    if(drag && drag.node){ const w=toWorld(sx,sy); drag.node.x=w.x; drag.node.y=w.y; drag.node.vx=0; drag.node.vy=0; drag.moved=true; reheat(); if(!raf) draw(); return; }
+    if(drag && drag.pan){ view.x=drag.px+(sx-drag.sx); view.y=drag.py+(sy-drag.sy); if(Math.abs(sx-drag.sx)+Math.abs(sy-drag.sy)>3) drag.moved=true; if(!raf) draw(); return; }
+    const n=nodeAt(sx,sy), id=n?n.id:null; if(id!==hover){ hover=id; canvas.style.cursor=n?'pointer':'grab'; if(!raf) draw(); } updateTip(n,sx,sy); });
+  on(canvas,'mouseup',()=>{
+    if(drag && drag.node && !drag.moved){
+      const n=drag.node; n.pinned=false; selected=n.id;
+      if(n.type==='prompt' && opts.onPrompt) opts.onPrompt(n);
+      else if(n.seq!=null && opts.panel) openGraphDossier(n.seq, opts.panel);
+      if(!raf) draw();
+    }
+    drag=null; });
+  on(canvas,'mouseleave',()=>{ drag=null; if(hover){ hover=null; if(!raf) draw(); } tip.style.display='none'; });
+  on(canvas,'dblclick',(e)=>{ const p=localXY(e), n=nodeAt(p[0],p[1]); if(n){ n.pinned=false; reheat(); } else fit(); });
+  on(canvas,'wheel',(e)=>{ e.preventDefault(); const p=localXY(e), before=toWorld(p[0],p[1]);
+    view.z=Math.max(0.2, Math.min(3.5, view.z*(e.deltaY<0?1.1:0.9)));
+    const after=toWorld(p[0],p[1]); view.x+=(after.x-before.x)*view.z; view.y+=(after.y-before.y)*view.z; if(!raf) draw(); }, {passive:false});
+  on(canvas,'keydown',(e)=>{
+    const vis=nodes.filter(visible); if(!vis.length) return;
+    if(e.key==='Enter'){ const n=byId[selected]; if(n){ if(n.type==='prompt'&&opts.onPrompt) opts.onPrompt(n); else if(n.seq!=null&&opts.panel) openGraphDossier(n.seq,opts.panel); } return; }
+    const fwd=e.key==='ArrowRight'||e.key==='ArrowDown', back=e.key==='ArrowLeft'||e.key==='ArrowUp';
+    if(fwd||back){ e.preventDefault(); let i=vis.findIndex((n)=>n.id===selected); i=(i+(fwd?1:-1)+vis.length)%vis.length;
+      const n=vis[i]; selected=n.id; hover=n.id; view.x=-n.x*view.z; view.y=-n.y*view.z; if(!raf) draw(); } });
+  if(opts.minimap){ on(opts.minimap,'mousedown',(e)=>{ if(!miniT) return; const rect=opts.minimap.getBoundingClientRect();
+    const wx=((e.clientX-rect.left)-miniT.ox)/miniT.s, wy=((e.clientY-rect.top)-miniT.oy)/miniT.s;
+    view.x=-wx*view.z; view.y=-wy*view.z; if(!raf) draw(); }); }
+  on(window,'resize', ()=> resize());
 
-  const onResize = ()=> resize();
-  window.addEventListener('resize', onResize);
-  graphState = { raf:null, frames:0, cleanup:()=> window.removeEventListener('resize', onResize) };
   resize();
-  function tickSim(){ if(!graphState) return; step(); step(); draw(); graphState.frames++;
-    graphState.raf = graphState.frames < 240 ? requestAnimationFrame(tickSim) : null; }
-  if(reduced){ const iters=Math.min(260,Math.max(60,Math.round(40000/N))); for(let k=0;k<iters;k++) step(); draw(); } else tickSim();
+  if(reduced){ const iters=Math.min(320, Math.max(80, Math.round(60000/N))); for(let k=0;k<iters;k++) step(); running=false; fit(); draw(); }
+  else reheat();
+
+  return {
+    destroy(){ running=false; if(raf) cancelAnimationFrame(raf); raf=null; for(const L of listeners) L[0].removeEventListener(L[1],L[2],L[3]); listeners.length=0; tip.remove(); },
+    pause(){ running=false; if(raf) cancelAnimationFrame(raf); raf=null; },
+    resume(){ running=true; resize(); if(reduced) draw(); else reheat(); },
+    fit: fit,
+    toggleType(type,onFlag){ if(onFlag) delete hidden[type]; else hidden[type]=1; if(!raf) draw(); },
+    setSearch(v){ term=String(v||'').trim().toLowerCase(); if(term){ const m=nodes.find((n)=> visible(n)&&matches(n)); if(m){ view.x=-m.x*view.z; view.y=-m.y*view.z; } } if(!raf) draw(); },
+  };
+}
+
+// The fullscreen explorer: a modal overlay reusing the same model (so the layout
+// continues seamlessly). The inline sim is paused while the overlay owns the graph.
+function openGraphFull(){
+  if(!graphState || !graphState.model || graphFull) return;
+  const model = graphState.model;
+  for(const m of graphState.mounts) m.pause();
+
+  const overlay = el('div',{className:'gfull'});
+  const bar = el('div',{className:'gfull-bar'});
+  const search = el('input',{className:'gsearch',type:'search',placeholder:'search nodes…',spellcheck:false});
+  const chips = el('div',{className:'gchips'});
+  const closeBtn = el('button',{type:'button',className:'gfull-close',textContent:'✕ close',title:'close (Esc)'});
+  bar.append(el('span',{className:'gfull-title',textContent:'provenance graph'}), search, chips, closeBtn);
+  const stage = el('div',{className:'gfull-stage'});
+  const canvas = el('canvas',{className:'graphcanvas gfull-canvas',tabIndex:0});
+  const mini = el('canvas',{className:'gminimap',title:'click to jump'});
+  const panel = el('div',{className:'gpanel gfull-panel'});
+  stage.append(canvas, mini, panel);
+  overlay.append(bar, stage);
+  document.body.append(overlay);
+  graphFull = true;
+
+  const mount = mountGraph(canvas, stage, model, { panel:panel, minimap:mini, fullscreen:true });
+  graphState.overlay = overlay;
+  graphState.mounts.push(mount);
+
+  for(const spec of [['file','files'],['commit','commits'],['step','steps'],['secret','risk']]){
+    const chip = el('button',{type:'button',className:'gchip on',textContent:spec[1]});
+    chip.style.setProperty('--chip', NODE_COLOR[spec[0]]||G_LABEL);
+    chip.onclick = ()=>{ chip.classList.toggle('on'); mount.toggleType(spec[0], chip.classList.contains('on')); };
+    chips.append(chip);
+  }
+  search.oninput = ()=> mount.setSearch(search.value);
+  closeBtn.onclick = ()=> closeGraphFull();
+  const esc = (e)=>{ if(e.key==='Escape') closeGraphFull(); };
+  document.addEventListener('keydown', esc); overlay._esc = esc;
+  setTimeout(()=>{ try { search.focus(); } catch(_){} }, 30);
+}
+
+function closeGraphFull(){
+  if(!graphState || !graphFull) return;
+  const full = graphState.mounts.pop(); if(full) full.destroy();
+  const o = graphState.overlay;
+  if(o){ if(o._esc) document.removeEventListener('keydown', o._esc); o.remove(); }
+  graphState.overlay = null; graphFull = false;
+  for(const m of graphState.mounts) m.resume();
 }
 
 // Open one node's dossier below the canvas (reuses the timeline's insertDetail).

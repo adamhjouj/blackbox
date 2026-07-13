@@ -9,6 +9,12 @@
  * fully detailed:
  *  - session overview: prompt · file · commit · risk nodes (steps are aggregated).
  *  - single turn (`promptId`): prompt · every step · files · commits · risk.
+ *
+ * Every node also carries two lightweight layout hints, `rank` (its role in the
+ * causal flow) and `turn` (the turn it first appears in). These drive the hybrid
+ * force layout in the UI — prompts drift up, outcomes down, earlier turns left — so
+ * a busy session settles into a readable shape instead of a hairball. They are pure
+ * interpretation (derived from the story), never captured, never hashed.
  */
 import type { SessionStory } from './provenance';
 import type { ComboEvidence } from './read-api';
@@ -25,12 +31,18 @@ export interface GraphNode {
   seq: number | null;
   risk: boolean;
   degree: number;
+  /** Role in the causal flow: 0 prompt · 1 step · 2 file/entity · 3 commit. Drives the vertical (flow) bias. */
+  rank: number;
+  /** The turn index this node first appears in. Drives the horizontal (time) bias. */
+  turn: number;
 }
 export interface GraphEdge {
   from: string;
   to: string;
   type: EdgeType;
   risk: boolean;
+  /** How many times this exact relationship occurs — parallel edges are merged, not duplicated. */
+  weight: number;
 }
 export interface SessionGraph {
   session_id: string;
@@ -43,21 +55,33 @@ export interface SessionGraph {
 const basename = (p: string): string => p.split('/').filter(Boolean).pop() ?? p;
 const isRiskySignal = (sigs: FlagId[] | undefined): boolean => !!sigs && sigs.some((s) => RISK_FLAGS.has(s));
 
+// Role → vertical rank. Entities (file/host/secret/mcp) all sit on the "outcome" band.
+const RANK: Record<NodeType, number> = { prompt: 0, step: 1, file: 2, host: 2, secret: 2, mcp: 2, commit: 3 };
+
 export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptId?: string | null): SessionGraph {
   const nodes = new Map<string, GraphNode>();
-  const edges: GraphEdge[] = [];
+  const edgeMap = new Map<string, GraphEdge>();
   const detailed = !!promptId;
 
-  const addNode = (id: string, type: NodeType, label: string, seq: number | null, risk = false): void => {
+  const addNode = (id: string, type: NodeType, label: string, seq: number | null, risk = false, turn = 0): void => {
     const cur = nodes.get(id);
     if (cur) {
       if (risk) cur.risk = true;
+      if (turn < cur.turn) cur.turn = turn; // a shared entity anchors to its earliest turn
       return;
     }
-    nodes.set(id, { id, type, label, seq, risk, degree: 0 });
+    nodes.set(id, { id, type, label, seq, risk, degree: 0, rank: RANK[type], turn });
   };
   const addEdge = (from: string, to: string, type: EdgeType, risk = false): void => {
-    if (from !== to && nodes.has(from) && nodes.has(to)) edges.push({ from, to, type, risk });
+    if (from === to || !nodes.has(from) || !nodes.has(to)) return;
+    const k = JSON.stringify([from, to, type]);
+    const cur = edgeMap.get(k);
+    if (cur) {
+      cur.weight++;
+      if (risk) cur.risk = true;
+      return;
+    }
+    edgeMap.set(k, { from, to, type, risk, weight: 1 });
   };
 
   // seq → the node a risk combo should attach to. A step's seq AND its post_seq both
@@ -70,13 +94,13 @@ export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptI
   turns.forEach((t, ti) => {
     const pid = 'p:' + (t.prompt_id || '#' + ti);
     const plabel = t.prompt ? t.prompt.replace(/\s+/g, ' ').slice(0, 60) : 'turn ' + (ti + 1);
-    addNode(pid, 'prompt', plabel, t.steps[0]?.seq ?? null);
+    addNode(pid, 'prompt', plabel, t.steps[0]?.seq ?? null, false, ti);
 
     if (detailed) {
       let lastTask: string | null = null;
       for (const s of t.steps) {
         const sid = 's:' + s.seq;
-        addNode(sid, 'step', (s.summary || s.tool || s.type || 'step').slice(0, 40), s.post_seq ?? s.seq, isRiskySignal(s.signals));
+        addNode(sid, 'step', (s.summary || s.tool || s.type || 'step').slice(0, 40), s.post_seq ?? s.seq, isRiskySignal(s.signals), ti);
         if (s.is_subagent && lastTask) addEdge(lastTask, sid, 'spawned');
         else addEdge(pid, sid, 'caused');
         if (s.type === 'task_control') lastTask = sid;
@@ -88,7 +112,7 @@ export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptI
         }
         for (const f of s.files) {
           const fid = 'f:' + f.path;
-          addNode(fid, 'file', basename(f.path), f.seq);
+          addNode(fid, 'file', basename(f.path), f.seq, false, ti);
           addEdge(sid, fid, 'changed');
         }
       }
@@ -100,13 +124,13 @@ export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptI
       // overview: connect the prompt straight to the files it changed
       for (const f of t.files_changed) {
         const fid = 'f:' + f.path;
-        addNode(fid, 'file', basename(f.path), f.seq);
+        addNode(fid, 'file', basename(f.path), f.seq, false, ti);
         addEdge(pid, fid, 'changed');
       }
     }
     for (const c of t.commits) {
       const cid = 'c:' + c.seq;
-      addNode(cid, 'commit', ((c.sha ?? '').slice(0, 7) + ' ' + (c.subject ?? '')).trim() || 'commit', c.seq);
+      addNode(cid, 'commit', ((c.sha ?? '').slice(0, 7) + ' ' + (c.subject ?? '')).trim() || 'commit', c.seq, false, ti);
       addEdge(pid, cid, 'committed');
     }
   });
@@ -114,6 +138,10 @@ export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptI
   // risk combos → secret / host / mcp entities + the red exfil path. Anchor to the
   // step node (via seqToStep, incl. post_seq) when present, else the owning prompt.
   const anchorFor = (seq: number): string | null => seqToStep.get(seq) ?? seqToPrompt.get(seq) ?? null;
+  const turnOf = (id: string | null): number => {
+    const n = id ? nodes.get(id) : undefined;
+    return n ? n.turn : 0;
+  };
   const markRisk = (id: string | null): void => {
     if (id && nodes.has(id)) nodes.get(id)!.risk = true;
   };
@@ -125,13 +153,13 @@ export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptI
     if (!ant && !con) continue;
     if (cb.id === 'exfil-chain' || cb.id.startsWith('injected')) {
       const sec = 'sec:' + cb.antecedent_seq;
-      addNode(sec, 'secret', 'secret', cb.antecedent_seq, true);
+      addNode(sec, 'secret', 'secret', cb.antecedent_seq, true, turnOf(ant ?? con));
       markRisk(ant);
       markRisk(con);
       if (ant) addEdge(ant, sec, 'read', true);
       if (cb.host) {
         const h = 'host:' + cb.host;
-        addNode(h, 'host', cb.host, null, true);
+        addNode(h, 'host', cb.host, null, true, turnOf(con ?? ant));
         if (con) addEdge(con, h, 'sent', true);
         addEdge(sec, h, 'combo', true); // the drawn red path
       } else if (con) {
@@ -140,12 +168,13 @@ export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptI
     }
     if (cb.server) {
       const m = 'mcp:' + cb.server;
-      addNode(m, 'mcp', cb.server, null, true);
+      addNode(m, 'mcp', cb.server, null, true, turnOf(con ?? ant));
       const a = con || ant; // link the poisoned server to the step/prompt that used it
       if (a) addEdge(a, m, 'read', true);
     }
   }
 
+  const edges = [...edgeMap.values()];
   for (const e of edges) {
     const a = nodes.get(e.from);
     const b = nodes.get(e.to);

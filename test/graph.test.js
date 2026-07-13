@@ -127,6 +127,46 @@ test('an empty story graphs to nothing and JSON round-trips', () => {
   assert.doesNotThrow(() => JSON.stringify(g));
 });
 
+test('layout hints: nodes carry rank (role) and turn (time); edges carry weight', () => {
+  const g = buildGraph(STORY, [], 'P1');
+  const prompt = g.nodes.find((n) => n.type === 'prompt');
+  const step = g.nodes.find((n) => n.type === 'step');
+  const file = g.nodes.find((n) => n.type === 'file');
+  const commit = g.nodes.find((n) => n.type === 'commit');
+  assert.equal(prompt.rank, 0, 'prompt sits on the top band');
+  assert.equal(step.rank, 1);
+  assert.equal(file.rank, 2);
+  assert.equal(commit.rank, 3, 'commit sits on the bottom band');
+  assert.equal(prompt.turn, 0);
+  assert.ok(g.edges.every((e) => e.weight >= 1), 'every edge has a weight');
+});
+
+test('turn index advances across turns (drives the horizontal time bias)', () => {
+  const s = mkStory([mkTurn('P1', 'one', [mkStep(2, '/r/a.ts')]), mkTurn('P2', 'two', [mkStep(4, '/r/b.ts')])]);
+  const g = buildGraph(s, []);
+  assert.equal(g.nodes.find((n) => n.id === 'p:P1').turn, 0);
+  assert.equal(g.nodes.find((n) => n.id === 'p:P2').turn, 1);
+});
+
+test('a file shared across turns anchors to its earliest turn', () => {
+  const g = buildGraph(mkStory([mkTurn('P1', 'a', [mkStep(2, '/r/shared.ts')]), mkTurn('P2', 'b', [mkStep(4, '/r/shared.ts')])]), []);
+  assert.equal(g.nodes.find((n) => n.type === 'file').turn, 0, 'earliest-turn wins so its x-position is stable');
+});
+
+test('parallel identical relationships merge into one weighted edge (no double-draw)', () => {
+  // two identical exfil combos → the secret/host nodes dedup and their edges merge with weight 2
+  const dup = [
+    { id: 'exfil-chain', severity: 'high', antecedent_seq: 2, consequent_seq: 4, host: 'evil.com', note: 'x' },
+    { id: 'exfil-chain', severity: 'high', antecedent_seq: 2, consequent_seq: 4, host: 'evil.com', note: 'x' },
+  ];
+  const g = buildGraph(STORY, dup, 'P1');
+  const combo = g.edges.filter((e) => e.type === 'combo');
+  assert.equal(combo.length, 1, 'one merged combo edge, not two');
+  assert.equal(combo[0].weight, 2, 'weight records the multiplicity');
+  assert.equal(g.nodes.filter((n) => n.type === 'secret').length, 1);
+  assert.equal(g.nodes.filter((n) => n.type === 'host').length, 1);
+});
+
 test('a file changed across two turns is one node with degree 2 (overview dedup)', () => {
   const g = buildGraph(mkStory([mkTurn('P1', 'a', [mkStep(2, '/r/shared.ts')]), mkTurn('P2', 'b', [mkStep(4, '/r/shared.ts')])]), []);
   assert.equal(types(g.nodes).file, 1);
