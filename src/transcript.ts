@@ -49,7 +49,7 @@ function mergeUsage(acc: Record<string, number> | null, u: Record<string, unknow
  * it; otherwise uses the LAST assistant record's promptId (the just-finished turn —
  * the Stop payload may not carry a prompt_id). Returns null if nothing usable.
  */
-/** Read at most the last `tailBytes` of a file as UTF-8, dropping the partial
+/** Read at most the last `TAIL_BYTES` of a file as UTF-8, dropping the partial
  *  first line when the cut lands mid-line. Both transcript readers use this so
  *  neither loads a multi-MB `.jsonl` in full on the read/HTTP path. */
 function readTail(path: string): string | null {
