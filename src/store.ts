@@ -326,6 +326,32 @@ export class Store {
     return row ?? null;
   }
 
+  /** The newest event's {ts, hook_event}, or null if empty — for R5.2 downtime
+   *  detection (was the prior shutdown a clean DaemonStop, and when did we last
+   *  record anything?). Light: no `raw`. */
+  lastEventMeta(): { ts: string; hook_event: string } | null {
+    const row = this.db.prepare('SELECT ts, hook_event FROM events ORDER BY seq DESC LIMIT 1').get() as { ts: string; hook_event: string } | undefined;
+    return row ?? null;
+  }
+
+  /** R5.2 coverage windows: the [downtime_from → started] gaps recorded on each
+   *  DaemonStart, i.e. spans when the recorder was DOWN (nothing captured). */
+  coverageGaps(): { from: string; to: string; clean: boolean }[] {
+    const rows = this.db
+      .prepare("SELECT ts, detail FROM events WHERE session_id = 'bb:daemon' AND hook_event = 'DaemonStart' ORDER BY seq ASC")
+      .all() as { ts: string; detail: string | null }[];
+    const gaps: { from: string; to: string; clean: boolean }[] = [];
+    for (const r of rows) {
+      try {
+        const d = (JSON.parse(r.detail ?? '{}') as { daemon?: { downtime_from?: string; clean?: boolean } }).daemon;
+        if (d?.downtime_from) gaps.push({ from: d.downtime_from, to: r.ts, clean: !!d.clean });
+      } catch {
+        /* tolerate a malformed lifecycle detail */
+      }
+    }
+    return gaps;
+  }
+
   /** The persisted head anchor, or null if none has been written yet. */
   chainMeta(): ChainMeta | null {
     const row = this.db

@@ -381,6 +381,57 @@ export function worktreeBaseEvent(sessionId: string, delta: WorktreeDelta, captu
  * counts) with hook_event `EnvSnapshot` distinguishing it. Rule-inert by design
  * (redaction_count 0; no r1/r2 rule reads it) so inline vs rescore never drift.
  */
+/** Reserved session id for the daemon's own lifecycle facts (never a real UUID). */
+export const DAEMON_SESSION = 'bb:daemon';
+
+/**
+ * R5.2 — daemon lifecycle facts. `daemon_start`/`daemon_stop` are recorded in the
+ * chain like any other event, so a coverage LEDGER (when was the recorder up?)
+ * becomes re-derivable. Phases `session_start`/`session_end` are deliberate: they
+ * exclude these from the session-card activity count AND mark them signable
+ * boundaries (a clean shutdown checkpoints the head for free). daemon_stop is
+ * best-effort (SIGKILL/crash produces none) — which is exactly what makes the
+ * startup downtime-window logic honest.
+ */
+function daemonEvent(hookEvent: 'DaemonStart' | 'DaemonStop', phase: Phase, detail: Record<string, unknown>, capturedAt: string): NormalizedEvent {
+  return {
+    event_id: randomUUID(),
+    session_id: DAEMON_SESSION,
+    tool_use_id: null,
+    prompt_id: null,
+    phase,
+    hook_event: hookEvent,
+    tool_name: null,
+    action_type: 'session',
+    target: null,
+    agent_id: null,
+    agent_type: 'bb.daemon',
+    cwd: null,
+    permission_mode: null,
+    success: null,
+    duration_ms: null,
+    ts: capturedAt,
+    captured_at: capturedAt,
+    raw: JSON.stringify({ kind: hookEvent }),
+    output_hash: null,
+    output_size_bytes: null,
+    redaction_count: 0,
+    detail: JSON.stringify({ daemon: detail }),
+  };
+}
+
+/** Daemon came up. `detail.daemon.downtime_from` (when set) is the ts of the last
+ *  event before an UNCLEAN prior shutdown — the start of a recording gap. */
+export function daemonStartEvent(detail: Record<string, unknown>, capturedAt: string): NormalizedEvent {
+  return daemonEvent('DaemonStart', 'session_start', detail, capturedAt);
+}
+
+/** Daemon shutting down cleanly (SIGTERM/SIGINT). Its absence before a DaemonStart
+ *  means the prior run crashed or was killed → an unattributed coverage gap. */
+export function daemonStopEvent(detail: Record<string, unknown>, capturedAt: string): NormalizedEvent {
+  return daemonEvent('DaemonStop', 'session_end', detail, capturedAt);
+}
+
 export function envSnapshotEvent(sessionId: string, env: EnvSnapshot, capturedAt: string): NormalizedEvent {
   return {
     event_id: randomUUID(),

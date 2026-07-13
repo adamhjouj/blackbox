@@ -11,7 +11,7 @@ import {
 } from './git-collector';
 import { sessionAnchor } from './mutation';
 import { collectEnv } from './envsnap';
-import { envSnapshotEvent, normalize, normalizeAndCapture, reasoningEvent, worktreeBaseEvent, worktreeDeltaEvent } from './normalize';
+import { daemonStartEvent, daemonStopEvent, envSnapshotEvent, normalize, normalizeAndCapture, reasoningEvent, worktreeBaseEvent, worktreeDeltaEvent } from './normalize';
 import { emitReceipt, loadAnchorConfig, receiptFromSignature } from './anchor';
 import { persistReconciliation } from './reconcile';
 import { readTurnIntent } from './transcript';
@@ -510,6 +510,18 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     server.listen(port, '127.0.0.1', () => {
       server.removeListener('error', onError);
       log(`listening on 127.0.0.1:${port} (db ${opts.db})`);
+      // R5.2 coverage ledger: record daemon_start. If the last event wasn't a clean
+      // DaemonStop, the prior run crashed/was killed → a recording GAP from that
+      // event's ts to now (downtime_from). A signable boundary, so signNow() below
+      // checkpoints it. Synchronous + guarded — never blocks/fails the listen.
+      try {
+        const lastMeta = store.lastEventMeta();
+        const clean = lastMeta?.hook_event === 'DaemonStop';
+        const at = new Date().toISOString();
+        store.append(daemonStartEvent({ pid: process.pid, port, node: process.version, started: at, downtime_from: lastMeta?.ts ?? null, clean }, at));
+      } catch (err) {
+        log(`daemon_start record failed: ${(err as Error).message}`);
+      }
       // Best-effort: score any sessions recorded before Phase 3 (or while a
       // non-scoring binary ran). Deferred off the startup path.
       setImmediate(() => {
@@ -532,6 +544,15 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
         close: () =>
           new Promise<void>((res) => {
             server.close(() => {
+              // R5.2: record a clean shutdown (its absence before the next
+              // DaemonStart is what marks an unclean gap) + checkpoint it.
+              try {
+                const at = new Date().toISOString();
+                store.append(daemonStopEvent({ pid: process.pid, port, node: process.version, stopped: at }, at));
+                if (signingKeys) signNow();
+              } catch (err) {
+                log(`daemon_stop record failed: ${(err as Error).message}`);
+              }
               store.close();
               res();
             });
