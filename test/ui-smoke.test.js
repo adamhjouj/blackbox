@@ -43,10 +43,11 @@ test('CLIENT_JS honours the template-literal safety convention', () => {
   assert.equal(js.indexOf('${'), -1, 'CLIENT_JS must contain NO ${ interpolation');
 });
 
-test('the emitted page carries the timeline filter controls', () => {
+test('the emitted page carries the session filter + navigation controls', () => {
   const js = clientJs(renderPage());
-  // the filter feature must actually be wired into the shipped client script.
-  for (const needle of ['buildFilterBar', 'applyFilter', 'rowMatches', 'jumpNext', 'fltFlagged', 'refreshTools']) {
+  // the filter/navigation feature must actually be wired into the shipped client
+  // script (helper names track the current single Session view).
+  for (const needle of ['buildFilterBar', 'applyFilter', 'turnMatchesRec', 'jumpNext', 'isFlaggedTurn', 'refreshToolsFromTurns']) {
     assert.ok(js.indexOf(needle) >= 0, 'CLIENT_JS should reference ' + needle);
   }
 });
