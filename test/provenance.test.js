@@ -31,9 +31,9 @@ function act(o = {}) {
 }
 const mut = (insertions, deletions, kind = 'patch', extra = {}) => ({ mutation: { kind, diffstat: { files: 1, insertions, deletions }, stored: true, ...extra } });
 
-function story(actions, detail = {}) {
+function story(actions, detail = {}, recoveredTurns = new Map()) {
   const detailBySeq = new Map(Object.entries(detail).map(([k, v]) => [Number(k), v]));
-  return buildStory({ session_id: 'S', name: 'demo', cwd: '/repo', verdict: 'low', actions, detailBySeq });
+  return buildStory({ session_id: 'S', name: 'demo', cwd: '/repo', verdict: 'low', actions, detailBySeq, recoveredTurns });
 }
 
 // ---- the headline: prompt → steps → files + commit, subagent nested --------
@@ -88,6 +88,51 @@ test('sessions recorded before prompt capture still split into turns by prompt_i
   assert.equal(s.turns.length, 2);
   assert.deepEqual(s.turns.map((t) => t.prompt_id), ['PX', 'PY']);
   assert.deepEqual(s.turns.map((t) => t.prompt), [null, null]); // intent unknown, honestly
+  assert.deepEqual(s.turns.map((t) => t.title_source), ['recorded_action', 'recorded_action']);
+  assert.ok(s.turns.every((t) => t.display_title.startsWith('Prompt unavailable ·')));
+});
+
+test('recovered prompt/reasoning fill gaps, while persisted prompt remains authoritative', () => {
+  const actions = [
+    act({ seq: 1, phase: 'prompt', hook_event: 'UserPromptSubmit', type: 'session', tool: null, prompt_id: 'P1' }),
+    act({ seq: 2, post_seq: 3, summary: 'edited a.ts', target: '/repo/a.ts', prompt_id: 'P1' }),
+    act({ seq: 4, post_seq: 5, summary: 'inspected b.ts', target: '/repo/b.ts', prompt_id: 'P2', agent_type: 'Explore' }),
+  ];
+  const recovered = new Map([
+    ['P1', { prompt: 'wrong recovered prompt', reasoning: 'recovered explanation', model: 'm1', usage: { output_tokens: 4 }, stop_reason: 'end_turn', assistant_messages: 1 }],
+    ['P2', { prompt: 'inspect the fallback', reasoning: 'subagent explanation', model: 'm2', usage: null, stop_reason: null, assistant_messages: 1 }],
+  ]);
+  const s = story(actions, { 1: { prompt: 'captured prompt' } }, recovered);
+  assert.equal(s.turns[0].prompt, 'captured prompt');
+  assert.equal(s.turns[0].reasoning, 'recovered explanation');
+  assert.equal(s.turns[0].display_title, 'captured prompt');
+  assert.equal(s.turns[0].title_source, 'captured_prompt');
+  assert.equal(s.turns[1].prompt, 'inspect the fallback');
+  assert.equal(s.turns[1].display_title, 'inspect the fallback');
+  assert.equal(s.turns[1].title_source, 'recovered_prompt');
+});
+
+test('lifecycle rows are not steps; pure containers drop but answer-only turns remain', () => {
+  const actions = [
+    act({ seq: 1, phase: 'session_start', hook_event: 'SessionStart', type: 'session', tool: null, prompt_id: null }),
+    act({ seq: 2, phase: 'stop', hook_event: 'Stop', type: 'session', tool: null, prompt_id: 'ANSWER' }),
+    act({ seq: 3, phase: 'other', hook_event: 'SubagentStop', type: 'session', tool: null, prompt_id: 'SYSTEM' }),
+  ];
+  const recovered = new Map([
+    ['ANSWER', { prompt: 'explain without tools', reasoning: 'Here is the explanation.', model: 'm', usage: null, stop_reason: 'end_turn', assistant_messages: 1 }],
+  ]);
+  const s = story(actions, {}, recovered);
+  assert.equal(s.turns.length, 1, 'only the answer-bearing turn remains');
+  assert.equal(s.turns[0].prompt_id, 'ANSWER');
+  assert.equal(s.turns[0].steps.length, 0, 'Stop is not an agent step');
+  assert.deepEqual(s.counts, { turns: 1, steps: 0, files: 0, commits: 0 });
+});
+
+test('a truly unavailable subagent prompt gets an honest deterministic action title', () => {
+  const s = story([act({ seq: 1, post_seq: 2, summary: 'Inspected the risk engine.', type: 'file_read', tool: 'Read', target: '/repo/risk.ts', prompt_id: 'SUB', agent_type: 'Explore' })]);
+  assert.equal(s.turns[0].prompt, null);
+  assert.equal(s.turns[0].display_title, 'Subagent work · Inspected the risk engine.');
+  assert.equal(s.turns[0].title_source, 'subagent_action');
 });
 
 // ---- files-changed rollup sums churn and keeps the latest drill-in seq ------

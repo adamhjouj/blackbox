@@ -13,7 +13,7 @@ function mkStep(seq, target, o = {}) {
 function mkTurn(pid, prompt, steps, commits = [], o = {}) {
   const files = [];
   for (const s of steps) for (const f of s.files) files.push(f);
-  return { prompt_id: pid, prompt, reasoning: null, turn_meta: null, started_at: 't', ended_at: 't', steps, files_changed: files, commits, flags: {}, flagged: o.flagged || 0, max_score: 0 };
+  return { prompt_id: pid, prompt, reasoning: null, turn_meta: null, display_title: o.display_title || prompt || 'Prompt unavailable · recorded work', title_source: prompt ? 'captured_prompt' : 'recorded_action', started_at: 't', ended_at: 't', steps, files_changed: files, commits, flags: {}, flagged: o.flagged || 0, max_score: 0 };
 }
 const mkStory = (turns, o = {}) => ({ session_id: 'S', name: o.name || 'test session', cwd: '/r', verdict: o.verdict || 'none', turns, files_changed: [], commits: [], counts: {}, reconciliation: null });
 const nodesByKind = (tv, kind) => tv.nodes.filter((n) => n.kind === kind);
@@ -127,6 +127,13 @@ test('the root selector lists findings first, then turns', () => {
   const tv = buildTrace(mkStory([mkTurn('P1', 'risky', steps, [], { flagged: 2 })]), combos, { whole: true });
   assert.equal(tv.roots[0].kind, 'finding', 'findings come first in the selector');
   assert.ok(tv.roots.some((r) => r.kind === 'prompt'), 'turns follow');
+});
+
+test('prompt nodes and root options use the story display_title verbatim', () => {
+  const turn = mkTurn('P1', null, [mkStep(2, '/r/a.ts')], [], { display_title: 'Subagent work · inspected a.ts' });
+  const tv = buildTrace(mkStory([turn]), [], { whole: true });
+  assert.equal(nodesByKind(tv, 'prompt')[0].label, 'Subagent work · inspected a.ts');
+  assert.equal(tv.roots.find((r) => r.kind === 'prompt').label, 'Subagent work · inspected a.ts');
 });
 
 test('every node is positioned inside the reported bounds and layers only increase along edges', () => {

@@ -48,6 +48,21 @@ test('daemon: recording, read API, and the security gauntlet', async () => {
     assert.equal(sessions.status, 200);
     assert.ok(sessions.body.includes('SESS1'), 'the recorded session should appear in the read API');
 
+    // ---- local-only dashboard profile suggestion ----
+    const profile = await req(TEST_PORT, 'GET', '/api/profile');
+    assert.equal(profile.status, 200);
+    assert.match(JSON.parse(profile.body).display_name, /^\S(?:.*\S)?$/);
+
+    // ---- the read-only investigation graph remains available as a deterministic projection ----
+    const trace = await req(TEST_PORT, 'GET', '/api/session/SESS1/trace?depth=2');
+    assert.equal(trace.status, 200);
+    const traceBody = JSON.parse(trace.body);
+    assert.equal(traceBody.session_id, 'SESS1');
+    assert.ok(Array.isArray(traceBody.nodes));
+    assert.ok(Array.isArray(traceBody.edges));
+    assert.equal(traceBody.counts.nodes, traceBody.nodes.length);
+    assert.equal(traceBody.counts.edges, traceBody.edges.length);
+
     // ---- content-type gate: /hook requires application/json ----
     const badCt = await req(TEST_PORT, 'POST', '/hook', { headers: { 'content-type': 'text/plain' }, body: 'x' });
     assert.equal(badCt.status, 415);

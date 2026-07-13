@@ -1,5 +1,6 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import {
   Correlator,
   classify,
@@ -56,6 +57,18 @@ function sendJson(res: http.ServerResponse, code: number, obj: unknown): void {
   const body = JSON.stringify(obj);
   res.writeHead(code, { 'content-type': 'application/json', 'x-content-type-options': 'nosniff' });
   res.end(body);
+}
+
+function localDisplayName(): string {
+  let username = '';
+  try { username = os.userInfo().username; } catch { /* fall through */ }
+  const words = username
+    .replace(/[._-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1));
+  return words.join(' ') || 'there';
 }
 
 /**
@@ -436,6 +449,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           }
           if (path === '/api/sessions') {
             sendJson(res, 200, sessionCards(store));
+            return;
+          }
+          // Local-only dashboard personalisation. The browser may override this
+          // suggestion in localStorage; no profile value enters the forensic DB.
+          if (path === '/api/profile') {
+            sendJson(res, 200, { display_name: localDisplayName() });
             return;
           }
           // R3: chain integrity + signature status for the forensic badge. Read-only

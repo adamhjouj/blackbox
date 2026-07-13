@@ -640,13 +640,16 @@ export class Store {
   }
 
   /** Run an FTS MATCH; returns hits newest-first with a highlighted snippet. */
-  searchQuery(match: string, limit: number): { seq: number; session_id: string; kind: string; ts: string; snippet: string }[] {
+  searchQuery(match: string, limit: number): { seq: number; session_id: string; kind: string; ts: string; snippet: string; prompt_id: string | null }[] {
     return this.db
       .prepare(
-        `SELECT seq, session_id, kind, ts, snippet(search_idx, 0, '[', ']', '…', 10) AS snippet
-           FROM search_idx WHERE search_idx MATCH ? ORDER BY seq DESC LIMIT ?`,
+        `SELECT search_idx.seq, search_idx.session_id, search_idx.kind, search_idx.ts,
+                snippet(search_idx, 0, '[', ']', '…', 10) AS snippet,
+                events.prompt_id
+           FROM search_idx LEFT JOIN events ON events.seq = search_idx.seq
+          WHERE search_idx MATCH ? ORDER BY search_idx.seq DESC LIMIT ?`,
       )
-      .all(match, limit) as { seq: number; session_id: string; kind: string; ts: string; snippet: string }[];
+      .all(match, limit) as { seq: number; session_id: string; kind: string; ts: string; snippet: string; prompt_id: string | null }[];
   }
 
   // ---- R2 reconciliation layer -------------------------------------------

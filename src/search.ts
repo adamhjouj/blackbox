@@ -21,6 +21,8 @@ export interface SearchHit {
   kind: string;
   ts: string;
   snippet: string;
+  /** Turn join key for prompt/reasoning/action deep links. */
+  prompt_id: string | null;
 }
 
 /** The indexable (redacted) text + a coarse kind for one event, or null if empty. */

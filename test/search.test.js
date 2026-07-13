@@ -60,7 +60,9 @@ test('prompts are searchable', () => {
     prompt(store, 'please refactor the payment reconciliation module');
     indexNew(store);
     const { hits } = search(store, 'reconciliation');
-    assert.ok(hits.some((h) => h.kind === 'prompt'));
+    const hit = hits.find((h) => h.kind === 'prompt');
+    assert.ok(hit);
+    assert.match(hit.prompt_id, /^P\d+$/, 'search hits carry the turn join key for deep navigation');
   } finally {
     store.cleanup();
   }

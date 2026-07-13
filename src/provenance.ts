@@ -17,6 +17,7 @@ import type { Action } from './read-api';
 import type { Coverage, Discrepancy } from './reconcile';
 import type { FlagId } from './risk-rules';
 import { RISK_FLAGS } from './risk-rules';
+import type { TranscriptTurnFacts } from './transcript';
 
 /** R2 reconciliation summary attached to the story (populated by read-api). */
 export interface ReconSummary {
@@ -96,6 +97,10 @@ export interface Turn {
   prompt: string | null; // null for pre-capture sessions or lifecycle preamble
   reasoning: string | null; // R1: the agent's redacted reasoning digest (the "why")
   turn_meta: TurnMeta | null; // R1: model + token usage for the turn
+  /** Concise, nonempty navigation label. It is either an exact prompt projection
+   * or an explicitly-labelled fact-based fallback; never an invented prompt. */
+  display_title: string;
+  title_source: 'captured_prompt' | 'recovered_prompt' | 'assistant_explanation' | 'subagent_action' | 'recorded_action' | 'commit';
   started_at: string;
   ended_at: string;
   steps: StoryStep[];
@@ -137,6 +142,9 @@ export interface StoryInput {
   verdict: string;
   actions: Action[]; // Pre/Post-paired timeline (from sessionActions)
   detailBySeq: Map<number, EventDetail>; // parsed detail per event seq (from eventsLight)
+  /** Optional redacted/bounded local transcript recovery. Read-time only: these
+   * facts never alter the immutable event chain. Persisted detail wins. */
+  recoveredTurns?: ReadonlyMap<string, TranscriptTurnFacts>;
 }
 
 const isMain = (agentType: string | null): boolean => !agentType || agentType === 'main';
@@ -192,7 +200,54 @@ function rollup(files: FileChange[]): FileChange[] {
 }
 
 function newTurn(prompt_id: string | null, prompt: string | null, at: string): Turn {
-  return { prompt_id, prompt, reasoning: null, turn_meta: null, started_at: at, ended_at: at, steps: [], files_changed: [], commits: [], flags: {}, flagged: 0, max_score: 0 };
+  return {
+    prompt_id,
+    prompt,
+    reasoning: null,
+    turn_meta: null,
+    display_title: '',
+    title_source: 'recorded_action',
+    started_at: at,
+    ended_at: at,
+    steps: [],
+    files_changed: [],
+    commits: [],
+    flags: {},
+    flagged: 0,
+    max_score: 0,
+  };
+}
+
+const oneLine = (value: string): string => value.replace(/\s+/g, ' ').trim();
+const titleText = (value: string, max = 180): string => {
+  const points = Array.from(oneLine(value));
+  return points.length > max ? points.slice(0, max).join('') + '…' : points.join('');
+};
+
+function titleTurn(turn: Turn, recoveredPrompt: boolean): void {
+  if (turn.prompt) {
+    turn.display_title = titleText(turn.prompt);
+    turn.title_source = recoveredPrompt ? 'recovered_prompt' : 'captured_prompt';
+    return;
+  }
+  if (turn.reasoning) {
+    turn.display_title = titleText('Agent response · ' + turn.reasoning);
+    turn.title_source = 'assistant_explanation';
+    return;
+  }
+  const first = turn.steps[0];
+  if (first) {
+    const fact = first.summary || first.target || first.tool || first.type || 'Recorded action';
+    const subagentOnly = turn.steps.every((step) => step.is_subagent);
+    turn.display_title = titleText((subagentOnly ? 'Subagent work · ' : 'Prompt unavailable · ') + fact);
+    turn.title_source = subagentOnly ? 'subagent_action' : 'recorded_action';
+    return;
+  }
+  const commit = turn.commits[0];
+  if (commit) {
+    turn.display_title = titleText('Commit · ' + (commit.subject || commit.sha || commit.ref || 'recorded change'));
+    turn.title_source = 'commit';
+  }
 }
 
 /**
@@ -201,8 +256,24 @@ function newTurn(prompt_id: string | null, prompt: string | null, at: string): T
  */
 export function buildStory(input: StoryInput): SessionStory {
   const { actions, detailBySeq } = input;
+  const recoveredTurns = input.recoveredTurns ?? new Map<string, TranscriptTurnFacts>();
   const turns: Turn[] = [];
+  const byPrompt = new Map<string, Turn>();
   let current: Turn | null = null;
+
+  const ensureTurn = (promptId: string | null, prompt: string | null, at: string): Turn => {
+    const existing = promptId ? byPrompt.get(promptId) : null;
+    if (existing) {
+      if (!existing.prompt && prompt) existing.prompt = prompt;
+      current = existing;
+      return existing;
+    }
+    const created = newTurn(promptId, prompt, at);
+    turns.push(created);
+    if (promptId) byPrompt.set(promptId, created);
+    current = created;
+    return created;
+  };
 
   for (const a of actions) {
     // Prompt/git/lifecycle facts ride on the event's own seq; a mutation fact is
@@ -212,15 +283,14 @@ export function buildStory(input: StoryInput): SessionStory {
 
     // A UserPromptSubmit opens a new turn and carries its intent.
     if (a.phase === 'prompt') {
-      current = newTurn(a.prompt_id, d?.prompt ?? null, a.ts);
-      turns.push(current);
+      ensureTurn(a.prompt_id, d?.prompt ?? null, a.ts);
       continue;
     }
 
     // R1: a reasoning event attaches to its turn (by prompt_id) — never a step, never
     // a new turn. It's appended async after Stop, so it can arrive out of seq order.
     if (a.phase === 'reasoning') {
-      const t = turns.find((x) => x.prompt_id === a.prompt_id) ?? current;
+      const t = a.prompt_id ? byPrompt.get(a.prompt_id) ?? ensureTurn(a.prompt_id, null, a.ts) : current;
       if (t) {
         if (d?.reasoning) t.reasoning = d.reasoning;
         if (d?.turn_meta) t.turn_meta = d.turn_meta;
@@ -228,25 +298,33 @@ export function buildStory(input: StoryInput): SessionStory {
       continue;
     }
 
+    // Lifecycle rows set turn boundaries but are not actions the agent took. Keep
+    // an answer-only historical turn only when the transcript has real content for
+    // its prompt_id; otherwise do not promote system containers into Activity.
+    if (a.type === 'session') {
+      const recovered = a.prompt_id ? recoveredTurns.get(a.prompt_id) : null;
+      const existing = a.prompt_id ? byPrompt.get(a.prompt_id) : null;
+      if (existing) current = existing;
+      else if (a.prompt_id && (recovered?.prompt || recovered?.reasoning)) ensureTurn(a.prompt_id, null, a.ts);
+      if (current && (!a.prompt_id || current.prompt_id === a.prompt_id)) current.ended_at = a.ts;
+      continue;
+    }
+
     // A real tool step whose prompt_id starts a new turn we haven't opened yet
     // (pre-capture sessions have no prompt events; git/lifecycle rows have a null
     // prompt_id and stay in the active turn).
-    if (a.prompt_id && (!current || current.prompt_id !== a.prompt_id)) {
-      current = newTurn(a.prompt_id, null, a.ts);
-      turns.push(current);
-    }
+    let active = current;
+    if (a.prompt_id && (!active || active.prompt_id !== a.prompt_id)) active = ensureTurn(a.prompt_id, null, a.ts);
     // Events before any prompt/turn (session-start preamble) get a headless turn.
-    if (!current) {
-      current = newTurn(null, null, a.ts);
-      turns.push(current);
-    }
+    if (!active) active = ensureTurn(null, null, a.ts);
+    current = active;
 
-    current.ended_at = a.ts;
+    active.ended_at = a.ts;
 
     // A commit is an outcome of the turn, not a step in it.
     const commit = commitFrom(a, d);
     if (commit) {
-      current.commits.push(commit);
+      active.commits.push(commit);
       continue;
     }
 
@@ -267,18 +345,51 @@ export function buildStory(input: StoryInput): SessionStory {
       is_subagent: !isMain(a.agent_type),
       files: file ? [file] : [],
     };
-    current.steps.push(step);
+    active.steps.push(step);
 
-    for (const s of a.signals) if (RISK_FLAGS.has(s)) current.flags[s] = (current.flags[s] ?? 0) + 1;
-    if (a.signals.some((s) => RISK_FLAGS.has(s))) current.flagged += 1;
-    if (a.score > current.max_score) current.max_score = a.score;
+    for (const s of a.signals) if (RISK_FLAGS.has(s)) active.flags[s] = (active.flags[s] ?? 0) + 1;
+    if (a.signals.some((s) => RISK_FLAGS.has(s))) active.flagged += 1;
+    if (a.score > active.max_score) active.max_score = a.score;
   }
+
+  // Persisted prompt/reasoning facts are authoritative. Fill only their gaps from
+  // the safely redacted, bounded transcript projection and mark the label source.
+  const recoveredPromptIds = new Set<string>();
+  for (const turn of turns) {
+    if (!turn.prompt_id) continue;
+    const recovered = recoveredTurns.get(turn.prompt_id);
+    if (!recovered) continue;
+    if (!turn.prompt && recovered.prompt) {
+      turn.prompt = recovered.prompt;
+      recoveredPromptIds.add(turn.prompt_id);
+    }
+    if (!turn.reasoning && recovered.reasoning) turn.reasoning = recovered.reasoning;
+    if (!turn.turn_meta && (recovered.model || recovered.usage || recovered.stop_reason || recovered.assistant_messages)) {
+      turn.turn_meta = {
+        model: recovered.model,
+        usage: recovered.usage,
+        stop_reason: recovered.stop_reason,
+        assistant_messages: recovered.assistant_messages,
+      };
+    } else if (turn.turn_meta) {
+      turn.turn_meta = {
+        model: turn.turn_meta.model ?? recovered.model,
+        usage: turn.turn_meta.usage ?? recovered.usage,
+        stop_reason: turn.turn_meta.stop_reason ?? recovered.stop_reason,
+        assistant_messages: turn.turn_meta.assistant_messages ?? recovered.assistant_messages,
+      };
+    }
+  }
+
+  // Pure lifecycle containers disappear; prompt-only and answer-only turns remain.
+  const retained = turns.filter((turn) => !!turn.prompt || !!turn.reasoning || turn.steps.length > 0 || turn.commits.length > 0);
+  for (const turn of retained) titleTurn(turn, !!turn.prompt_id && recoveredPromptIds.has(turn.prompt_id));
 
   // Roll up files per turn and for the whole session.
   const allFiles: FileChange[] = [];
   const allCommits: Commit[] = [];
   let stepCount = 0;
-  for (const t of turns) {
+  for (const t of retained) {
     const files = t.steps.flatMap((s) => s.files);
     t.files_changed = rollup(files);
     allFiles.push(...files);
@@ -292,10 +403,10 @@ export function buildStory(input: StoryInput): SessionStory {
     name: input.name,
     cwd: input.cwd,
     verdict: input.verdict,
-    turns,
+    turns: retained,
     files_changed: sessionFiles,
     commits: allCommits,
-    counts: { turns: turns.length, steps: stepCount, files: sessionFiles.length, commits: allCommits.length },
+    counts: { turns: retained.length, steps: stepCount, files: sessionFiles.length, commits: allCommits.length },
     reconciliation: null, // read-api attaches the persisted R2 summary
   };
 }

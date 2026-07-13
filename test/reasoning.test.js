@@ -4,10 +4,10 @@
 // Requires dist/.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { writeFileSync, mkdtempSync } = require('node:fs');
+const { appendFileSync, mkdirSync, writeFileSync, mkdtempSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { readTurnIntent } = require('../dist/transcript.js');
+const { readTurnIntent, recoverSessionTurns } = require('../dist/transcript.js');
 const { reasoningEvent, normalizeAndCapture } = require('../dist/normalize.js');
 const { sessionStory } = require('../dist/read-api.js');
 const { verify } = require('../dist/verify.js');
@@ -51,6 +51,43 @@ test('readTurnIntent with no promptId uses the last turn; unknown/missing → nu
   assert.equal(readTurnIntent(p).promptId, 'P2'); // last assistant record
   assert.equal(readTurnIntent(p, 'NOPE'), null);
   assert.equal(readTurnIntent('/no/such/file.jsonl'), null);
+});
+
+test('read-time recovery scans main + safe sidechains, ignores tool results, redacts, bounds, and caches', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bb-recover-'));
+  const main = join(dir, 'S.jsonl');
+  const longPrompt = 'fix this with key ' + SECRET + ' ' + '🙂'.repeat(2100);
+  const longReasoning = 'agent explanation uses ' + SECRET + ' ' + 'x'.repeat(5000);
+  writeFileSync(main, [
+    { type: 'user', promptId: 'P1', message: { role: 'user', content: longPrompt } },
+    { type: 'assistant', message: { model: 'model-main', usage: { output_tokens: 7 }, content: [{ type: 'text', text: longReasoning }] } },
+    { type: 'user', promptId: 'P2', message: { role: 'user', content: [{ type: 'tool_result', content: 'THIS IS OUTPUT, NOT A PROMPT' }] } },
+    { type: 'assistant', message: { model: 'model-main', content: [{ type: 'text', text: 'continued after the tool result' }] } },
+  ].map(JSON.stringify).join('\n') + '\n');
+
+  const sideDir = join(dir, 'S', 'subagents', 'workflows', 'wf-1');
+  mkdirSync(sideDir, { recursive: true });
+  writeFileSync(join(sideDir, 'agent-a.jsonl'), [
+    { type: 'user', promptId: 'P3', message: { role: 'user', content: [{ type: 'text', text: 'inspect the graph' }] } },
+    { type: 'assistant', message: { model: 'model-side', usage: { output_tokens: 3 }, content: [{ type: 'text', text: 'graph inspection complete' }] } },
+  ].map(JSON.stringify).join('\n') + '\n');
+
+  const first = recoverSessionTurns(main, 'S');
+  const p1 = first.turns.get('P1');
+  assert.ok(p1.prompt.includes('[REDACTED'), 'recovered prompt is redacted');
+  assert.ok(!p1.prompt.includes(SECRET));
+  assert.ok(Array.from(p1.prompt).length <= 2001, 'prompt is code-point bounded plus ellipsis');
+  assert.ok(p1.reasoning.includes('[REDACTED'), 'recovered explanation is redacted');
+  assert.ok(Array.from(p1.reasoning).length <= 4001, 'reasoning is code-point bounded plus ellipsis');
+  assert.equal(first.turns.get('P2').prompt, null, 'tool_result body is never promoted to a prompt');
+  assert.match(first.turns.get('P2').reasoning, /continued after the tool result/);
+  assert.equal(first.turns.get('P3').prompt, 'inspect the graph', 'local sidechain prompt is recovered');
+  assert.strictEqual(recoverSessionTurns(main, 'S'), first, 'unchanged files hit the recovery cache');
+
+  appendFileSync(main, JSON.stringify({ type: 'user', promptId: 'P4', message: { role: 'user', content: 'new prompt' } }) + '\n');
+  const changed = recoverSessionTurns(main, 'S');
+  assert.notEqual(changed.fingerprint, first.fingerprint, 'file change invalidates the cache');
+  assert.equal(changed.turns.get('P4').prompt, 'new prompt');
 });
 
 test('reasoningEvent redacts a secret in the reasoning before persistence', () => {
@@ -130,6 +167,35 @@ test('the story surfaces reasoning + model on the turn (not as a step); hash-neu
     // reasoning is NOT a step — the only step is the edit
     assert.equal(s.turns[0].steps.length, 1);
     assert.equal(s.turns[0].steps[0].target, '/r/cfg.ts');
+  } finally {
+    store.cleanup();
+  }
+});
+
+test('sessionStory recovers an old prompt + explanation at read time without mutating the chain', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bb-old-turn-'));
+  const transcript = join(dir, 'OLD.jsonl');
+  writeFileSync(transcript, [
+    { type: 'user', promptId: 'P-old', message: { role: 'user', content: 'recover the old prompt' } },
+    { type: 'assistant', message: { model: 'model-old', usage: { output_tokens: 9 }, content: [{ type: 'text', text: 'I inspected the old session' }] } },
+  ].map(JSON.stringify).join('\n') + '\n');
+  const store = tempStore();
+  try {
+    const pre = normalizeAndCapture({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/r/a.ts' }, session_id: 'OLD', tool_use_id: 'tu-old', prompt_id: 'P-old', transcript_path: transcript }, AT);
+    const post = normalizeAndCapture({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { file_path: '/r/a.ts' }, tool_response: 'ok', session_id: 'OLD', tool_use_id: 'tu-old', prompt_id: 'P-old', transcript_path: transcript }, AT);
+    store.append(pre.event, pre.blob);
+    store.append(post.event, post.blob);
+    const before = store.events('OLD').length;
+    const s = sessionStory(store, 'OLD');
+    assert.equal(s.turns.length, 1);
+    assert.equal(s.turns[0].prompt, 'recover the old prompt');
+    assert.equal(s.turns[0].reasoning, 'I inspected the old session');
+    assert.equal(s.turns[0].turn_meta.model, 'model-old');
+    assert.equal(s.turns[0].title_source, 'recovered_prompt');
+    assert.equal(s.turns[0].display_title, 'recover the old prompt');
+    assert.equal(s.turns[0].steps.length, 1);
+    assert.equal(store.events('OLD').length, before, 'read-time recovery appends no events');
+    assert.ok(verify(store).ok);
   } finally {
     store.cleanup();
   }

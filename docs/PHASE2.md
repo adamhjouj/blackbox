@@ -1,55 +1,53 @@
-# Phase 2 — the timeline UI (built)
+# Phase 2 — the Blackbox viewer (built)
 
-The first human surface. Phases 0–1 produce a tamper-evident, redacted event stream; Phase 2 makes it *viewable* — a local, browsable, single-session timeline served from the daemon, with lightweight risk signals highlighted.
+The viewer turns the tamper-evident event stream into a personal, local session dashboard. It is served by the recorder daemon and remains a zero-runtime-dependency, self-contained page.
 
 ## Use it
 
 ```bash
-blackbox start        # daemon must be running
-blackbox ui           # opens http://127.0.0.1:7842/ in your browser
+blackbox start
+blackbox ui           # http://127.0.0.1:7842/
 ```
 
-## What's here
+## Information architecture
 
-| Piece | File | Role |
-|---|---|---|
-| **Signals** | `signals.ts` | Read-side flags derived from data already stored — `failed`, `secret-touch`, `destructive-git`, `dangerous-shell`, `new-mcp-server`. No scores/versioning/combos (that's Phase 3); this is the honest subset the data supports. |
-| **Read API** | `read-api.ts` | `sessionCards` (per-session signal counts), `sessionActions` (Pre/Post paired by `tool_use_id`, signals attached), `eventDetail` (full redacted input, output hash, git detail, chain hashes). |
-| **Page** | `ui-page.ts` | One self-contained HTML/CSS/JS page — no framework, no build step. Session rail → paired timeline with risk chips → click a row to expand full detail. |
-| **Routes** | `daemon.ts` | `GET /` (the page) + `GET /api/sessions`, `/api/session/:id/events`, `/api/event/:seq`. |
-| **Command** | `cli.ts` | `blackbox ui` opens the browser. |
+- **Dashboard (`#/`)** — local welcome name, recorder status, global session/evidence search, a horizontal recent-session shelf, and an all-session grid.
+- **Overview** — deterministic outcome summary, actionable findings, blast radius, ordered containment, and integrity/corroboration status.
+- **Turns** — prompt-first work records with search, risk/tool filters, full user prompt, an independently collapsible agent response/reasoning digest, model/usage metadata, changed files, commits, subagents, signals, nested actions, next-flag navigation, and evidence links.
+- **Graph** — a first-class causal investigation workspace with focused and whole-session lenses, search/type highlighting, pan/zoom/fit, explicit node inspection, directory expansion, and direct links to activity and raw evidence.
+- **Evidence** — sensitive paths, outbound hosts, ordered containment, changed files, reconciliation/completeness, git/chain integrity, and complete event dossiers (explanation, risk, diff/content state, input/output commitments, git, correlation, redactions, hashes, and raw redacted facts).
+- **Hash routing** — every session tab and open event dossier has a restorable URL. Browser Back closes contextual evidence and returns through session navigation without losing turn filters or expansion state.
 
-## Two security properties (deliberate)
+## Implementation
 
-- **Reads are locked to same-origin.** `/api/*` rejects any cross-origin/browser-driven request (`Origin` / `Sec-Fetch-Site`) and sends **no** CORS headers, so a random website you visit cannot `fetch()` your forensic data. The same-origin page the daemon serves reads it fine; writes (`/hook`, `/git`) remain closed to browsers entirely. `GET /` is also `X-Frame-Options: DENY`.
-- **Stored-XSS safe.** Recorded data is attacker-influenced (a malicious agent's commands/paths are arbitrary strings). Every value is rendered via `textContent` / DOM construction — never `innerHTML` with interpolation, and the served HTML template interpolates **no** recorded data server-side. So a command containing `<script>` or `<img onerror=…>` shows as text, it doesn't execute.
+| Piece | Role |
+|---|---|
+| `ui-page.ts` | Concatenates the modular source into the single served document. |
+| `ui/styles.ts` | Monochrome design tokens, dashboard/session layouts, drawer, graph, responsive and reduced-motion rules. |
+| `ui/state-router.ts` | Safe DOM helper, hash router, local profile preference, polling, loading/error state, and shared state. |
+| `ui/dashboard.ts` | Welcome surface, search ranking, session shelf/grid, and empty states. |
+| `ui/session.ts` | Compact overview and the complete, filterable Turns investigation surface. |
+| `ui/evidence.ts` | Blast radius, integrity, event dossier drawer, and raw evidence presentation. |
+| `ui/graph.ts` | Interactive, accessible explorer for the server-positioned deterministic causal DAG. |
 
-## Verified
-Against a real 460-event session: page serves, `/api/sessions` returns signal counts (51 secret-touches, 64 dangerous-shell, 7 failed), the paired timeline renders 230 actions with 59 flagged, event detail carries the chain hashes, and cross-origin reads return 403 while same-origin returns 200.
+The dashboard name comes from `GET /api/profile`, which derives a display suggestion from the local OS username. An edited value is kept only in `localStorage` under `blackbox.displayName`; it never enters SQLite or the forensic chain.
 
-## Deliberately not in Phase 2
-Cross-session dashboard, search, the versioned risk engine + combination logic (Phase 3), report export (Phase 4), SSE/websocket live push (a 3s poll refreshes instead). Known follow-up: `sessionCards` re-scans all events per poll — fine at personal scale, wants caching/pagination before large stores.
+Historical sessions recorded before `UserPromptSubmit` or reasoning capture existed are repaired at read time from their local Claude transcript and bounded sidechains. Recovery is lazy, cache-aware, file/byte/depth bounded, secret-redacted, and code-point truncated. Tool-result bodies are never mistaken for prompts, captured chain facts remain authoritative, and the immutable forensic chain is not changed. Every retained turn receives one shared honest display title used by both Turns and Graph; when the host emitted no textual prompt, the label explicitly describes subagent/recorded activity instead of fabricating a prompt.
 
----
+## Security properties
 
-## Phase 2.5 — the redesign (tactical telemetry)
+- **Same-origin only.** `/api/*` rejects forged browser reads and sends no permissive CORS headers. The page cannot be framed.
+- **Stored-XSS safe.** Recorded prompts, commands, paths, tool output, and metadata are hostile input. The viewer uses DOM creation and `textContent`, never HTML-string insertion.
+- **Restrictive CSP.** No external script, font, image, frame, form action, or base URL is permitted. The visual system uses system fonts, CSS, and inline-created SVG only.
+- **Read-only UI.** Profile editing changes browser-local state. The viewer does not write to the forensic store.
 
-The plumbing above is unchanged; the page was rebuilt to look like what it is — a flight recorder. `docs/ARCHITECTURE.md` §8 makes the flagged-session view the growth artifact ("clean enough that people screenshot it"), so the whole surface is now an industrial-brutalist forensic instrument: dark CRT substrate, a single hazard-red accent, zero border-radius, uppercase monospace chrome, and a huge grotesque flag numeral. Governing rule — **chrome is uppercase; evidence is verbatim**: labels/IDs are transformed, but recorded commands, paths, and hashes are never case-touched (a visually uppercased shell command would misrepresent the evidence).
+## Live behavior
 
-What changed, all inside `ui-page.ts` (still one self-contained page, no framework, no build step, no new deps):
+The self-scheduling three-second poll fingerprints cards and session projections before rendering. It preserves the active route, dashboard query, filters, expanded turns, open evidence, graph selection/viewport, and scroll position during live updates. Route transitions intentionally reset to the top so a session never opens partially hidden under the sticky header.
 
-- **HUD status bar** — live `EVENTS / HEAD / SESSIONS / STORE / HOST` from `/health`, plus a `REC · IDLE · LINK` indicator (the one green element; goes red when the daemon is unreachable).
-- **Session manifest** — numbered records, flagged count as a red numeral (clean sessions read `CLEAN`, never green), project basename from the new `cwd` field, `LIVE` for sessions active in the last 10s.
-- **Verdict hero** — the screenshot moment: macro flag numeral, Phase-3 risk stamp when present, and a `HASH-CHAINED · SEQ a→b · APPEND-ONLY` integrity strip with a barcode rendered from the session id. Self-identifies (brand + id inside the bar) so a crop still explains itself. A zero-flag session is deliberately composed too (`00 / NOMINAL / [ CLEAN ]`).
-- **Timeline** — a 9-column table (SEQ · TIME · AG · ST · TYPE · TOOL · TARGET · DUR · SIGNALS), `prompt_id` turn dividers, a subagent lane (`agent_type`), and a four-tier signal ladder — **solid / outline / inverse-video / neutral**, one hue, legible under color-blindness (secret-touch is styled as a literal redaction bar). Flat and seq-ordered by design; a recorder must never hide or reorder rows.
-- **Forensic dossier** — expanded rows lead with the chain-link integrity seal (`PREV → HASH`, "edit any row and `blackbox verify` breaks here"), structured git/correlation/risk sections, output reframed as provenance (elided, hash + bytes), and `[REDACTED:…]` placeholders highlighted via safe text-node splitting (no `innerHTML`).
-- **States & motion** — skeleton loaders, an armed-recorder empty state, a non-silent error strip (fetch failures now surface instead of being swallowed), custom-eased staggered entry that plays **once** (see below), keyboard operability, focus rings, and `prefers-reduced-motion` support.
+## Verification
 
-### Poll-safe rendering (the load-bearing mechanic)
-The 3s poll used to wipe and rebuild both panes, which would strobe the entry animation and drop scroll/selection every tick. Now each pane compares a JSON fingerprint and does **zero DOM work** when nothing changed; a live session reconciles rows by index against the append-only action list (a `Pre` paired by its `Post` patches its cells in place; genuinely new rows append and animate once). Expanded dossiers persist across polls instead of re-fetching. `setInterval` became a self-scheduling `setTimeout` so a slow fetch can't overlap the next poll.
-
-### Constraints honored
-Zero changes to `daemon.ts` — the CSP (`default-src 'none'`, no `img-src`/`font-src`) still blocks every external asset, so fonts are system stacks and all texture is pure CSS gradients / an inline SVG element. The two security properties above are intact: reads stay same-origin (cross-origin → 403), and recorded strings stay inert (`textContent`/DOM only, class names never derived from data).
-
-### Verified
-Headless-Chromium behavioral harness against a seeded store: hostile payloads (`<img onerror>`, `</script><script>`, `${}`, `mcp__<script>…`) render as inert text — no dialogs, no injected nodes, clean console; idle polls preserve DOM identity, scroll position, and open dossiers; live appends animate exactly once and leave existing rows and a live text selection untouched; `[REDACTED:…]` highlights; reduced-motion emulation disables all animation; no horizontal scroll at 700px. Security regression gates pass unchanged: `GET /` CSP byte-identical, cross-origin / bad-host `/api/*` → 403, and `ui-page.ts` contains no `innerHTML`/`insertAdjacentHTML`/`document.write`.
+- The full Node 24 suite covers the recorder, projections, transcript recovery, dashboard/session UI, graph, dossier, routing, and security boundaries.
+- UI smoke gates parse the emitted client, enforce the no-template-interpolation convention, reject unsafe HTML APIs, and check the responsive/routed surfaces.
+- Browser verification against an isolated copy of a real 12k-event store covers dashboard search/cards, overview, activity expansion, evidence drawer, causal trace, editable display name, and desktop/mobile navigation.
+- At 1280×720 and 390×844 the page has no horizontal document overflow; the mobile layout stacks panels and presents dossiers as bottom sheets.

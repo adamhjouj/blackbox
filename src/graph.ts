@@ -86,7 +86,7 @@ const churn = (f: FileChange): string | null => {
   if (f.deletions) parts.push('-' + f.deletions);
   return parts.length ? parts.join(' ') : f.status === 'skipped' ? 'skipped' : null;
 };
-const hasContent = (t: Turn): boolean => !!t.prompt || t.steps.length > 0 || t.files_changed.length > 0 || t.commits.length > 0;
+const hasContent = (t: Turn): boolean => !!t.prompt || !!t.reasoning || t.steps.length > 0 || t.files_changed.length > 0 || t.commits.length > 0;
 const SEV_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 };
 const AGG_MIN = 3; // a directory with ≥ this many non-risk files collapses into one expandable node
 
@@ -163,7 +163,9 @@ function buildModel(story: SessionStory, combos: ComboEvidence[]): Model {
   story.turns.forEach((t, ti) => {
     if (!hasContent(t)) return;
     const pid = promptId(t, ti);
-    const pLabel = t.prompt ? t.prompt.replace(/\s+/g, ' ') : 'turn ' + (ti + 1);
+    // Story owns the honest naming policy, so Activity and Graph can share the
+    // exact same title/source instead of independently inventing `turn N` labels.
+    const pLabel = t.display_title || (t.prompt ? t.prompt.replace(/\s+/g, ' ') : 'Prompt unavailable · recorded work');
     const parts: string[] = [];
     if (t.steps.length) parts.push(t.steps.length + ' step' + (t.steps.length === 1 ? '' : 's'));
     if (t.files_changed.length) parts.push(t.files_changed.length + ' file' + (t.files_changed.length === 1 ? '' : 's'));

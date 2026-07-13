@@ -3,7 +3,7 @@ import { safeParse } from './json';
 import { buildTrace, ALL_DEPTH, type TraceView } from './graph';
 import { buildStory, type EventDetail, type SessionStory } from './provenance';
 import { RECON_VERSION, type Coverage, type Discrepancy } from './reconcile';
-import { sessionTitleFromTranscript } from './transcript';
+import { recoverSessionTurns, sessionTitleFromTranscript } from './transcript';
 import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, KNOWN_RULESETS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
 import { loadPublicKey, loadWatermark } from './sign';
 import type { SessionRiskRow, Store } from './store';
@@ -94,7 +94,7 @@ export function looksLikeHost(h: string): boolean {
 // risk right after each append, so a result is valid until head_seq advances.
 let cardsCache: { head: number; cards: SessionCard[] } | null = null;
 const actionsCache = new Map<string, { head: number; actions: Action[] }>();
-const storyCache = new Map<string, { head: number; story: SessionStory }>();
+const storyCache = new Map<string, { head: number; transcript: string; story: SessionStory }>();
 const headSeq = (store: Store): number => store.chainMeta()?.head_seq ?? 0;
 
 // Version-fallback read: after an r2 bump but before backfill, a session only has
@@ -313,8 +313,10 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
  *  head-seq cache discipline; the projection itself lives in provenance.ts. */
 export function sessionStory(store: Store, sessionId: string): SessionStory {
   const head = headSeq(store);
+  const transcriptPath = store.sessionTranscriptPath(sessionId);
+  const recovery = transcriptPath ? recoverSessionTurns(transcriptPath, sessionId) : { fingerprint: '', turns: new Map() };
   const cached = storyCache.get(sessionId);
-  if (cached && cached.head === head) return cached.story;
+  if (cached && cached.head === head && cached.transcript === recovery.fingerprint) return cached.story;
 
   const actions = sessionActions(store, sessionId);
   // detail carries prompt / mutation / git — parse it once per event (light: no raw).
@@ -332,6 +334,7 @@ export function sessionStory(store: Store, sessionId: string): SessionStory {
     verdict: store.sessionRisk(sessionId, ruleset)?.verdict ?? 'unscored',
     actions,
     detailBySeq,
+    recoveredTurns: recovery.turns,
   });
 
   // R2: attach the persisted reconciliation summary (git ground truth vs hooks).
@@ -368,7 +371,7 @@ export function sessionStory(store: Store, sessionId: string): SessionStory {
   story.blast_radius = { secret_kinds: [...secretKinds].sort(), egress_hosts: [...egressHosts].slice(0, 24) };
 
   if (storyCache.size > 64) storyCache.clear();
-  storyCache.set(sessionId, { head, story });
+  storyCache.set(sessionId, { head, transcript: recovery.fingerprint, story });
   return story;
 }
 

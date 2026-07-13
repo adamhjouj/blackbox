@@ -11,17 +11,26 @@
  * That is honest: we capture the agent's *stated* intent, not its private thoughts.
  *
  * Read defensively — the transcript is Claude Code's internal format, not a stable
- * API. Tail-read only (bounded), so this never loads a multi-MB file, and it runs
- * off the hook path (the daemon schedules it after replying). Any parse hiccup
- * degrades to null, never throws.
+ * API. Capture-time intent uses a bounded tail read; lazy historical recovery uses
+ * a separately bounded, cache-aware session scan. Any parse hiccup degrades to
+ * null/empty facts, never throws.
  */
-import { closeSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readSync } from 'node:fs';
+import { basename, dirname, extname, join } from 'node:path';
+import { redactText } from './redact';
 
 /** Read at most the last ~512 KB — the just-finished turn's records are at the end. */
 const TAIL_BYTES = 512 * 1024;
 /** Cap the FULL transcript read (R5.3 completeness) so a pathological file can't
  *  OOM the daemon; skip completeness above it. 64 MB covers every real transcript. */
 const MAX_FULL_BYTES = 64 * 1024 * 1024;
+/** Read-time prompt/reasoning recovery is lazy, but a single session can have many
+ * sidechains. Bound both traversal and total bytes so opening a hostile transcript
+ * tree cannot turn into an unbounded filesystem walk or allocation. */
+const MAX_RECOVERY_FILES = 256;
+const MAX_RECOVERY_DEPTH = 4;
+const MAX_PROMPT_POINTS = 2000;
+const MAX_REASONING_POINTS = 4000;
 
 const USAGE_KEYS = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'] as const;
 
@@ -38,10 +47,203 @@ export interface TurnIntent {
   assistant_messages: number;
 }
 
+/** Safe, display-bounded transcript facts used only by the read-time story
+ * projection. These do not mutate or claim membership in the hashed event chain. */
+export interface TranscriptTurnFacts {
+  prompt: string | null;
+  reasoning: string | null;
+  model: string | null;
+  usage: Record<string, number> | null;
+  stop_reason: string | null;
+  assistant_messages: number;
+}
+
+export interface TranscriptRecovery {
+  /** Changes when any bounded input file changes; lets the story cache stay honest. */
+  fingerprint: string;
+  turns: ReadonlyMap<string, TranscriptTurnFacts>;
+}
+
+interface MutableTurnFacts {
+  prompt: string | null;
+  reasoning: string[];
+  model: string | null;
+  usage: Record<string, number> | null;
+  stop_reason: string | null;
+  assistant_messages: number;
+}
+
 function mergeUsage(acc: Record<string, number> | null, u: Record<string, unknown>): Record<string, number> {
   const out = acc ?? {};
   for (const k of USAGE_KEYS) if (typeof u[k] === 'number') out[k] = (out[k] ?? 0) + (u[k] as number);
   return out;
+}
+
+const newFacts = (): MutableTurnFacts => ({ prompt: null, reasoning: [], model: null, usage: null, stop_reason: null, assistant_messages: 0 });
+
+/** A user prompt may be a string or explicit text blocks. Tool-result blocks are
+ * deliberately ignored: they are action output, never the user's prompt name. */
+function promptText(content: unknown): string | null {
+  if (typeof content === 'string') return content.trim() || null;
+  if (!Array.isArray(content)) return null;
+  const parts: string[] = [];
+  for (const value of content) {
+    if (!value || typeof value !== 'object') continue;
+    const block = value as Record<string, unknown>;
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) parts.push(block.text.trim());
+  }
+  return parts.length ? parts.join('\n\n') : null;
+}
+
+function scanTranscriptText(text: string, turns: Map<string, MutableTurnFacts>): void {
+  let currentPromptId: string | null = null;
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    let row: Record<string, unknown>;
+    try {
+      row = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const rowPromptId = typeof row.promptId === 'string' ? row.promptId : null;
+    const message = row.message && typeof row.message === 'object' ? (row.message as Record<string, unknown>) : null;
+    if (row.type === 'user' && rowPromptId) {
+      // Even a tool-result user record establishes which prompt_id subsequent
+      // assistant messages belong to, but its CONTENT is never treated as prompt.
+      currentPromptId = rowPromptId;
+      const textPrompt = promptText(message?.content);
+      if (textPrompt) {
+        const facts = turns.get(rowPromptId) ?? newFacts();
+        if (!facts.prompt) facts.prompt = textPrompt; // main transcript is scanned first
+        turns.set(rowPromptId, facts);
+      }
+      continue;
+    }
+    if (row.type !== 'assistant' || !message) continue;
+    const promptId = rowPromptId ?? currentPromptId;
+    if (!promptId) continue;
+    const facts = turns.get(promptId) ?? newFacts();
+    facts.assistant_messages += 1;
+    if (typeof message.model === 'string') facts.model = message.model;
+    if (typeof message.stop_reason === 'string') facts.stop_reason = message.stop_reason;
+    if (message.usage && typeof message.usage === 'object') facts.usage = mergeUsage(facts.usage, message.usage as Record<string, unknown>);
+    if (Array.isArray(message.content)) {
+      for (const value of message.content) {
+        if (!value || typeof value !== 'object') continue;
+        const block = value as Record<string, unknown>;
+        if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim()) facts.reasoning.push(block.thinking.trim());
+        else if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) facts.reasoning.push(block.text.trim());
+      }
+    }
+    turns.set(promptId, facts);
+  }
+}
+
+function truncatePoints(value: string, max: number): string {
+  const points = Array.from(value);
+  return points.length > max ? points.slice(0, max).join('') + '…' : value;
+}
+
+function safeDisplayText(value: string | null, max: number): string | null {
+  if (!value) return null;
+  const redacted = redactText(value).text.trim();
+  return redacted ? truncatePoints(redacted, max) : null;
+}
+
+interface RecoveryFile {
+  path: string;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}
+
+/** Discover only regular .jsonl descendants beneath the canonical local
+ * `<session>/subagents` sibling of the recorded main transcript. Symlinks and
+ * deeper/unbounded trees are ignored. */
+function recoveryFiles(mainPath: string, sessionId: string): RecoveryFile[] {
+  const paths = [mainPath];
+  const safeId = sessionId.length > 0 && basename(sessionId) === sessionId && sessionId !== '.' && sessionId !== '..';
+  if (safeId && basename(mainPath, extname(mainPath)) === sessionId) {
+    const root = join(dirname(mainPath), sessionId, 'subagents');
+    const found: string[] = [];
+    const walk = (dir: string, depth: number): void => {
+      if (depth > MAX_RECOVERY_DEPTH || found.length >= MAX_RECOVERY_FILES - 1) return;
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        if (found.length >= MAX_RECOVERY_FILES - 1) break;
+        if (entry.isSymbolicLink()) continue;
+        const child = join(dir, entry.name);
+        if (entry.isDirectory()) walk(child, depth + 1);
+        else if (entry.isFile() && entry.name.endsWith('.jsonl')) found.push(child);
+      }
+    };
+    walk(root, 0);
+    paths.push(...found.sort());
+  }
+
+  const files: RecoveryFile[] = [];
+  for (const path of paths.slice(0, MAX_RECOVERY_FILES)) {
+    try {
+      const stat = lstatSync(path);
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      files.push({ path, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs });
+    } catch {
+      /* a rotating/deleted transcript simply contributes no recovery facts */
+    }
+  }
+  return files;
+}
+
+const recoveryCache = new Map<string, { fingerprint: string; value: TranscriptRecovery }>();
+
+/** Recover exact prompt text and the agent's stated explanation for every prompt_id
+ * in a session. Main transcript first, then safely discovered local sidechains.
+ * Results are redacted, code-point bounded, total-read bounded, and cached by file
+ * size/mtime; the immutable event chain remains untouched. */
+export function recoverSessionTurns(mainPath: string, sessionId: string): TranscriptRecovery {
+  const files = recoveryFiles(mainPath, sessionId);
+  const fingerprint = files.map((f) => `${f.path}\u0000${f.size}\u0000${f.mtimeMs}\u0000${f.ctimeMs}`).join('\u0001');
+  const key = mainPath + '\u0000' + sessionId;
+  const cached = recoveryCache.get(key);
+  if (cached?.fingerprint === fingerprint) return cached.value;
+
+  const mutable = new Map<string, MutableTurnFacts>();
+  let remaining = MAX_FULL_BYTES;
+  for (const file of files) {
+    if (file.size <= 0 || file.size > remaining) continue;
+    try {
+      const raw = readFileSync(file.path);
+      if (raw.length > remaining) continue; // file changed after stat; stay bounded
+      remaining -= raw.length;
+      scanTranscriptText(raw.toString('utf8'), mutable);
+    } catch {
+      /* best-effort read-time recovery */
+    }
+  }
+
+  const turns = new Map<string, TranscriptTurnFacts>();
+  for (const [promptId, facts] of mutable) {
+    const prompt = safeDisplayText(facts.prompt, MAX_PROMPT_POINTS);
+    const reasoning = safeDisplayText(facts.reasoning.join('\n\n'), MAX_REASONING_POINTS);
+    turns.set(promptId, {
+      prompt,
+      reasoning,
+      model: facts.model,
+      usage: facts.usage,
+      stop_reason: facts.stop_reason,
+      assistant_messages: facts.assistant_messages,
+    });
+  }
+  const value: TranscriptRecovery = { fingerprint, turns };
+  if (recoveryCache.size >= 32) recoveryCache.clear();
+  recoveryCache.set(key, { fingerprint, value });
+  return value;
 }
 
 /**

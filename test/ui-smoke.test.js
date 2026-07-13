@@ -24,7 +24,10 @@ test('renderPage emits a complete, self-contained HTML document', () => {
   const html = renderPage();
   assert.equal(typeof html, 'string');
   assert.match(html, /^<!doctype html>/i);
-  assert.match(html, /<main id="timeline">/); // the timeline mount point
+  assert.match(html, /<main id="main-content"/);
+  assert.match(html, /<div id="app" class="app-shell">/);
+  assert.match(html, /id="globalSearch"/);
+  assert.match(html, /id="profileButton"/);
   assert.match(html, /<\/html>\s*$/);
 });
 
@@ -43,11 +46,85 @@ test('CLIENT_JS honours the template-literal safety convention', () => {
   assert.equal(js.indexOf('${'), -1, 'CLIENT_JS must contain NO ${ interpolation');
 });
 
-test('the emitted page carries the session filter + navigation controls', () => {
+test('the emitted page carries the dashboard, routing, and evidence controls', () => {
   const js = clientJs(renderPage());
-  // the filter/navigation feature must actually be wired into the shipped client
-  // script (helper names track the current single Session view).
-  for (const needle of ['buildFilterBar', 'applyFilter', 'turnMatchesRec', 'jumpNext', 'isFlaggedTurn', 'refreshToolsFromTurns']) {
+  for (const needle of ['parseRoute', 'renderDashboard', 'renderSessionPage', 'renderOverview', 'renderActivityView', 'renderEvidenceView', 'renderGraphView', 'renderGraphPanel', 'openEvidence']) {
     assert.ok(js.indexOf(needle) >= 0, 'CLIENT_JS should reference ' + needle);
   }
+});
+
+test('the graph is a first-class investigation workspace', () => {
+  const html = renderPage();
+  const js = clientJs(html);
+  for (const needle of [
+    "{ route: 'overview', label: 'Overview' }",
+    "{ route: 'graph', label: 'Graph' }",
+    'Focused trace',
+    'Whole session',
+    'Trace from here',
+    'Open evidence',
+    'Show in Turns',
+    'toggleGraphDirectory',
+    "expand=' + encodeURIComponent",
+    'mountGraphCanvas',
+    'graphArrowMarker',
+    'selectFirstGraphMatch'
+  ]) assert.ok(js.indexOf(needle) >= 0, 'graph workspace should include ' + needle);
+  assert.ok(html.indexOf('.graph-layout') >= 0);
+  assert.ok(html.indexOf('.graph-inspector') >= 0);
+  assert.ok(html.indexOf('.graph-node.selected') >= 0);
+});
+
+test('turns keep prompt identity, explanations, outcomes, and fast navigation', () => {
+  const js = clientJs(renderPage());
+  for (const needle of [
+    'turnDisplayTitle',
+    'User prompt',
+    'Recovered prompt',
+    'Agent response / reasoning digest',
+    'No assistant explanation was captured',
+    'turnFileRow',
+    'turnCommitRow',
+    'Next flag ↓',
+    'jumpNextFlagged',
+    'navigateVisibleTurn'
+  ]) assert.ok(js.indexOf(needle) >= 0, 'turn investigation should include ' + needle);
+});
+
+test('the evidence drawer retains the complete forensic dossier and routable context', () => {
+  const js = clientJs(renderPage());
+  for (const needle of [
+    'evidenceHref',
+    'eventSeq',
+    'Plain-English explanation',
+    'Why this is risky',
+    'drawerMutationSection',
+    "mutation.status === 'pruned'",
+    "mutation.status === 'skipped'",
+    'Output commitment',
+    'Git evidence',
+    'Correlation',
+    'Redactions',
+    'Chain position',
+    'Raw redacted record'
+  ]) assert.ok(js.indexOf(needle) >= 0, 'forensic dossier should include ' + needle);
+});
+
+test('the viewer keeps hostile data on safe DOM rendering paths', () => {
+  const html = renderPage();
+  const js = clientJs(html);
+  assert.equal(js.indexOf('innerHTML'), -1);
+  assert.equal(js.indexOf('insertAdjacentHTML'), -1);
+  assert.equal(js.indexOf('document.write'), -1);
+  assert.ok(js.indexOf('textContent') >= 0);
+  assert.match(html, /Skip to content/);
+});
+
+test('the viewer ships responsive dashboard and session layouts', () => {
+  const html = renderPage();
+  for (const needle of ['session-shelf', 'session-card', 'overview-grid', 'evidence-drawer', '@media (max-width: 767px)']) {
+    assert.ok(html.indexOf(needle) >= 0, 'page should include ' + needle);
+  }
+  assert.match(html, /Welcome back/);
+  assert.match(html, /blackbox\.displayName/);
 });
