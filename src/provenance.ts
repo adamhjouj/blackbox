@@ -116,6 +116,18 @@ export interface SessionStory {
   commits: Commit[];
   counts: { turns: number; steps: number; files: number; commits: number };
   reconciliation: ReconSummary | null; // R2 — populated by read-api.sessionStory
+  blast_radius?: BlastRadius | null; // read-only rollup — populated by read-api.sessionStory
+}
+
+/** The session's reach: the KINDS of secret the redactor caught (aws-access-key,
+ *  github-token, …) and the external hosts reached. A pure read projection assembled
+ *  by read-api from the redaction facts + risk evidence that already ride each event
+ *  (no capture-side field). Kinds, not paths: a redaction's `path` is a payload
+ *  field-location, not a file — the class of secret is the meaningful blast-radius
+ *  signal and stays clean even on sessions that analyze hostile code. */
+export interface BlastRadius {
+  secret_kinds: string[];
+  egress_hosts: string[];
 }
 
 export interface StoryInput {

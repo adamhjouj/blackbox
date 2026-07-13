@@ -15,7 +15,7 @@ import { persistReconciliation } from './reconcile';
 import { readTurnIntent } from './transcript';
 import { captureWorktreeDelta } from './worktree';
 import { blackboxDir, configPath } from './paths';
-import { eventDetail, sessionActions, sessionCards, sessionTrace, sessionStory } from './read-api';
+import { eventDetail, sessionActions, sessionCards, sessionTrace, sessionStory, verifyStatus } from './read-api';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
 import { RULESET_VERSION } from './risk-rules';
 import { ensureKeypair, isSignableBoundary, signHead, writeWatermark, type Keypair } from './sign';
@@ -359,6 +359,12 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           }
           if (path === '/api/sessions') {
             sendJson(res, 200, sessionCards(store));
+            return;
+          }
+          // R3: chain integrity + signature status for the forensic badge. Read-only
+          // (verify() is byte-identical); the UI fetches it once per session-open.
+          if (path === '/api/verify') {
+            sendJson(res, 200, verifyStatus(store));
             return;
           }
           const ms = path.match(/^\/api\/session\/(.+)\/events$/);

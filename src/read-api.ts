@@ -4,8 +4,10 @@ import { buildStory, type EventDetail, type SessionStory } from './provenance';
 import { RECON_VERSION, type Coverage, type Discrepancy } from './reconcile';
 import { sessionTitleFromTranscript } from './transcript';
 import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
+import { loadPublicKey, loadWatermark } from './sign';
 import type { SessionRiskRow, Store } from './store';
 import type { BlackboxEvent } from './types';
+import { verify } from './verify';
 
 /** One row in the timeline: a Pre/Post tool pair collapsed into a single action,
  *  or a standalone event (session lifecycle, git ref-change, orphan). */
@@ -77,6 +79,22 @@ function safeParse<T>(s: string | null, fallback: T): T {
 function safeArray<T>(s: string | null): T[] {
   const v = safeParse<unknown>(s, null);
   return Array.isArray(v) ? (v as T[]) : [];
+}
+
+// A conservative guard for the blast-radius egress list. The scheme-less host
+// detector mis-extracts "hosts" from analyzed code/fixtures (`x.db`, `foo.png`,
+// truncated `127…`); reject anything without a dot, a bare/truncated token, or a
+// final label that is provably a file extension rather than a TLD. Real IPs are
+// kept. It can NEVER hide a genuine host (no TLD is an image extension), so it is
+// safe for a security view; residual code tokens (e.g. `.fsmonitor`) are left in.
+const NON_HOST_TLD = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp', 'db', 'sqlite', 'sqlite3', 'log', 'lock', 'map', 'css', 'scss', 'less', 'md', 'txt', 'csv', 'pdf', 'zip', 'gz', 'tar']);
+function looksLikeHost(h: string): boolean {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return true; // IPv4
+  if (h.includes(':') && /^[0-9a-f:]+$/i.test(h)) return true; // IPv6-ish
+  const parts = h.split('.');
+  if (parts.length < 2) return false; // bare token / truncated value
+  const tld = parts[parts.length - 1]!.toLowerCase();
+  return /^[a-z]{2,}$/.test(tld) && !NON_HOST_TLD.has(tld);
 }
 
 // Cache keyed on chain head_seq: the store is append-only and the daemon writes
@@ -325,6 +343,28 @@ export function sessionStory(store: Store, sessionId: string): SessionStory {
     };
   }
 
+  // Blast radius (read-only rollup): the KINDS of secret the redactor caught + the
+  // external hosts reached. Assembled from the redaction facts (detail.redaction,
+  // already parsed above — we take `type`, the secret class, NOT `path`, which is a
+  // payload field-location) + the per-event risk evidence (keyed by flag). Egress
+  // hosts that a combo actually correlated (confirmed exfil) are surfaced first. No
+  // capture change; pure read projection.
+  const secretKinds = new Set<string>();
+  for (const d of detailBySeq.values()) {
+    const reds = (d as { redaction?: unknown }).redaction;
+    if (Array.isArray(reds)) for (const r of reds) { const t = r && (r as { type?: unknown }).type; if (typeof t === 'string') secretKinds.add(t); }
+  }
+  const comboHosts = safeArray<ComboEvidence>(store.sessionRisk(sessionId, ruleset)?.combos ?? null)
+    .map((c) => c.host)
+    .filter((h): h is string => typeof h === 'string' && looksLikeHost(h));
+  const egressHosts = new Set<string>(comboHosts); // combo-confirmed first (Set keeps insertion order)
+  for (const rr of store.riskForSession(sessionId, ruleset)) {
+    const ev = safeParse<Record<string, { host?: unknown }> | null>(rr.evidence, null);
+    const host = ev && ev['external-send'] && ev['external-send'].host;
+    if (typeof host === 'string' && looksLikeHost(host)) egressHosts.add(host);
+  }
+  story.blast_radius = { secret_kinds: [...secretKinds].sort(), egress_hosts: [...egressHosts].slice(0, 24) };
+
   if (storyCache.size > 64) storyCache.clear();
   storyCache.set(sessionId, { head, story });
   return story;
@@ -453,4 +493,47 @@ export function eventDetail(store: Store, seq: number): Record<string, unknown> 
     prev_hash: e.prev_hash,
     hash: e.hash,
   };
+}
+
+/** R3 chain-of-custody status for the forensic "verified" badge. A READ-ONLY view:
+ *  it calls verify() (which stays byte-identical — nothing here changes the chain
+ *  or its logic) plus the cheap signature/head lookups. NOT on the 3s poll path —
+ *  the UI fetches this once per session-open — and cached on head_seq so repeated
+ *  opens at the same chain head don't re-walk. */
+export interface VerifyStatus {
+  ok: boolean;
+  break_reason: string | null;
+  head_seq: number;
+  count: number;
+  signed: boolean;
+  latest_sig_seq: number | null;
+  latest_sig_ts: string | null;
+}
+let verifyCache: { head: number; status: VerifyStatus } | null = null;
+export function verifyStatus(store: Store): VerifyStatus {
+  const head = headSeq(store);
+  if (verifyCache && verifyCache.head === head) return verifyCache.status;
+  const meta = store.chainMeta();
+  const sig = store.latestSignature();
+  const pub = loadPublicKey();
+  let ok = false;
+  let break_reason: string | null = null;
+  try {
+    const vr = verify(store, { trustedPublicKey: pub, watermark: loadWatermark() });
+    ok = vr.ok;
+    break_reason = vr.ok ? null : (vr.break?.reason ?? 'broken');
+  } catch {
+    break_reason = 'verify-error';
+  }
+  const status: VerifyStatus = {
+    ok,
+    break_reason,
+    head_seq: meta?.head_seq ?? 0,
+    count: meta?.count ?? 0,
+    signed: !!sig && !!pub,
+    latest_sig_seq: sig?.seq ?? null,
+    latest_sig_ts: sig?.ts ?? null,
+  };
+  verifyCache = { head, status };
+  return status;
 }
