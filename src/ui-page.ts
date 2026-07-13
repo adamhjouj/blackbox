@@ -231,8 +231,7 @@ const PAGE_CSS = `  :root {
 
   /* one card per turn; a single flex-gap sets the vertical rhythm (no stray margins) */
   .turns { padding:10px 18px 40px; display:flex; flex-direction:column; gap:10px; }
-  .turncard { border:1px solid var(--border-subtle); border-radius:var(--r3); padding:13px 15px 14px;
-    background:var(--surface); display:flex; flex-direction:column; gap:11px; }
+  .turncard { border:1px solid var(--border-subtle); border-radius:var(--r3); background:var(--surface); overflow:hidden; }
   .turncard .thd { display:flex; align-items:baseline; gap:14px; }
   .turncard .tnum { flex:0 0 auto; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
     color:var(--fg-4); font-variant-numeric:tabular-nums; }
@@ -331,6 +330,81 @@ const PAGE_CSS = `  :root {
   .srow .sub { flex:0 0 auto; font-size:9.5px; letter-spacing:.04em; text-transform:uppercase; color:var(--fg-4);
     border:1px solid var(--border); border-radius:var(--r1); padding:0 5px; }
 
+  /* session view: breadcrumb + view-toggle row */
+  .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .crumb { display:flex; align-items:center; gap:7px; font-size:12px; color:var(--fg-3); min-width:0; }
+  .crumb-home { cursor:pointer; color:var(--fg-3); }
+  .crumb-home:hover { color:var(--fg-1); }
+  .crumb-sep { color:var(--fg-4); }
+  .crumb-cur { color:var(--fg-1); font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:280px; }
+
+  /* overview band — the scannable summary */
+  .overview { padding:18px 22px 16px; border-bottom:1px solid var(--border); box-shadow:inset 0 1px 0 var(--edge); }
+  .ov-head { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  .ov-name { font-family:var(--sans); font-weight:600; font-size:19px; letter-spacing:-.02em; color:var(--fg); min-width:0; }
+  .ov-badges { display:flex; align-items:center; gap:8px; margin-left:auto; }
+  .ov-verdict { padding:1px 9px; border-radius:999px; font-size:11.5px; border:1px solid var(--border); color:var(--fg-3); white-space:nowrap; }
+  .ov-verdict.hot { border-color:var(--accent-line); color:var(--accent); }
+  .ov-verify { font-size:11px; padding:2px 8px; border-radius:var(--r1); border:1px solid var(--border-subtle); color:var(--fg-3); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .ov-verify.ver-ok { color:var(--live); border-color:rgba(89,183,131,.32); }
+  .ov-verify.ver-bad { color:var(--accent); border-color:var(--accent-line); background:var(--accent-wash); }
+  .ov-verify.ver-pending { color:var(--fg-4); }
+  .ov-id { font-family:var(--mono); font-size:12px; color:var(--fg-4); margin-top:3px; word-break:break-all; }
+  .ov-stats { margin-top:12px; font-size:13.5px; color:var(--fg-3); font-variant-numeric:tabular-nums; }
+  .ov-stats .ov-n { color:var(--fg); font-weight:600; }
+  .ov-flagjump { cursor:pointer; color:var(--accent); font-weight:600; text-decoration:underline; text-decoration-color:var(--accent-line); text-underline-offset:2px; }
+  .ov-flagjump:hover { text-decoration-color:var(--accent); }
+  .ov-proj { color:var(--fg-3); }
+  .ov-combos { margin-top:10px; }
+  .overview .combo { margin-top:6px; font-size:12px; color:var(--fg-4); font-family:var(--mono); word-break:break-word; }
+
+  /* blast radius — files by dir · secret kinds · egress hosts (detail on demand) */
+  .blast-wrap { margin-top:15px; }
+  .blast-h { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-4); margin-bottom:8px; }
+  .blast-row { display:flex; align-items:baseline; gap:12px; margin:5px 0; }
+  .blast-k { flex:0 0 58px; font-size:11px; letter-spacing:.03em; text-transform:uppercase; color:var(--fg-4); }
+  .blast-v { flex:1 1 auto; min-width:0; font-size:12.5px; color:var(--fg-2); display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+  .blast-v .blast-n { color:var(--fg); font-weight:600; font-variant-numeric:tabular-nums; }
+  .blast-chip { font-family:var(--mono); font-size:11px; color:var(--fg-2); border:1px solid rgba(255,255,255,.09); border-radius:var(--r1); padding:1px 6px; }
+  .blast-chip.alert { color:var(--accent); background:var(--accent-wash); border-color:var(--accent-line); }
+  .blast-more { font-size:11px; color:var(--fg-4); }
+  .blast-exp { display:inline-block; margin:6px 0 2px; font-size:11.5px; color:var(--fg-3); cursor:pointer; user-select:none; }
+  .blast-exp:hover { color:var(--fg-1); }
+  .blast-files { display:flex; flex-direction:column; gap:1px; margin-bottom:4px; }
+
+  /* collapsible turn card */
+  .turncard.flag { border-left:2px solid var(--accent); }
+  .tc-head { display:flex; align-items:center; gap:10px; padding:11px 14px; cursor:pointer; user-select:none; }
+  .tc-head:hover { background:var(--hover); }
+  .tc-chev { flex:0 0 auto; color:var(--fg-4); transition:transform .12s ease; }
+  .turncard.open .tc-chev { transform:rotate(90deg); }
+  .tc-head .tnum { flex:0 0 auto; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-4); font-variant-numeric:tabular-nums; }
+  .tc-gist { flex:1 1 auto; min-width:0; font-size:13px; color:var(--fg-1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tc-gist.muted { color:var(--fg-4); }
+  .turncard.open .tc-gist { color:var(--fg-hi); font-weight:500; }
+  .tc-meta { flex:0 0 auto; font-size:11px; color:var(--fg-4); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .tc-meta .tflag { color:var(--accent); }
+  .tc-graph { flex:0 0 auto; font-size:11px; color:var(--fg-4); opacity:0; cursor:pointer; white-space:nowrap; transition:opacity .1s ease, color .1s ease; }
+  .tc-head:hover .tc-graph { opacity:.7; }
+  .tc-graph:hover { color:var(--fg-1); opacity:1; }
+  .tc-body { padding:2px 14px 14px 30px; display:flex; flex-direction:column; gap:11px; }
+  .tc-body:empty { display:none; }
+
+  /* rail search + sort */
+  .railctl { flex:none; display:flex; gap:6px; padding:0 10px 8px; }
+  .rail-search { flex:1 1 auto; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:var(--r2);
+    color:var(--fg); font:12px var(--sans); padding:5px 9px; }
+  .rail-search::placeholder { color:var(--fg-4); }
+  .rail-search:focus { outline:none; border-color:var(--border-strong); }
+  .rail-sort { flex:none; background:var(--surface); border:1px solid var(--border); border-radius:var(--r2);
+    color:var(--fg-2); font:11.5px var(--sans); padding:5px 10px; cursor:pointer; text-transform:capitalize; }
+  .rail-sort:hover { color:var(--fg); border-color:var(--border-strong); }
+  .sess .meta .sproj { color:var(--fg-4); }
+
+  /* graph → session cross-link */
+  .gtosession { display:inline-block; margin:6px 0 2px; font-size:11.5px; color:var(--fg-3); cursor:pointer; }
+  .gtosession:hover { color:var(--fg-1); }
+
   /* states */
   .empty { max-width:440px; margin:60px auto; padding:0 24px; text-align:center; color:var(--fg-3); }
   .empty .h { color:var(--fg-2); font-size:13.5px; margin-bottom:8px; }
@@ -349,6 +423,8 @@ const PAGE_CSS = `  :root {
     .skel i { background-image:linear-gradient(90deg, transparent, rgba(255,255,255,.05), transparent); background-size:200% 100%; animation:shim 1.4s ease-in-out infinite; }
     @keyframes rowflash { from { background:rgba(229,89,90,.20); } }
     .trow.flash { animation:rowflash 1s ease; }
+    @keyframes cardflash { from { background:rgba(229,89,90,.16); } }
+    .turncard.flash { animation:cardflash 1s ease; }
   }
   @media (max-width:820px) { aside { width:220px; } header .store { max-width:130px; } }
 `;
@@ -383,8 +459,8 @@ const CLIENT_JS = `const ALERT = new Set(['dangerous-shell','destructive-git','a
 const RISKWORD = Object.assign(Object.create(null), { high:'high risk', medium:'medium risk', low:'low risk' });
 
 let current = null, expanded = new Set();
-let viewMode = 'story';               // 'story' (default lens) | 'timeline' | 'graph'
-let fpStory = null, storyOpen = new Set();   // fp gate + per-turn step-expansion (by turn key)
+let viewMode = 'session';             // 'session' (merged overview → turn → step → evidence) | 'graph'
+let fpSession = null, storyOpen = new Set();   // fp gate + expanded turn keys (whole-turn drill-down)
 let fpGraph = null, graphState = null, graphRoot = null, graphDepth = 2, graphWhole = false, graphExpand = [], graphFull = false;   // R4 trace: fp gate · mount+model · root · depth · whole-session · expanded dirs · fullscreen
 // R4 provenance-trace palette (dark-only, tuned off the design tokens). Node fill/border/
 // dot by KIND; edge stroke by RELATION so the graph carries meaning at a glance.
@@ -394,25 +470,23 @@ const DAG_DOT = { prompt:'#8ab4f8', step:'#d3a24a', file:'#59b783', dir:'#5a9bd6
 const DAG_FILL = { prompt:'#141d2c', step:'#1e1a10', file:'#101c15', dir:'#101823', commit:'#101c16', finding:'#251214', host:'#251214', session:'#141821' };
 const DAG_BORDER = { prompt:'#32415d', step:'#4c4123', file:'#26493a', commit:'#274b3a', dir:'#294466', finding:'#7c2f31', host:'#7c2f31', session:'#2c313b' };
 const DAG_EDGE = { caused:'rgba(138,148,160,0.5)', wrote:'rgba(89,183,131,0.6)', read:'rgba(122,128,140,0.42)', committed:'rgba(108,195,138,0.66)', flagged:'rgba(229,89,90,0.82)', sent:'rgba(229,89,90,0.7)', contains:'rgba(90,155,214,0.55)' };
-let fpSessions = null, fpTimeline = null, fpVerdict = null, fpHud = null;
-let rowState = [];            // [{fp, tr, a}] parallel to the rendered action list
-let tbody = null;
-let lastPrompt = null, turnN = 0;   // turn-divider walk state (reset with rowState)
-// turn-outline state — display-only, survives the 3s poll; reset on session/view switch + full render.
-let collapsedTurns = new Set();   // prompt_ids currently folded
-let bigSession = false;           // >60 actions → turns fold by default
-const turns = [];                 // [{key, hdr}] in render order (keyboard turn-jump)
-const turnHeadByKey = new Map();  // prompt_id → .turnhead element
-let curTurnKey = null;            // prompt_id the rows are currently appended under
-let _rz = 0;                      // rAF handle for the debounced --turntop remeasure
-let flagCursor = -1;              // next-flag cursor into the flagged rows (seeded from the viewport, then steps)
-let turnCursor = -1;              // turn-jump cursor into the turn headers (seeded from the pinned turn, then steps)
+let fpSessions = null, fpHud = null;
+let bigSession = false;           // large session → turns start collapsed (fold the wall by default)
+// session-view turn state — survives the 3s poll; reset on session/view switch + full render.
+const turnEls = [];               // [{key, card, head, t, flagged, num, text, tools}] in render order (filter + keyboard jump)
+let flagCursor = -1;              // next-flag cursor into the flagged turn cards (seeded from the viewport, then steps)
+let turnCursor = -1;              // turn-jump cursor into the visible turn cards
+let verifyInfo = null;            // cached /api/verify (chain integrity + signature) — fetched off the poll, once per open
+let pendingSeqJump = null;        // Graph → Session: a seq to reveal + scroll to on the next session render
 let haveSessions = false, lastHealth = null, lastHead = null;
 const sessEls = new Map();    // session_id -> rail row element
 const cardsById = new Map();  // session_id -> latest SessionCard
+let railQuery = '', railSort = 'risk';   // rail search text (lowercased) + sort order (risk | recent)
+let lastCards = [];   // the last /api/sessions payload, so a rail search/sort re-renders without a poll
 
-// timeline filter state — module-level, so it survives the 3s poll untouched.
-let fltFlagged = false, fltTool = '', fltText = '';   // flagged-only · tool key · search text (lowercased)
+// session filter state — module-level, so it survives the 3s poll untouched. Risk-first:
+// flagged-only is the DEFAULT (reset per session in renderSession — a clean session shows all).
+let fltFlagged = true, fltTool = '', fltText = '';   // flagged-only · tool key · search text (lowercased)
 let toolSel = null, searchBox = null, flaggedBtn = null, jumpBtn = null, shownCount = null;
 let toolOpts = new Set();     // tool keys currently offered in the dropdown
 
@@ -461,41 +535,53 @@ function setLink(ok){
 }
 
 /* ── sessions ────────────────────────────────────────────────────── */
+function resetSessionState(){
+  fpSession = null; turnEls.length = 0; bigSession = false; flagCursor = -1; turnCursor = -1;
+}
 function select(id){
   if(current === id) return;
   current = id; expanded = new Set();
-  fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
-  fpStory = null; storyOpen = new Set();
+  resetSessionState(); storyOpen = new Set();
   fpGraph = null; graphRoot = null; graphDepth = 2; graphWhole = false; graphExpand = []; stopGraph();   // tear the graph down on session change
-  lastPrompt = null; turnN = 0;
-  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false; flagCursor = -1; turnCursor = -1;
+  fltFlagged = true; fltTool = ''; fltText = '';   // land each session risk-first (renderSession relaxes it for a clean session)
   for(const [sid, d] of sessEls) d.classList.toggle('active', sid === current);
   loadView().catch(()=>{});
 }
 
-// The main pane shows either the story (default) or the flat timeline.
-function loadView(){ return viewMode === 'story' ? loadStory() : viewMode === 'graph' ? loadGraph() : loadTimeline(); }
+// Two top-level views: the merged Session (overview → turn → step → evidence) and the Graph.
+function loadView(){ return viewMode === 'graph' ? loadGraph() : loadSession(); }
 function setView(mode){
   if(viewMode === mode) return;
   viewMode = mode;
-  // reset every view's render state so the switch repaints cleanly from cache
-  fpTimeline = null; fpVerdict = null; rowState = []; tbody = null;
-  fpStory = null; lastPrompt = null; turnN = 0;
+  resetSessionState();
   fpGraph = null; stopGraph();
-  collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null; bigSession = false; flagCursor = -1; turnCursor = -1;
   document.getElementById('timeline').textContent = '';
   loadView().catch(()=>{});
+}
+// A slim breadcrumb keeps you oriented — which session you're in, and a way back to
+// the rail (which is always on screen; on a narrow viewport this scrolls it into view).
+function breadcrumb(){
+  const nav = el('nav',{className:'crumb','aria-label':'breadcrumb'});
+  const home = el('span',{className:'crumb-home',role:'button',tabIndex:0,textContent:'sessions'});
+  home.onclick = ()=>{ const a=document.querySelector('aside'); if(a) a.scrollIntoView({block:'nearest'}); const s=document.getElementById('sessions'); if(s) s.scrollTop=0; };
+  home.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); home.click(); } };
+  nav.append(home);
+  const card = current && cardsById.get(current);
+  const name = card ? (card.name || card.session_id.slice(0,12)) : null;
+  if(name) nav.append(el('span',{className:'crumb-sep',textContent:'›'}), el('span',{className:'crumb-cur',textContent:name}));
+  return nav;
 }
 function viewBar(){
   const seg = el('div',{className:'viewtoggle',role:'tablist'});
   const mk = (mode, label)=> el('button',{type:'button',className:(viewMode===mode?'on':''),
     role:'tab','aria-selected':String(viewMode===mode),textContent:label,onclick:()=>setView(mode)});
-  seg.append(mk('story','Story'), mk('timeline','Timeline'), mk('graph','Graph'));
-  return el('div',{className:'viewbar'}, seg);
+  seg.append(mk('session','Session'), mk('graph','Graph'));
+  return el('div',{className:'viewbar'}, el('div',{className:'topbar'}, breadcrumb(), seg));
 }
 
 async function loadSessions(){
   const cards = await api('/api/sessions');
+  lastCards = cards;
   const fp = JSON.stringify(cards);
   if(fp === fpSessions) return;
   renderSessions(cards);
@@ -513,22 +599,36 @@ function refreshRel(){
   }
 }
 
+// The rail's display order: search filters by name/project/id; sort is risk-first (the
+// server's verdict-ranked order) or most-recent. cardsById keeps ALL cards for lookups.
+function railList(cards){
+  let list = cards;
+  if(railQuery) list = list.filter(c=> ((c.name||'')+' '+(c.cwd||'')+' '+c.session_id).toLowerCase().indexOf(railQuery) >= 0);
+  if(railSort === 'recent') list = list.slice().sort((a,b)=> (Date.parse(b.ended)||0) - (Date.parse(a.ended)||0));
+  return list;   // 'risk' keeps the server order (verdict rank, then recency)
+}
+
 function renderSessions(cards){
   const box = document.getElementById('sessions');
-  document.getElementById('sessCount').textContent = cards.length ? String(cards.length) : '';
   haveSessions = cards.length > 0;
   cardsById.clear(); for(const c of cards) cardsById.set(c.session_id, c);
   if(!cards.length){
     sessEls.clear(); box.textContent='';
+    document.getElementById('sessCount').textContent = '';
     box.append(el('div',{className:'empty'}, el('p',{textContent:'No sessions yet.'})));
     return;
   }
   if(!current) current = cards[0].session_id;
   if(!sessEls.size) box.textContent='';                       // clear skeleton
-  const live = new Set(cards.map(c=>c.session_id));
-  for(const [sid, d] of sessEls) if(!live.has(sid)){ d.remove(); sessEls.delete(sid); }
+  const list = railList(cards);
+  document.getElementById('sessCount').textContent = railQuery ? (list.length+' / '+cards.length) : String(cards.length);
+  const shown = new Set(list.map(c=>c.session_id));
+  for(const [sid, d] of sessEls) if(!shown.has(sid)){ d.remove(); sessEls.delete(sid); }
+  let hint = box.querySelector('.railempty');
+  if(!list.length){ if(!hint) box.append(el('div',{className:'empty railempty'}, el('p',{textContent:'No sessions match.'}))); return; }
+  if(hint) hint.remove();
   let prev = null;
-  cards.forEach((c, i)=>{
+  list.forEach((c)=>{
     let d = sessEls.get(c.session_id);
     if(!d){
       d = el('div',{className:'sess enter',tabIndex:0});
@@ -546,44 +646,80 @@ function renderSessions(cards){
   });
 }
 
+// Wire the rail's search + sort controls (static elements in the skeleton). Called once.
+function wireRail(){
+  const s = document.getElementById('railSearch');
+  if(s) s.oninput = ()=>{ railQuery = s.value.trim().toLowerCase(); renderSessions(lastCards); };
+  const b = document.getElementById('railSort');
+  if(b){ b.textContent = railSort; b.onclick = ()=>{ railSort = railSort==='risk' ? 'recent' : 'risk'; b.textContent = railSort; renderSessions(lastCards); }; }
+}
+
+// A rail row: name-first (the primary label) · a risk dot in the verdict colour · ONE line
+// of context (relative time · project). The UUID and event count live in the hover title,
+// not the row — nobody scans by uuid. Live sessions read green.
 function fillCard(d, c){
   const keepEnter = d.className.includes('enter');
   d.textContent = '';
+  const proj = basename(c.cwd);
   d.className = 'sess' + (keepEnter ? ' enter' : '') + (c.name ? '' : ' unnamed') + (c.session_id === current ? ' active' : '');
+  d.title = c.session_id + (proj ? (' · '+proj) : '') + ' · ' + c.events + ' events';
   const rkHot = (c.verdict === 'medium' || c.verdict === 'high');   // red only for real risk; class from a literal boolean, never the data string
   const top = el('div',{className:'top'},
     el('span',{className:'rk'+(rkHot?' hot':'')}),
-    el('span',{className:'id',title:c.name ? c.name+' · '+c.session_id : c.session_id,
-      textContent:c.name || c.session_id.slice(0,20)}));
+    el('span',{className:'id',textContent: c.name || c.session_id.slice(0,18)}));
   if(c.flagged) top.append(el('span',{className:'fl',textContent:String(c.flagged)}));
   d.append(top);
-  if(c.name) d.append(el('div',{className:'ssid',textContent:c.session_id.slice(0,20),title:c.session_id}));
   const rel = fmtRel(c.ended);
   const relEl = el('span',{className:rel===null?'live':'',textContent:rel===null?'live':rel});
   d._relEl = relEl; d._ended = c.ended;
-  d.append(el('div',{className:'meta'}, c.events+' events', el('span',{className:'sep',textContent:'·'}), relEl));
-  const proj = basename(c.cwd);
-  if(proj) d.append(el('div',{className:'proj',textContent:proj,title:c.cwd||''}));
+  const meta = el('div',{className:'meta'}, relEl);
+  if(proj) meta.append(el('span',{className:'sep',textContent:'·'}), el('span',{className:'sproj',textContent:proj}));
+  d.append(meta);
 }
 
-/* ── timeline ────────────────────────────────────────────────────── */
-async function loadTimeline(){
+/* ── session view — overview → turn → step → evidence ────────────── */
+// The one lens on a session. Rendered from /story (turns · steps · files · commits ·
+// reconciliation · blast_radius) + the session card (verdict · combos · duration) +
+// a one-shot /api/verify. Full-rebuild on data change (fp-gated so idle polls cost
+// nothing); which turns are expanded persists across rebuilds via storyOpen.
+async function loadSession(){
   const main = document.getElementById('timeline');
   if(!current){
     const key = haveSessions ? 'sel' : 'armed';
-    if(fpTimeline !== key){ fpTimeline = key; main.textContent=''; main.append(emptyState(key)); }
+    if(fpSession !== 'e:'+key){ fpSession = 'e:'+key; main.textContent=''; main.append(viewBar(), emptyState(key)); }
     return;
   }
   const sid = current;
-  const actions = await api('/api/session/'+encodeURIComponent(sid)+'/events');
+  const story = await api('/api/session/'+encodeURIComponent(sid)+'/story');
   if(current !== sid) return;   // selection changed while this fetch was in flight
-  const fp = JSON.stringify([sid, actions]);
-  if(fp === fpTimeline){
-    if(tbody && tbody.isConnected) updateVerdict(actions);   // card risk may have advanced
-    return;
-  }
-  renderTimeline(main, actions);
-  fpTimeline = fp;   // commit only after a successful render
+  const card = cardsById.get(sid) || null;
+  const fp = JSON.stringify([sid, story, card]);
+  if(fp === fpSession) return;  // idle poll → zero DOM work
+  renderSession(main, story, card);
+  fpSession = fp;               // commit only after a successful render
+  loadVerify();                 // chain badge, fetched off the poll path
+}
+
+// The forensic "chain verified" signal. verify() walks the whole chain, so it is
+// NEVER on the 3s poll — fetched once (cached server-side on head_seq too) and the
+// badge patches in when it lands.
+async function loadVerify(){
+  if(!verifyInfo){ try { verifyInfo = await api('/api/verify'); } catch { return; } }
+  paintVerifyBadge();
+}
+function verifyBadge(){
+  const [txt, cls] = verifyBadgeParts();
+  return el('span',{className:'ov-verify '+cls,id:'verBadge',textContent:txt});
+}
+function verifyBadgeParts(){
+  if(!verifyInfo) return ['verifying…','ver-pending'];
+  if(!verifyInfo.ok) return ['\\u26A0 chain broken'+(verifyInfo.break_reason?' ('+verifyInfo.break_reason+')':''),'ver-bad'];
+  return [verifyInfo.signed ? '\\u2713 chain verified \\u00B7 signed' : '\\u2713 chain verified','ver-ok'];
+}
+function paintVerifyBadge(){
+  const b = document.getElementById('verBadge'); if(!b) return;
+  const [txt, cls] = verifyBadgeParts();
+  if(b.textContent !== txt){ b.textContent = txt; b.className = 'ov-verify '+cls; }
 }
 
 function emptyState(kind){
@@ -595,229 +731,203 @@ function emptyState(kind){
     el('p',{className:'faint',textContent:'Nothing leaves this machine.'}));
 }
 
-function renderTimeline(main, actions){
-  const incremental = tbody && tbody.isConnected && rowState.length > 0 &&
-    rowState.length <= actions.length &&
-    rowState[0].a.key === actions[0].key;
-  if(!incremental){
-    main.textContent='';
-    fpVerdict = null; rowState = []; lastPrompt = null; turnN = 0;
-    collapsedTurns = new Set(); turns.length = 0; turnHeadByKey.clear(); curTurnKey = null;
-    bigSession = actions.length > 60;   // fold turns by default only when the log is a wall
-    main.append(viewBar());
-    main.append(el('section',{className:'summary',id:'verdict'}));
-    buildFilterBar(main);   // filter bar, sticky over the rows
-    tbody = el('div',{className:'tl',role:'table','aria-label':'action timeline'});
-    main.append(tbody);
+function renderSession(main, story, card){
+  main.textContent='';
+  main.append(viewBar());
+  const turnsData = story.turns || [];
+  // risk-first: land on flagged turns only; a clean session (nothing flagged) shows all.
+  bigSession = turnsData.length > 24;
+  if(!turnsData.some(isFlaggedTurn)) fltFlagged = false;
+
+  main.append(overviewBand(story, card));
+  if(story.reconciliation) main.append(coverageStrip(story.reconciliation));
+  buildFilterBar(main);
+
+  turnEls.length = 0;
+  if(!turnsData.length){
+    main.append(el('div',{className:'empty'}, el('p',{textContent:'No actions recorded in this session yet.'})));
+    applyFilter(); return;
   }
-  updateVerdict(actions);
-  for(let i=0;i<actions.length;i++){
-    const a = actions[i];
-    if(i < rowState.length){
-      const st = rowState[i];
-      const afp = JSON.stringify(a);
-      if(st.fp !== afp){
-        if(st.a.key !== a.key){ fpTimeline = null; rowState = []; tbody = null; renderTimeline(main, actions); return; }
-        buildRowCells(a, st.tr, false);
-        st.fp = afp; st.a = a;
-        if(expanded.has(a.seq)) insertDetail(a.seq, st.tr);   // refresh on Pre→Post pairing
-      }
-    } else {
-      appendRow(a);
+  const wrap = el('div',{className:'turns'});
+  turnsData.forEach((t,i)=> wrap.append(turnCard(t, i)));
+  main.append(wrap);
+  refreshToolsFromTurns(turnsData);
+  applyFilter();            // apply the risk-first (flagged-only) default + any active filter
+  if(pendingSeqJump != null){ revealSeq(pendingSeqJump); pendingSeqJump = null; }   // Graph → Session landing
+}
+
+/* ── overview band — the scannable summary, not a data dump ──────── */
+function sep(){ return el('span',{className:'sep',textContent:'\\u00B7'}); }
+function statFrag(line, n, label){ line.append(el('span',{className:'ov-n',textContent:String(n)}), ' '+label); }
+function oneLine(s){ return stripTicks(s||'').split(String.fromCharCode(10)).join(' ').replace(/\\s+/g,' ').trim(); }
+function isFlaggedTurn(t){ return (t.flagged||0) > 0 || (t.max_score||0) > 0; }
+
+function overviewBand(story, card){
+  const sec = el('section',{className:'overview',id:'verdict'});
+  const verdict = (card && card.verdict) || story.verdict;
+  const hot = verdict==='medium'||verdict==='high';
+
+  const head = el('div',{className:'ov-head'});
+  head.append(el('div',{className:'ov-name',textContent: story.name || (card&&card.name) || 'unnamed session'}));
+  const badges = el('div',{className:'ov-badges'});
+  if(RISKWORD[verdict]) badges.append(el('span',{className:'ov-verdict risk'+(hot?' hot':''),textContent:RISKWORD[verdict]}));
+  badges.append(verifyBadge());
+  head.append(badges);
+  sec.append(head);
+  sec.append(el('div',{className:'ov-id'}, el('samp',{textContent:story.session_id})));
+
+  const c = story.counts || {turns:0,steps:0,files:0,commits:0};
+  const flaggedTurns = (story.turns||[]).filter(isFlaggedTurn).length;
+  const line = el('div',{className:'ov-stats'});
+  statFrag(line, c.turns, c.turns===1?'turn':'turns'); line.append(sep()); statFrag(line, c.steps, c.steps===1?'step':'steps');
+  if(c.files){ line.append(sep()); statFrag(line, c.files, c.files===1?'file':'files'); }
+  if(c.commits){ line.append(sep()); statFrag(line, c.commits, c.commits===1?'commit':'commits'); }
+  if(flaggedTurns){
+    line.append(sep());
+    const fl = el('span',{className:'ov-flagjump',role:'button',tabIndex:0,title:'jump to the first flagged turn',
+      textContent:flaggedTurns+' flagged'});
+    fl.onclick = jumpNext;
+    fl.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); jumpNext(); } };
+    line.append(fl);
+  }
+  const span = card && fmtSpan(card.started, card.ended);
+  if(span){ line.append(sep()); line.append(span); }
+  const proj = card && basename(card.cwd);
+  if(proj){ line.append(sep()); line.append(el('span',{className:'ov-proj',textContent:proj,title:card.cwd||''})); }
+  sec.append(line);
+
+  sec.append(blastRadius(story, card));
+
+  if(card && Array.isArray(card.combos) && card.combos.length){
+    const cb = el('div',{className:'ov-combos'});
+    for(const combo of card.combos){
+      cb.append(el('div',{className:'combo'},
+        (combo.id||'combo')+': '+(combo.antecedent_seq||0)+' \\u2192 '+(combo.consequent_seq||0)+(combo.note?' ('+combo.note+')':'')));
     }
+    sec.append(cb);
   }
-  refreshTools(actions);   // fold any newly-seen tools into the dropdown
-  refreshTurns();          // recompute per-turn step counts / span / risk from the rows
-  applyFilter();           // re-apply collapse + active filter to new/patched rows
+  return sec;
 }
 
-// A turn boundary opens a sticky, collapsible section header (the turn outline). The
-// header lives OUTSIDE rowState — exactly like the old .turn divider — so the append-only
-// reconcile invariant is untouched. Its gist is the first observed action's plain-English
-// summary (evidence), which is the deliberate split from Story (Story leads with the user
-// prompt; the timeline never shows the prompt).
-function maybeDivider(a){
-  if(!a.prompt_id || a.prompt_id === lastPrompt) return;   // null never opens/closes a turn
-  lastPrompt = a.prompt_id; turnN++;
-  const key = a.prompt_id, folded = bigSession;            // fold state set once per full render (a live-watched session is not re-folded mid-stream)
-  if(folded) collapsedTurns.add(key);
-  const gist = (a.summary || a.target || '').split(String.fromCharCode(96)).join('');
-  const metaEl = el('span',{className:'th-meta'});
-  const riskEl = el('span',{className:'th-risk',title:'flagged'}); riskEl.style.display = 'none';
-  riskEl.setAttribute('role','img'); riskEl.setAttribute('aria-label','flagged');   // risk is not conveyed by colour alone
-  const hdr = el('div',{className:'turnhead'+(folded?'':' open'),role:'button',tabIndex:0},
-    el('span',{className:'th-chev',textContent:'›'}),
-    el('span',{className:'th-n',textContent:'turn '+turnN}),
-    el('span',{className:'th-gist',textContent:gist,title:gist}),
-    metaEl, riskEl);
-  hdr.setAttribute('aria-expanded', String(!folded));
-  hdr._key = key; hdr._metaEl = metaEl; hdr._riskEl = riskEl;
-  hdr.onclick = ()=> toggleTurn(key);
-  hdr.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggleTurn(key); } };
-  turnHeadByKey.set(key, hdr); turns.push({key, hdr}); curTurnKey = key;
-  tbody.append(hdr);
-}
+// The compact "blast radius": files by dir (full changelist behind an expand), the
+// KINDS of secret redacted, and the external hosts reached. Detail on demand — the
+// raw 27-file changelist is NOT the first thing on screen.
+function dirOf(p){ const s=(p||'').replace(/\\/+$/,''); const i=s.lastIndexOf('/'); return i<0 ? './' : s.slice(0,i+1); }
+function shortDir(d){ if(d==='./'||d==='') return '(root)'; const p=d.split('/').filter(Boolean); return p.length<=2 ? d : '\\u2026/'+p.slice(-2).join('/')+'/'; }
+function blastRow(k, v){ return el('div',{className:'blast-row'}, el('span',{className:'blast-k',textContent:k}), v); }
 
-// Every row reads in plain English. File ops keep the path (dir ellipsizes, base
-// pinned) since the tool column already says Read/Write/Edit; everything else
-// shows the plain-English summary (the agent's own description, else synthesized)
-// so a shell command or MCP call is legible at a glance. Raw text is in the title
-// attr and the expanded dossier.
-function targetCell(a){
-  const t = a.target || '';
-  const isPath = a.type==='file_read' || a.type==='file_write' || a.type==='file_edit';
-  const c = el('div',{className:'c-tgt',title:t || a.summary || ''});
-  const i = t.lastIndexOf('/');
-  if(isPath && i >= 0 && i < t.length-1){
-    c.append(el('span',{className:'dir',textContent:t.slice(0,i+1)}), el('span',{className:'base',textContent:t.slice(i+1)}));
-  } else if(isPath && t){
-    c.append(el('span',{className:'base',textContent:t}));
-  } else {
-    c.append(el('span',{className:'sum',textContent:(a.summary||t).split(String.fromCharCode(96)).join('')}));
+function blastRadius(story, card){
+  const wrap = el('div',{className:'blast'});
+  const ann = (card && card.annotations) || {};
+
+  const files = story.files_changed || [];
+  if(files.length){
+    const byDir = Object.create(null);
+    for(const f of files){ const d=dirOf(f.path); byDir[d]=(byDir[d]||0)+1; }
+    const dirs = Object.keys(byDir).sort((a,b)=>byDir[b]-byDir[a]);
+    const v = el('span',{className:'blast-v'});
+    v.append(el('span',{className:'blast-n',textContent:String(files.length)}), ' changed');
+    dirs.slice(0,6).forEach(d=> v.append(el('span',{className:'blast-chip',textContent:shortDir(d)+' '+byDir[d]})));
+    if(dirs.length>6) v.append(el('span',{className:'blast-more',textContent:'+'+(dirs.length-6)+' dirs'}));
+    wrap.append(blastRow('files', v));
+    // the raw changelist is detail — behind a click
+    const list = el('div',{className:'blast-files'});
+    const tog = el('span',{className:'blast-exp',role:'button',tabIndex:0});
+    const label = ()=> '\\u25B8 list '+files.length+' file'+(files.length===1?'':'s');
+    tog.textContent = label();
+    let open=false;
+    const flip=()=>{ open=!open; list.textContent=''; if(open){ files.forEach(f=> list.append(fileRow(f))); tog.textContent='\\u25BE hide files'; } else tog.textContent=label(); };
+    tog.onclick=flip; tog.onkeydown=(e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); flip(); } };
+    wrap.append(tog, list);
   }
-  return c;
-}
 
-function buildRowCells(a, tr, entering){
-  tr.textContent='';
-  tr._a = a;                    // stash for the filter pass (rowMatches / empty-divider hiding)
-  const fail = isFail(a);
-  tr.className = 'trow' + (fail ? ' fail' : a.signals.some(s=>ALERT.has(s)) ? ' flag' : '') +
-    (expanded.has(a.seq) ? ' open' : '') + (entering ? ' enter' : '');
-  tr.append(
-    el('div',{className:'c-time',textContent:hhmmss(a.ts)}),
-    el('div',{className:'c-tool',textContent:(a.tool||a.hook_event)}),
-    targetCell(a));
-  if(a.signals.length){ const sig = el('div',{className:'c-sig'}); a.signals.forEach(s=>sig.append(tag(s))); tr.append(sig); }
-  const dur = fmtDur(a.duration_ms);
-  if(dur) tr.append(el('div',{className:'c-dur',textContent:dur}));
-  tr.append(el('div',{className:'c-pad'}), el('div',{className:'c-chev',textContent:'›'}));
-}
-
-function appendRow(a){
-  maybeDivider(a);
-  const tr = el('div',{role:'row',tabIndex:0});
-  tr._turnKey = curTurnKey;   // which turn this row belongs to (null pre-turn rows never fold)
-  buildRowCells(a, tr, true);
-  tr.onclick = ()=>toggle(a.seq, tr);
-  tr.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggle(a.seq, tr); } };
-  tbody.append(tr);
-  rowState.push({fp: JSON.stringify(a), tr, a});
-  if(expanded.has(a.seq)) insertDetail(a.seq, tr);
-}
-
-// Recompute each turn header's meta (step count · span) and risk dot from its rows. Walks
-// tbody once between .turnhead boundaries with compare-before-write, so a live append writes
-// only deltas and an idle poll never reaches here (the fpTimeline gate returns first).
-function refreshTurns(){
-  if(!tbody) return;
-  let hdr = null, steps = 0, firstTs = null, lastTs = null, flagged = false;
-  const flush = ()=>{ if(hdr) writeTurnMeta(hdr, steps, firstTs, lastTs, flagged); };
-  for(const n of tbody.children){
-    const cl = n.classList;
-    if(cl.contains('turnhead')){ flush(); hdr = n; steps = 0; firstTs = null; lastTs = null; flagged = false; continue; }
-    if(cl.contains('detailrow')) continue;
-    if(!hdr) continue;                     // pre-turn lifecycle rows have no header
-    const a = n._a; if(!a) continue;
-    steps++; if(firstTs == null) firstTs = a.ts; lastTs = a.ts;
-    if(a.signals.some(s=>ALERT.has(s))) flagged = true;   // dot = a genuinely flagged action (matches the Brief count), not a mere failed call
+  const kinds = (story.blast_radius && story.blast_radius.secret_kinds) || [];
+  const secCount = ann['secret-touch'] || 0;
+  if(kinds.length || secCount){
+    const v = el('span',{className:'blast-v'});
+    if(secCount) v.append(el('span',{className:'blast-n',textContent:String(secCount)}), ' redaction'+(secCount===1?'':'s'));
+    kinds.forEach(k=> v.append(el('span',{className:'blast-chip alert',textContent:k})));
+    wrap.append(blastRow('secrets', v));
   }
-  flush();
-}
-function writeTurnMeta(hdr, steps, firstTs, lastTs, flagged){
-  let text = steps + ' step' + (steps === 1 ? '' : 's');
-  const span = fmtSpan(firstTs, lastTs);
-  if(span) text += ' · ' + span;
-  if(hdr._metaEl.textContent !== text) hdr._metaEl.textContent = text;
-  setDisp(hdr._riskEl, flagged);         // single marker; setDisp is compare-before-write
+
+  const hosts = (story.blast_radius && story.blast_radius.egress_hosts) || [];
+  const egCount = ann['external-send'] || 0;
+  if(hosts.length || egCount){
+    const v = el('span',{className:'blast-v'});
+    if(egCount) v.append(el('span',{className:'blast-n',textContent:String(egCount)}), ' send'+(egCount===1?'':'s'));
+    hosts.slice(0,8).forEach(h=> v.append(el('span',{className:'blast-chip alert',textContent:h})));
+    if(hosts.length>8) v.append(el('span',{className:'blast-more',textContent:'+'+(hosts.length-8)+' hosts'}));
+    wrap.append(blastRow('egress', v));
+  }
+
+  if(!wrap.children.length) return el('span',{style:'display:none'});
+  return el('div',{className:'blast-wrap'}, el('div',{className:'blast-h',textContent:'blast radius'}), wrap);
 }
 
-/* ── filters ─────────────────────────────────────────────────────── */
-// A presentation layer over the poll-safe rows: rowMatches() decides per action,
-// applyFilter() toggles display only (never rebuilds), so the 3s reconcile and the
-// selection/expansion state are untouched. Filter state lives at module scope, so it
-// persists across every poll; an idle poll never calls renderTimeline → zero churn.
-function toolKey(a){
-  const t = a.tool || a.hook_event || '';
-  return t.slice(0,5) === 'mcp__' ? 'mcp' : (t || '—');   // collapse mcp__server__tool → mcp
-}
-function isFlagged(a){ return isFail(a) || a.signals.some(s=>ALERT.has(s)); }
-function rowMatches(a){
-  if(!a) return true;
-  if(fltFlagged && !isFlagged(a)) return false;
-  if(fltTool && toolKey(a) !== fltTool) return false;
-  if(fltText && ((a.summary||'')+' '+(a.target||'')).toLowerCase().indexOf(fltText) < 0) return false;
-  return true;
-}
+/* ── filters + turn navigation ───────────────────────────────────── */
+// A presentation layer over the poll-safe turn cards: turnMatchesRec() decides per
+// turn, applyFilter() toggles card display only (never rebuilds), so the fp-gated
+// rebuild and the expansion state are untouched. Filter state lives at module scope
+// so it survives every poll; an idle poll never calls renderSession → zero churn.
+function toolKey(s){ const t = s.tool || s.type || ''; return t.slice(0,5)==='mcp__' ? 'mcp' : (t || 'other'); }   // collapse mcp__server__tool → mcp
 function setDisp(n, vis){ const d = vis ? '' : 'none'; if(n.style.display !== d) n.style.display = d; }
 
-// One display-only walk of tbody. Two independent gates decide a row's visibility:
-//   match   = rowMatches(a)                     (the active flagged/tool/search filter)
-//   folded  = collapsedTurns.has(row._turnKey)  (the turn outline, overridden while filtering)
-// A turn header's visibility tracks whether ANY of its rows MATCH (collapse-independent),
-// which is the fix for the old divider bug: a collapsed turn's header must still show. An
-// active filter always wins over collapse so search hits are never hidden inside a fold.
+function turnMatchesRec(rec){
+  if(fltFlagged && !rec.flagged) return false;
+  if(fltTool && !rec.tools.has(fltTool)) return false;
+  if(fltText && rec.text.indexOf(fltText) < 0) return false;
+  return true;
+}
+// One display-only pass over the turn cards. Flagged-only is the risk-first default;
+// tool/search compose on top. Never rebuilds → selection, scroll and expansion survive.
 function applyFilter(){
-  if(!tbody) return;
   const filterActive = !!(fltFlagged || fltTool || fltText);
-  let shown = 0, total = 0, flaggedMatch = 0;
-  let hdr = null, hdrKey = null, hdrMatch = false;
-  const flushHdr = ()=>{ if(hdr){ setDisp(hdr, filterActive ? hdrMatch : true);
-    const open = filterActive || !collapsedTurns.has(hdrKey);
-    hdr.classList.toggle('open', open);
-    if(hdr.getAttribute('aria-expanded') !== String(open)) hdr.setAttribute('aria-expanded', String(open)); } };
-  const kids = tbody.children;
-  for(let i=0;i<kids.length;i++){
-    const n = kids[i], cl = n.classList;
-    if(cl.contains('turnhead')){ flushHdr(); hdr = n; hdrKey = n._key; hdrMatch = false; continue; }
-    if(cl.contains('detailrow')) continue;   // mirrors its row, set alongside it below
-    total++;
-    const a = n._a, match = rowMatches(a);
-    if(match){ hdrMatch = true; if(a && isFlagged(a)) flaggedMatch++; }   // count flags by match, not visibility (collapse-aware jumpNext reveals them)
-    const vis = match && (filterActive || !collapsedTurns.has(n._turnKey));
-    if(vis) shown++;
-    setDisp(n, vis);
-    const nx = n.nextSibling;
-    if(nx && nx.classList && nx.classList.contains('detailrow')) setDisp(nx, vis);
+  let shown = 0, flaggedShown = 0;
+  for(const rec of turnEls){
+    const vis = turnMatchesRec(rec);
+    setDisp(rec.card, vis);
+    if(vis){ shown++; if(rec.flagged) flaggedShown++; }
   }
-  flushHdr();
-  // collapse is not a filter, so the count reads only while an actual filter narrows the log
-  if(shownCount){ const txt = filterActive ? (shown+' of '+total+' shown') : ''; if(shownCount.textContent !== txt) shownCount.textContent = txt; }
-  if(jumpBtn) jumpBtn.disabled = flaggedMatch === 0;
+  if(shownCount){ const txt = filterActive ? (shown+' of '+turnEls.length+' shown') : ''; if(shownCount.textContent !== txt) shownCount.textContent = txt; }
+  if(jumpBtn) jumpBtn.disabled = flaggedShown === 0;
+  syncFlagged();
 }
 
-// Fold/unfold one turn (display-only → no fetch, no rebuild, no scroll jump or dossier loss).
-function toggleTurn(key){
-  if(collapsedTurns.has(key)) collapsedTurns.delete(key); else collapsedTurns.add(key);
-  const hdr = turnHeadByKey.get(key);
-  if(hdr) hdr.setAttribute('aria-expanded', String(!collapsedTurns.has(key)));
-  applyFilter();
+// Expand/collapse one whole turn (display-only → no fetch, no full rebuild, no scroll
+// jump or dossier loss). storyOpen persists the expanded set across fp-gated rebuilds.
+function toggleTurnCard(key){
+  const open = !storyOpen.has(key);
+  if(open) storyOpen.add(key); else storyOpen.delete(key);
+  const rec = turnEls.find(r=>r.key===key);
+  if(!rec) return;
+  rec.card.classList.toggle('open', open);
+  rec.head.setAttribute('aria-expanded', String(open));
+  if(open) rec.fill(); else rec.body.textContent='';
 }
 
 function syncFlagged(){
   if(!flaggedBtn) return;
   flaggedBtn.classList.toggle('on', fltFlagged);
   flaggedBtn.setAttribute('aria-pressed', String(fltFlagged));
+  flaggedBtn.textContent = fltFlagged ? 'flagged only' : 'all turns';
 }
 
-// Fold newly-seen tools into the dropdown (a live session can grow new tools between
-// polls) without disturbing the selection; drop a stale pick left by a session switch.
-function refreshTools(actions){
+// Fold newly-seen tools into the dropdown without disturbing the selection.
+function refreshToolsFromTurns(turnsData){
   if(!toolSel) return;
-  for(const a of actions){
-    const k = toolKey(a);
-    if(k && !toolOpts.has(k)){ toolOpts.add(k); toolSel.append(el('option',{value:k,textContent:k})); }
-  }
+  for(const t of turnsData) for(const s of (t.steps||[])){ const k = toolKey(s); if(k && !toolOpts.has(k)){ toolOpts.add(k); toolSel.append(el('option',{value:k,textContent:k})); } }
   if(fltTool && !toolOpts.has(fltTool)) fltTool = '';
   if(toolSel.value !== fltTool) toolSel.value = fltTool;
 }
 
+// Control bar over the turn list: flagged-only (the risk-first default) · tool · search ·
+// next-flag. The flagged button is the "show all N ↔ flagged only" toggle from the overview.
 function buildFilterBar(main){
   const head = el('div',{className:'tlhead'});
   const bar = el('div',{className:'filterbar',role:'search'});
 
-  flaggedBtn = el('button',{type:'button',className:'fb-toggle',title:'show only flagged actions',
-    textContent:'flagged', onclick:()=>{ fltFlagged = !fltFlagged; flagCursor = -1; turnCursor = -1; syncFlagged(); applyFilter(); }});
+  flaggedBtn = el('button',{type:'button',className:'fb-toggle',title:'toggle flagged-only vs all turns',
+    onclick:()=>{ fltFlagged = !fltFlagged; flagCursor = -1; turnCursor = -1; applyFilter(); }});
   bar.append(flaggedBtn);
 
   toolOpts = new Set(['']);
@@ -826,12 +936,12 @@ function buildFilterBar(main){
   toolSel.append(el('option',{value:'',textContent:'all tools'}));
   bar.append(toolSel);
 
-  searchBox = el('input',{type:'search',className:'fb-search',placeholder:'search summary or target…',
+  searchBox = el('input',{type:'search',className:'fb-search',placeholder:'search turns, steps, targets…',
     value:fltText, spellcheck:false,
     oninput:()=>{ fltText = searchBox.value.trim().toLowerCase(); flagCursor = -1; turnCursor = -1; applyFilter(); }});
   bar.append(searchBox);
 
-  jumpBtn = el('button',{type:'button',className:'fb-jump',title:'jump to next flagged action · press n',
+  jumpBtn = el('button',{type:'button',className:'fb-jump',title:'jump to next flagged turn · press n',
     textContent:'next flag ↓', onclick:jumpNext});
   bar.append(jumpBtn);
 
@@ -841,125 +951,73 @@ function buildFilterBar(main){
   head.append(bar);
   main.append(head);
   syncFlagged();
-  measureTurnTop();   // pin turn headers just below this filter bar
 }
 
-// The sticky turn headers pin at the bottom edge of the filter bar. Measure it into
-// a CSS var so a wrapped/tall bar never overlaps the pinned header; re-measure on resize.
-function measureTurnTop(){
-  const head = document.querySelector('.tlhead');
-  if(!head) return;
-  const h = Math.round(head.getBoundingClientRect().height);
-  if(h) document.documentElement.style.setProperty('--turntop', h+'px');
-}
-
-// Scroll the next flagged row below the fold into view (wraps at the end); counts
-// only rows the filter leaves visible. Bound to the button and the 'n' key.
-// Step to the next flagged row (wraps). A module cursor guarantees each press ADVANCES
-// (scrollIntoView centres the target, so a geometry-only "first below the fold" would keep
-// re-selecting it). Cold press (cursor reset by a session/view/filter change) seeds from the
-// first flag below the fold to honour "next ↓"; subsequent presses increment. Collapse-aware:
-// a flagged row inside a folded turn is still a candidate and its turn is expanded on landing.
+// Step to the next flagged turn (wraps). A module cursor guarantees each press ADVANCES;
+// a cold press (cursor reset by a session/view/filter change) seeds from the first flag
+// below the fold to honour "next ↓". The landed turn is expanded to reveal its steps.
 function jumpNext(){
-  if(!tbody) return;
-  const cands = rowState.filter(s=> isFlagged(s.a) && rowMatches(s.a));   // filter-aware, collapse-independent
+  const cands = turnEls.filter(rec=> rec.flagged && turnMatchesRec(rec));
   if(!cands.length){ flagCursor = -1; return; }
+  const main = document.getElementById('timeline');
   if(flagCursor < 0 || flagCursor >= cands.length){
-    const main = document.getElementById('timeline'), head = document.querySelector('.tlhead');
-    const fold = main.getBoundingClientRect().top + (head ? head.getBoundingClientRect().height : 0) + 4;
-    const posOf = (s)=>{ if(s.tr.style.display !== 'none') return s.tr.getBoundingClientRect().top;
-      const h = turnHeadByKey.get(s.tr._turnKey); return h ? h.getBoundingClientRect().top : Infinity; };   // folded row → its header's position
-    const seed = cands.findIndex(s => posOf(s) > fold);
+    const fold = main.getBoundingClientRect().top + 4;
+    const seed = cands.findIndex(rec => rec.card.getBoundingClientRect().top > fold);
     flagCursor = seed < 0 ? 0 : seed;
   } else {
     flagCursor = (flagCursor + 1) % cands.length;   // advance; wrap past the last
   }
-  const target = cands[flagCursor];
-  if(target.tr._turnKey != null && collapsedTurns.has(target.tr._turnKey)){
-    collapsedTurns.delete(target.tr._turnKey);
-    const h = turnHeadByKey.get(target.tr._turnKey); if(h) h.setAttribute('aria-expanded','true');
-    applyFilter();   // reveal the row's turn before scrolling to it
-  }
-  target.tr.scrollIntoView({block:'center', behavior:'smooth'});
-  flashRow(target.tr);
+  const rec = cands[flagCursor];
+  if(!storyOpen.has(rec.key)) toggleTurnCard(rec.key);   // reveal its flagged steps
+  rec.card.scrollIntoView({block:'start', behavior:'smooth'});
+  flashCard(rec.card);
 }
-function flashRow(tr){ tr.classList.remove('flash'); void tr.offsetWidth; tr.classList.add('flash'); }
+function flashCard(card){ card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash'); }
 
-// 'n' jumps to the next flagged row — unless focus sits in the filter's own inputs.
+// 'n' → next flagged turn; '[' / ']' → prev / next visible turn. Session-view only,
+// suppressed while typing in the filter inputs.
 document.addEventListener('keydown', (e)=>{
   if(e.key !== 'n' || e.metaKey || e.ctrlKey || e.altKey) return;
+  if(viewMode !== 'session') return;
   const tn = document.activeElement && document.activeElement.tagName;
   if(tn === 'INPUT' || tn === 'SELECT' || tn === 'TEXTAREA') return;
   e.preventDefault(); jumpNext();
 });
-
-// '[' / ']' step through the turn outline (prev / next section). Timeline-only, same input guard.
 document.addEventListener('keydown', (e)=>{
   if((e.key !== '[' && e.key !== ']') || e.metaKey || e.ctrlKey || e.altKey) return;
-  if(viewMode !== 'timeline' || !turns.length) return;
+  if(viewMode !== 'session' || !turnEls.length) return;
   const tn = document.activeElement && document.activeElement.tagName;
   if(tn === 'INPUT' || tn === 'SELECT' || tn === 'TEXTAREA') return;
   e.preventDefault(); gotoTurn(e.key === ']' ? 1 : -1);
 });
-// Scroll the previous/next turn header to the pin line. Reads layout, writes no DOM → poll-safe.
+// Scroll the prev/next visible turn card to the top of the pane. Reads layout, writes no DOM.
 function gotoTurn(dir){
-  const main = document.getElementById('timeline');
-  if(!main) return;
-  const vis = turns.filter(t=> t.hdr.style.display !== 'none');   // skip filtered-out headers
+  const main = document.getElementById('timeline'); if(!main) return;
+  const vis = turnEls.filter(rec=> rec.card.style.display !== 'none');
   if(!vis.length){ turnCursor = -1; return; }
-  const top = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--turntop')) || 38;
   if(turnCursor < 0 || turnCursor >= vis.length){
-    // cold press: seed from the turn currently pinned at the fold so the first press moves from the view;
-    // then step via the cursor (immune to smooth-scroll timing, unlike re-deriving position each press)
-    const fold = main.getBoundingClientRect().top + top + 6;
-    let idx = -1; for(let i=0;i<vis.length;i++){ if(vis[i].hdr.getBoundingClientRect().top <= fold) idx = i; else break; }
+    const fold = main.getBoundingClientRect().top + 6;
+    let idx = -1; for(let i=0;i<vis.length;i++){ if(vis[i].card.getBoundingClientRect().top <= fold) idx = i; else break; }
     turnCursor = idx;
   }
   turnCursor = Math.max(0, Math.min(vis.length-1, turnCursor + dir));
-  // scroll by layout offset, NOT scrollIntoView (which mishandles a stacked sticky header scrolling up)
-  main.scrollTo({ top: Math.max(0, vis[turnCursor].hdr.offsetTop - top - 4), behavior:'smooth' });
+  main.scrollTo({ top: Math.max(0, vis[turnCursor].card.offsetTop - 8), behavior:'smooth' });
 }
-window.addEventListener('resize', ()=>{ cancelAnimationFrame(_rz); _rz = requestAnimationFrame(measureTurnTop); });
-
-/* ── summary ─────────────────────────────────────────────────────── */
-function updateVerdict(actions){
-  const v = document.getElementById('verdict');
-  if(!v) return;
-  const card = cardsById.get(current) || null;
-  const flagN = actions.reduce((n,a)=>n+a.signals.filter(s=>ALERT.has(s)).length,0);
-  const turnsN = new Set(actions.map(a=>a.prompt_id).filter(Boolean)).size;   // the total the turn outline indexes into
-  const fp = JSON.stringify([current, actions.length, turnsN, flagN, card]);
-  if(fp === fpVerdict) return;
-  fpVerdict = fp;
-  v.textContent = '';
-  if(card && card.name) v.append(el('div',{className:'sname',textContent:card.name}));
-  v.append(el('div',{className:'sid'}, el('samp',{textContent:current})));
-
-  const line = el('div',{className:'sline'});
-  line.append(el('span',{className:'n',textContent:String(actions.length)}), ' actions');
-  if(turnsN){ line.append(el('span',{className:'sep',textContent:'·'}),
-    el('span',{className:'n',textContent:String(turnsN)}), ' turns'); }
-  if(flagN){ line.append(el('span',{className:'sep',textContent:'·'}),
-    el('span',{className:'flag jump',role:'button',tabIndex:0,title:'jump to the next flagged action',
-      textContent:flagN+' flagged',onclick:jumpNext,
-      onkeydown:(e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); jumpNext(); }}})); }
-  const span = card && fmtSpan(card.started, card.ended);
-  if(span){ line.append(el('span',{className:'sep',textContent:'·'}), span); }
-  const proj = card && basename(card.cwd);
-  if(proj){ line.append(el('span',{className:'sep',textContent:'·'}), proj); }
-  if(card && RISKWORD[card.verdict]){
-    const hot = card.verdict === 'medium' || card.verdict === 'high';
-    line.append(el('span',{className:'sep',textContent:'·'}),
-      el('span',{className:'risk'+(hot?' hot':''),textContent:RISKWORD[card.verdict]}));
-  }
-  v.append(line);
-
-  if(card && Array.isArray(card.combos)){
-    for(const cb of card.combos){
-      v.append(el('div',{className:'combo'},
-        (cb.id||'combo')+': '+(cb.antecedent_seq||0)+' → '+(cb.consequent_seq||0)+(cb.note?' ('+cb.note+')':'')));
-    }
-  }
+// Session → Graph: root the trace at this turn (the prompt node's id is "p:"+prompt_id).
+function openInGraph(promptId){
+  graphRoot = promptId ? ('p:'+promptId) : null; graphWhole = false; graphExpand = [];
+  setView('graph');
+}
+// Graph → Session landing: reveal the turn that owns a seq (drop flagged-only if it would
+// hide it, expand it) and scroll to it. Called after the session render when a graph node
+// was opened "in Session".
+function revealSeq(seq){
+  const rec = turnEls.find(r=> r.seqs && r.seqs.has(seq));
+  if(!rec) return;
+  if(fltFlagged && !rec.flagged){ fltFlagged = false; applyFilter(); }
+  if(!storyOpen.has(rec.key)) toggleTurnCard(rec.key);
+  rec.card.scrollIntoView({block:'start', behavior:'smooth'});
+  flashCard(rec.card);
 }
 
 /* ── dossier ─────────────────────────────────────────────────────── */
@@ -1139,49 +1197,8 @@ function group(label, rows){ const g = el('div',{className:'fgroup'});
   if(label) g.append(el('div',{className:'glabel',textContent:label}));
   rows.forEach(r=> g.append(r)); return g; }
 
-async function loadStory(){
-  const main = document.getElementById('timeline');
-  if(!current){
-    const key = haveSessions ? 'sel' : 'armed';
-    if(fpStory !== 'e:'+key){ fpStory = 'e:'+key; main.textContent=''; main.append(viewBar(), emptyState(key)); }
-    return;
-  }
-  const sid = current;
-  const story = await api('/api/session/'+encodeURIComponent(sid)+'/story');
-  if(current !== sid) return;   // selection changed mid-fetch
-  const fp = JSON.stringify([sid, story]);
-  if(fp === fpStory) return;    // idle poll → zero DOM work
-  renderStory(main, story);
-  fpStory = fp;                 // commit only after a successful render
-}
-
-function renderStory(main, story){
-  main.textContent='';
-  main.append(viewBar());
-
-  const sum = el('section',{className:'summary'});
-  if(story.name) sum.append(el('div',{className:'sname',textContent:story.name}));
-  sum.append(el('div',{className:'sid'}, el('samp',{textContent:story.session_id})));
-  const c = story.counts || {turns:0,steps:0,files:0,commits:0};
-  const line = el('div',{className:'sline'});
-  line.append(el('span',{className:'n',textContent:String(c.turns)}), ' turns');
-  line.append(el('span',{className:'sep',textContent:'·'}), el('span',{className:'n',textContent:String(c.steps)}), ' steps');
-  if(c.files) line.append(el('span',{className:'sep',textContent:'·'}), el('span',{className:'n',textContent:String(c.files)}), ' files changed');
-  if(c.commits) line.append(el('span',{className:'sep',textContent:'·'}), el('span',{className:'n',textContent:String(c.commits)}), ' commits');
-  if(RISKWORD[story.verdict]){ const hot = story.verdict==='medium'||story.verdict==='high';
-    line.append(el('span',{className:'sep',textContent:'·'}), el('span',{className:'risk'+(hot?' hot':''),textContent:RISKWORD[story.verdict]})); }
-  sum.append(line);
-  if(story.files_changed && story.files_changed.length) sum.append(group('files changed', story.files_changed.map(fileRow)));
-  main.append(sum);
-
-  if(story.reconciliation) main.append(coverageStrip(story.reconciliation));
-
-  const turns = story.turns || [];
-  if(!turns.length){ main.append(el('div',{className:'empty'}, el('p',{textContent:'No actions recorded in this session yet.'}))); return; }
-  const wrap = el('div',{className:'turns'});
-  turns.forEach((t,i)=> wrap.append(turnCard(t, i)));
-  main.append(wrap);
-}
+// loadStory/renderStory merged into loadSession/renderSession (above). The turn card
+// below is the session view's drill-down unit; coverageStrip is its corroboration strip.
 
 // R2: the git-corroboration strip — did what happened on disk match the hook stream?
 const COVLABEL = { ghost_mutation:'ghost', phantom_mutation:'phantom', content_mismatch:'mismatch' };
@@ -1213,65 +1230,83 @@ function coverageStrip(r){
   return box;
 }
 
+// One turn = a collapsible card: collapsed to a one-line summary (turn · gist · meta ·
+// graph↗), expanded to the intent, the "why", the outcomes, and its steps. Click a step
+// to open the same dossier the graph uses. Registered in turnEls for filter + keyboard jump.
 function turnCard(t, i){
   const key = t.prompt_id || ('#'+i);
   const steps = t.steps || [];
-  const card = el('div',{className:'turncard'});
+  const flagged = isFlaggedTurn(t);
+  const open = storyOpen.has(key);
+  const card = el('div',{className:'turncard'+(flagged?' flag':'')+(open?' open':'')});
 
-  // header: turn number (left) · a compact meta line (right) — one row, not a pill band
-  const meta = el('span',{className:'tmeta'});
+  const gistText = oneLine(t.prompt) || oneLine(steps[0] && (steps[0].summary||steps[0].target)) || (t.prompt_id?'no prompt recorded':'session activity');
+  const gist = el('span',{className:'tc-gist'+(t.prompt?'':' muted'),textContent:gistText,title:gistText});
+  const meta = el('span',{className:'tc-meta'});
   meta.append(steps.length+' step'+(steps.length===1?'':'s'));
   const span = fmtSpan(t.started_at, t.ended_at);
   if(span) meta.append(el('span',{className:'sep',textContent:'·'}), span);
   if(t.flagged) meta.append(el('span',{className:'sep',textContent:'·'}), el('span',{className:'tflag',textContent:t.flagged+' flagged'}));
-  // R1: model + token cost for the turn, when the transcript reasoning was captured
   if(t.turn_meta){
     if(t.turn_meta.model) meta.append(el('span',{className:'sep',textContent:'·'}), t.turn_meta.model);
-    const u = t.turn_meta.usage || {};
-    const tok = (u.output_tokens||0) + (u.input_tokens||0);
+    const u = t.turn_meta.usage || {}; const tok = (u.output_tokens||0)+(u.input_tokens||0);
     if(tok) meta.append(el('span',{className:'sep',textContent:'·'}), fmtTokens(tok)+' tok');
   }
-  card.append(el('div',{className:'thd'}, el('span',{className:'tnum',textContent:'turn '+(i+1)}), meta));
+  const gbtn = el('span',{className:'tc-graph',role:'button',tabIndex:0,title:'trace this turn in the graph',textContent:'graph ↗'});
+  const toGraph = (e)=>{ e.preventDefault(); e.stopPropagation(); openInGraph(t.prompt_id); };
+  gbtn.onclick = toGraph;
+  gbtn.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' ') toGraph(e); };
 
-  // the intent (or an honest, quiet note when it predates prompt capture)
-  const hasPrompt = !!t.prompt;
-  const text = hasPrompt ? t.prompt : (t.prompt_id ? 'no prompt recorded' : 'session activity');
-  card.append(el('div',{className:'tprompt'+(hasPrompt?'':' muted'),textContent:text}));
+  const head = el('div',{className:'tc-head',role:'button',tabIndex:0,'aria-expanded':String(open)},
+    el('span',{className:'tc-chev',textContent:'›'}), el('span',{className:'tnum',textContent:'turn '+(i+1)}));
+  if(flagged) head.append(el('span',{className:'th-risk',role:'img','aria-label':'flagged',title:'flagged'}));
+  head.append(gist, meta, gbtn);
+  head.onclick = ()=> toggleTurnCard(key);
+  head.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggleTurnCard(key); } };
+  card.append(head);
 
-  // R1: the agent's reasoning (the "why"), collapsible, redacted
+  const body = el('div',{className:'tc-body'});
+  const fill = ()=> fillTurnBody(body, t, key);
+  if(open) fill();
+  card.append(body);
+
+  turnEls.push({ key, card, head, body, fill, flagged, num:i+1,
+    text: (oneLine(t.prompt)+' '+gistText+' '+steps.map(s=>(s.summary||'')+' '+(s.target||'')).join(' ')).toLowerCase(),
+    tools: new Set(steps.map(toolKey)),
+    seqs: new Set(steps.reduce((acc,s)=>{ if(s.seq!=null) acc.push(s.seq); if(s.post_seq!=null) acc.push(s.post_seq); return acc; }, [])) });
+  return card;
+}
+
+// The expanded turn body: intent · reasoning (why) · outcomes · steps. Steps show
+// directly (the turn is already open) and each opens the shared evidence dossier.
+function fillTurnBody(body, t, key){
+  body.textContent='';
+  const steps = t.steps || [];
+  if(t.prompt) body.append(el('div',{className:'tprompt',textContent:t.prompt}));
+
   if(t.reasoning){
     const rk = key+':why';
     const rbody = el('div',{className:'treason'});
     const rtog = el('div',{className:'tsteps-toggle',tabIndex:0});
-    const rpaint = (o)=>{ rtog.textContent = o ? '▾ hide reasoning' : '▸ why — agent reasoning'; };
+    const rpaint = (o)=>{ rtog.textContent = o ? '▾ hide reasoning' : '▸ why · agent reasoning'; };
     const rfill = ()=>{ rbody.textContent=''; rbody.append(redactedPre(t.reasoning)); };
     if(storyOpen.has(rk)) rfill();
     rpaint(storyOpen.has(rk));
     const rflip = ()=>{ if(storyOpen.has(rk)){ storyOpen.delete(rk); rbody.textContent=''; rpaint(false); } else { storyOpen.add(rk); rfill(); rpaint(true); } };
     rtog.onclick = rflip;
     rtog.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); rflip(); } };
-    card.append(rtog, rbody);
+    body.append(rtog, rbody);
   }
 
-  // outcomes, each in a labelled group
-  if(t.files_changed && t.files_changed.length) card.append(group('changed', t.files_changed.map(fileRow)));
-  if((t.commits||[]).length) card.append(group('commits', t.commits.map(commitRow)));
+  if(t.files_changed && t.files_changed.length) body.append(group('changed', t.files_changed.map(fileRow)));
+  if((t.commits||[]).length) body.append(group('commits', t.commits.map(commitRow)));
 
   if(steps.length){
-    const open = storyOpen.has(key);
-    const body = el('div',{className:'tsteps'});
-    const tog = el('div',{className:'tsteps-toggle',tabIndex:0});
-    const paint = (isOpen)=>{ tog.textContent = isOpen ? '▾ hide steps' : ('▸ show '+steps.length+' step'+(steps.length===1?'':'s')); };
-    const fill = ()=>{ body.textContent=''; steps.forEach(s=> body.append(stepRow(s))); };
-    if(open) fill();
-    paint(open);
-    const flip = ()=>{ if(storyOpen.has(key)){ storyOpen.delete(key); body.textContent=''; paint(false); }
-      else { storyOpen.add(key); fill(); paint(true); } };
-    tog.onclick = flip;
-    tog.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); flip(); } };
-    card.append(tog, body);
+    body.append(el('div',{className:'glabel',textContent:steps.length+' step'+(steps.length===1?'':'s')}));
+    const sb = el('div',{className:'tsteps'});
+    steps.forEach(s=> sb.append(stepRow(s)));
+    body.append(sb);
   }
-  return card;
 }
 
 function fileRow(f){
@@ -1601,9 +1636,15 @@ function closeGraphFull(){
   loadGraph().catch(function(){});
 }
 
-// Open one node's evidence dossier below the tree (reuses the timeline's insertDetail).
+// Open one node's evidence dossier below the tree (reuses the session's insertDetail),
+// with a cross-link back into the Session view (Graph → Session) so the two aren't islands.
 function openGraphDossier(seq, panel){
   panel.textContent='';
+  const toSess = el('span',{className:'gtosession',role:'button',tabIndex:0,title:'reveal this turn in the Session view',textContent:'open in Session ↗'});
+  const go = ()=>{ pendingSeqJump = seq; setView('session'); };
+  toSess.onclick = go;
+  toSess.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); go(); } };
+  panel.append(toSess);
   const anchor = el('div',{className:'ganchor'});
   panel.append(anchor);
   expanded.add(seq);
@@ -1620,6 +1661,7 @@ async function render(){
   setLink(linkOk);
 }
 function tick(){ render().catch(()=>{}).finally(()=>setTimeout(tick, 3000)); }  // self-scheduling: a slow fetch can't overlap the next poll
+wireRail();   // one-time: wire the rail's search + sort controls
 tick();
 `;
 
@@ -1646,6 +1688,10 @@ ${PAGE_CSS}</style>
 <div class="wrap">
   <aside>
     <div class="railhead"><span>sessions</span><span id="sessCount"></span></div>
+    <div class="railctl">
+      <input id="railSearch" type="search" class="rail-search" placeholder="search sessions…" spellcheck="false" autocomplete="off" aria-label="search sessions">
+      <button id="railSort" type="button" class="rail-sort" title="sort: risk-first or most recent">risk</button>
+    </div>
     <div id="sessions"><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div><div class="skel"><i></i><i></i></div></div>
   </aside>
   <main id="timeline"></main>
