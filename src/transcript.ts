@@ -15,10 +15,13 @@
  * off the hook path (the daemon schedules it after replying). Any parse hiccup
  * degrades to null, never throws.
  */
-import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
 
 /** Read at most the last ~512 KB — the just-finished turn's records are at the end. */
 const TAIL_BYTES = 512 * 1024;
+/** Cap the FULL transcript read (R5.3 completeness) so a pathological file can't
+ *  OOM the daemon; skip completeness above it. 64 MB covers every real transcript. */
+const MAX_FULL_BYTES = 64 * 1024 * 1024;
 
 const USAGE_KEYS = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'] as const;
 
@@ -78,6 +81,57 @@ export function readTail(path: string, tailBytes: number = TAIL_BYTES): string |
       /* ignore */
     }
   }
+}
+
+export interface TranscriptToolUse {
+  id: string;
+  name: string;
+  /** the assistant record's timestamp (to test against coverage gaps), or null. */
+  ts: string | null;
+}
+
+/**
+ * R5.3 — every MAIN-AGENT tool call that COMPLETED in the transcript: an assistant
+ * `tool_use` block (NOT `server_tool_use`) that has a matching `tool_result`
+ * (excludes user-interrupted calls that never ran). The transcript is a second
+ * ground truth for the event stream itself — the hook `tool_use_id` equals this
+ * `id` — so a completed tool_use absent from the store is a capture LOSS. Full
+ * read (bounded); subagent tool calls live in separate sidechain files (v1 scope
+ * is the main agent). Returns null when unreadable/oversize (completeness unknown).
+ */
+export function readCompletedToolUses(path: string): TranscriptToolUse[] | null {
+  let raw: Buffer;
+  try {
+    raw = readFileSync(path);
+  } catch {
+    return null;
+  }
+  if (raw.length > MAX_FULL_BYTES) return null;
+  const uses = new Map<string, TranscriptToolUse>();
+  const results = new Set<string>();
+  for (const line of raw.toString('utf8').split('\n')) {
+    if (!line) continue;
+    let o: Record<string, unknown>;
+    try {
+      o = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const msg = o.message as { content?: unknown } | undefined;
+    if (!msg || !Array.isArray(msg.content)) continue;
+    const ts = typeof o.timestamp === 'string' ? o.timestamp : null;
+    if (o.type === 'assistant') {
+      for (const b of msg.content as Record<string, unknown>[]) {
+        // ONLY 'tool_use' — 'server_tool_use' (web_search etc.) has no hook event.
+        if (b && b.type === 'tool_use' && typeof b.id === 'string') uses.set(b.id, { id: b.id, name: typeof b.name === 'string' ? b.name : '', ts });
+      }
+    } else if (o.type === 'user') {
+      for (const b of msg.content as Record<string, unknown>[]) {
+        if (b && b.type === 'tool_result' && typeof b.tool_use_id === 'string') results.add(b.tool_use_id);
+      }
+    }
+  }
+  return [...uses.values()].filter((u) => results.has(u.id));
 }
 
 const CUSTOM_TITLE = /"customTitle":"((?:[^"\\]|\\.)*)"/g;

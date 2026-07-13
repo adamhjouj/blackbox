@@ -805,6 +805,7 @@ function cmdReconcile(args: Args): number {
     let withFindings = 0;
     let totalFindings = 0;
     let uncorroborated = 0;
+    let unexplainedGaps = 0;
     for (const sid of sids) {
       const r = persistReconciliation(store, sid, now);
       if (!r.coverage.corroborated) uncorroborated++;
@@ -816,9 +817,18 @@ function cmdReconcile(args: Args): number {
           for (const f of r.findings) console.log(`  [${f.type}] ${f.path} — ${f.note}`);
         }
       }
+      // R5.3 record completeness (event stream vs transcript).
+      const c = r.coverage.completeness;
+      if (c && c.missing.length) {
+        const unexp = c.missing.filter((m) => m.explained === 'unexplained').length;
+        unexplainedGaps += unexp;
+        if (args.check || args.session) {
+          console.log(`${sid.slice(0, 12)}: record coverage ${c.recorded}/${c.transcript_tool_uses} — ${c.missing.length} missing (${c.missing.length - unexp} daemon-down, ${unexp} UNEXPLAINED)`);
+        }
+      }
     }
-    console.log(`reconciled ${sids.length} session(s): ${withFindings} with discrepancies (${totalFindings} total), ${uncorroborated} uncorroborated`);
-    return 0;
+    console.log(`reconciled ${sids.length} session(s): ${withFindings} with discrepancies (${totalFindings} total), ${uncorroborated} uncorroborated${unexplainedGaps ? `, ${unexplainedGaps} UNEXPLAINED record gap(s)` : ''}`);
+    return unexplainedGaps > 0 && args.check ? 1 : 0;
   } finally {
     store.close();
   }

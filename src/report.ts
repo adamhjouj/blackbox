@@ -15,6 +15,7 @@ import type { AnchorReceipt } from './anchor';
 import { explainEvent, type Danger } from './explain';
 import { hashString } from './hash';
 import { sessionCards, sessionStory } from './read-api';
+import { RECON_VERSION } from './reconcile';
 import { redactText } from './redact';
 import { sessionTitleFromTranscript } from './transcript';
 import type { ComboFire } from './risk-engine';
@@ -312,6 +313,26 @@ export function buildForensicReport(store: Store, sessionId: string, opts: Foren
       `- **Honest limit:** signing is local. Detected: wrong-key re-signing, content alteration at/below a signed head, and signature deletion/rollback (via the out-of-DB \`signing.head\` watermark). NOT resisted: an attacker with full \`~/.blackbox\` write access (DB + key + watermark) can re-sign — **true** off-machine resistance is external anchoring (\`blackbox anchor --to …\`, R6): signed head receipts placed where that attacker can't reach.`,
       '',
     );
+  }
+
+  // ── record completeness (R5.3) — the event stream vs the transcript ───────
+  const recon = store.sessionReconciliation(sessionId, RECON_VERSION);
+  if (recon) {
+    try {
+      const c = (JSON.parse(recon.coverage) as { completeness?: { transcript_tool_uses: number; recorded: number; missing: { explained: string }[] } | null }).completeness;
+      if (c) {
+        const unexplained = c.missing.filter((m) => m.explained === 'unexplained').length;
+        L.push(
+          `- **Record completeness:** ${c.recorded}/${c.transcript_tool_uses} of the transcript's tool calls are in the recording` +
+            (c.missing.length === 0
+              ? ' — complete.'
+              : ` — ${c.missing.length} missing (${c.missing.length - unexplained} explained by a recorder-down window, **${unexplained} UNEXPLAINED**).`),
+          '',
+        );
+      }
+    } catch {
+      /* tolerate a malformed coverage blob */
+    }
   }
 
   // ── the plain-English risk report (its own H1 dropped) ────────────────────

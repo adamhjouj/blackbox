@@ -11,10 +11,13 @@
  * without OS-level collectors, so a "ghost" is reported as UNATTRIBUTED — never
  * asserted to be the agent, and never asserted to be a human.
  */
+import { readCompletedToolUses } from './transcript';
 import type { Store } from './store';
 import type { WorktreeDelta } from './worktree';
 
-/** Reconciliation ruleset version (keyed like risk, so it stays reproducible). */
+/** Reconciliation ruleset version (keyed like risk, so it stays reproducible).
+ *  R5.3 completeness rides inside the existing `coverage` JSON — additive, so no
+ *  version bump / read-path migration is needed. */
 export const RECON_VERSION = 'v1';
 
 function safeParse(s: string | null): Record<string, unknown> | null {
@@ -52,6 +55,44 @@ export interface Coverage {
   files_on_disk: number;
   hook_files: number;
   truncated: boolean; // the delta hit the file cap — phantom detection is suppressed
+  /** R5.3 record completeness (event stream vs transcript), null when unknown. */
+  completeness?: Completeness | null;
+}
+
+/** R5.3 — how completely the event stream captured the transcript's tool calls. */
+export interface Completeness {
+  /** completed main-agent tool calls in the transcript. */
+  transcript_tool_uses: number;
+  /** of those, how many are present in the recorded event stream. */
+  recorded: number;
+  /** transcript tool calls MISSING from the record, each explained or not. */
+  missing: { id: string; name: string; explained: 'daemon-down' | 'unexplained' }[];
+  /** recorded / transcript_tool_uses (1 when the transcript has no tool calls). */
+  coverage_ratio: number;
+}
+
+/**
+ * Reconcile the recorded event stream against the transcript — a second ground
+ * truth for the record ITSELF. A completed tool_use in the transcript that's
+ * absent from the store is a capture LOSS; cross-referenced with the daemon
+ * coverage gaps (R5.2), each loss is labeled `daemon-down` (a known window) or
+ * `unexplained` (the anti-forensics smell). v1 scopes to the main agent (subagent
+ * tool calls are in separate sidechain files). Returns null when unknowable.
+ */
+export function reconcileCompleteness(store: Store, sessionId: string): Completeness | null {
+  const tp = store.sessionTranscriptPath(sessionId);
+  if (!tp) return null;
+  const uses = readCompletedToolUses(tp);
+  if (uses === null) return null;
+  const captured = new Set<string>();
+  for (const e of store.eventsLight(sessionId)) if (e.tool_use_id) captured.add(e.tool_use_id);
+  const gaps = store.coverageGaps();
+  const inGap = (ts: string | null): boolean => !!ts && gaps.some((g) => ts >= g.from && ts <= g.to);
+  const missing = uses
+    .filter((u) => !captured.has(u.id))
+    .map((u) => ({ id: u.id, name: u.name, explained: inGap(u.ts) ? ('daemon-down' as const) : ('unexplained' as const) }));
+  const recorded = uses.length - missing.length;
+  return { transcript_tool_uses: uses.length, recorded, missing, coverage_ratio: uses.length ? recorded / uses.length : 1 };
 }
 
 export interface Reconciliation {
@@ -160,9 +201,12 @@ export function reconcileSession(store: Store, sessionId: string): Reconciliatio
   return reconcile(delta, mutations, { anchorReason, baseline });
 }
 
-/** Compute + persist a session's reconciliation into the un-hashed layer. */
+/** Compute + persist a session's reconciliation into the un-hashed layer — both
+ *  the git ground-truth join (R2) and the record-completeness check (R5.3), which
+ *  rides inside the same `coverage` blob. */
 export function persistReconciliation(store: Store, sessionId: string, nowIso: string): Reconciliation {
   const r = reconcileSession(store, sessionId);
+  r.coverage.completeness = reconcileCompleteness(store, sessionId);
   const events = store.eventsLight(sessionId);
   const last_seq = events.length ? events[events.length - 1]!.seq : 0;
   store.reconciliationUpsert({
