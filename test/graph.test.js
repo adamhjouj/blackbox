@@ -81,7 +81,6 @@ test('files are aggregated by directory into an expandable node; risk files are 
   const tv = buildTrace(mkStory([mkTurn('P1', 'refactor', steps)]), [], { whole: true });
   const dirs = nodesByKind(tv, 'dir');
   assert.equal(dirs.length, 1, 'three files in src/ collapse to one dir node');
-  assert.equal(dirs[0].agg, 3);
   assert.match(dirs[0].label, /3 files in src\//);
   assert.equal(nodesByKind(tv, 'file').length, 0, 'no individual file nodes while aggregated');
   // expanding the dir materializes the individual files

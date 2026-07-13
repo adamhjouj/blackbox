@@ -22,9 +22,9 @@
 import type { SessionStory, Turn, FileChange } from './provenance';
 import type { ComboEvidence } from './read-api';
 
-export type DagKind = 'session' | 'prompt' | 'step' | 'file' | 'dir' | 'commit' | 'finding' | 'host';
+export type DagKind = 'prompt' | 'step' | 'file' | 'dir' | 'commit' | 'finding' | 'host';
 // Distinct relation types so the UI can style edges by meaning.
-export type DagRel = 'caused' | 'wrote' | 'read' | 'committed' | 'flagged' | 'sent' | 'contains';
+export type DagRel = 'caused' | 'wrote' | 'committed' | 'flagged' | 'sent';
 
 export interface DagNode {
   id: string;
@@ -34,7 +34,6 @@ export interface DagNode {
   seq: number | null; // event seq to open the dossier (null for aggregate/entity nodes)
   risk: boolean;
   size: 'lg' | 'md' | 'sm'; // significance tier → node dimensions
-  agg: number | null; // for a 'dir' node: how many files it groups (expandable)
   // layout (filled by layout(); 0 until positioned)
   x: number;
   y: number;
@@ -101,7 +100,7 @@ interface Model {
 }
 
 function node(id: string, kind: DagKind, label: string, sub: string | null, seq: number | null, risk: boolean, size: 'lg' | 'md' | 'sm'): DagNode {
-  return { id, kind, label, sub, seq, risk, size, agg: null, x: 0, y: 0, w: 0, h: 0, layer: 0 };
+  return { id, kind, label, sub, seq, risk, size, x: 0, y: 0, w: 0, h: 0, layer: 0 };
 }
 
 /**
@@ -214,7 +213,6 @@ function buildModel(story: SessionStory, combos: ComboEvidence[]): Model {
         if (group.length >= AGG_MIN && !key.startsWith('@')) {
           const did = 'd:' + parent + ':' + key;
           const dn = node(did, 'dir', group.length + ' files in ' + key, null, null, false, 'md');
-          dn.agg = group.length;
           add(dn);
           dirFiles.set(did, group);
           link(parent, did, 'wrote');
@@ -369,7 +367,6 @@ const DIMS: Record<'lg' | 'md' | 'sm', { w: number; h: number }> = {
   md: { w: 208, h: 46 },
   sm: { w: 168, h: 40 },
 };
-const SESSION_DIM = { w: 176, h: 48 };
 const COL_GAP = 60; // horizontal gap between layers
 const ROW_GAP = 26; // vertical gap between nodes in a layer
 const PAD = 32;
@@ -396,7 +393,7 @@ interface LNode {
 function layout(nodes: DagNode[], edges: DagEdge[]): { width: number; height: number } {
   if (!nodes.length) return { width: PAD * 2, height: PAD * 2 };
   for (const n of nodes) {
-    const d = n.kind === 'session' ? SESSION_DIM : DIMS[n.size];
+    const d = DIMS[n.size];
     n.w = d.w;
     n.h = d.h;
   }
