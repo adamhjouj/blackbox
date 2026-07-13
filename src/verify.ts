@@ -40,17 +40,30 @@ export interface VerifyResult {
  * cannot). Reports the FIRST break with the exact seq and what kind it is.
  */
 export function verify(store: Store, opts: VerifyOptions = {}): VerifyResult {
-  const rows = store.all();
   const meta = store.chainMeta();
+  // Signed checkpoints (small table) are read up front so the streaming walk can
+  // capture just the {hash, event_id} at the seqs they reference — no need to hold
+  // the whole chain in memory to cross-check signatures afterwards.
+  const sigs = opts.trustedPublicKey ? store.signatures() : [];
+  const neededSeqs = new Set<number>();
+  for (const s of sigs) neededSeqs.add(s.seq);
+  if (opts.watermark) neededSeqs.add(opts.watermark.seq);
+  const captured = new Map<number, { hash: string; event_id: string }>();
+
   const sessions = new Set<string>();
   let prevHash = GENESIS;
   let expectedSeq = 1;
+  let walked = 0;
+  let last: { seq: number; hash: string; event_id: string } | null = null;
 
-  for (const row of rows) {
+  // Stream the chain from genesis (constant memory), recomputing every hash and
+  // checking every link. Reports the FIRST break with the exact seq and kind.
+  for (const row of store.iterateAll()) {
     sessions.add(row.session_id);
+    walked += 1;
 
     if (row.seq !== expectedSeq) {
-      return breakAt(row, 'bad-sequence', `expected seq ${expectedSeq}, found ${row.seq}`, rows.length, sessions.size, !!meta);
+      return breakAt(row, 'bad-sequence', `expected seq ${expectedSeq}, found ${row.seq}`, walked, sessions.size, !!meta);
     }
 
     if (row.prev_hash !== prevHash) {
@@ -58,7 +71,7 @@ export function verify(store: Store, opts: VerifyOptions = {}): VerifyResult {
         row,
         'broken-link',
         `prev_hash does not match the prior event's hash — an event was deleted, reordered, or inserted before seq ${row.seq}`,
-        rows.length,
+        walked,
         sessions.size,
         !!meta,
       );
@@ -71,13 +84,15 @@ export function verify(store: Store, opts: VerifyOptions = {}): VerifyResult {
         row,
         'content-tampered',
         `stored hash does not match recomputed hash — a field on this event was modified after it was recorded`,
-        rows.length,
+        walked,
         sessions.size,
         !!meta,
       );
     }
 
+    if (neededSeqs.has(row.seq)) captured.set(row.seq, { hash: row.hash, event_id: row.event_id });
     prevHash = row.hash;
+    last = { seq: row.seq, hash: row.hash, event_id: row.event_id };
     expectedSeq += 1;
   }
 
@@ -85,11 +100,10 @@ export function verify(store: Store, opts: VerifyOptions = {}): VerifyResult {
   // valid PREFIX of a chain is itself internally valid, so without this a
   // deletion of the newest events (or a full wipe) would pass unnoticed.
   if (meta) {
-    const last = rows[rows.length - 1];
-    if (rows.length !== meta.count || !last || last.hash !== meta.head_hash) {
+    if (walked !== meta.count || !last || last.hash !== meta.head_hash) {
       return {
         ok: false,
-        count: rows.length,
+        count: walked,
         sessions: sessions.size,
         anchored: true,
         break: {
@@ -97,7 +111,7 @@ export function verify(store: Store, opts: VerifyOptions = {}): VerifyResult {
           event_id: last?.event_id ?? '(none)',
           reason: 'truncated',
           detail:
-            `chain has ${rows.length} event(s) but the head anchor records ${meta.count} ` +
+            `chain has ${walked} event(s) but the head anchor records ${meta.count} ` +
             `(head seq ${meta.head_seq}) — the most recent events were deleted, or the chain was wiped`,
         },
       };
@@ -110,18 +124,16 @@ export function verify(store: Store, opts: VerifyOptions = {}): VerifyResult {
   // consistently — that the internal walk cannot: an attacker can't forge a
   // signature without the private key. verify(store) with no key skips this.
   if (opts.trustedPublicKey) {
-    const bySeq = new Map(rows.map((r) => [r.seq, r]));
-    const sigs = store.signatures();
     for (const s of sigs) {
       if (!verifyCheckpoint(s.seq, s.head_hash, s.ts, s.sig, opts.trustedPublicKey)) {
-        return sigBreak(s.seq, bySeq.get(s.seq)?.event_id, 'a signed checkpoint does not verify under the trusted key — the chain was re-signed with a different key', rows.length, sessions.size, !!meta);
+        return sigBreak(s.seq, captured.get(s.seq)?.event_id, 'a signed checkpoint does not verify under the trusted key — the chain was re-signed with a different key', walked, sessions.size, !!meta);
       }
-      const ev = bySeq.get(s.seq);
+      const ev = captured.get(s.seq);
       if (!ev) {
-        return sigBreak(s.seq, undefined, `a signed checkpoint at seq ${s.seq} has no event — the chain was truncated below a signed head`, rows.length, sessions.size, !!meta);
+        return sigBreak(s.seq, undefined, `a signed checkpoint at seq ${s.seq} has no event — the chain was truncated below a signed head`, walked, sessions.size, !!meta);
       }
       if (ev.hash !== s.head_hash) {
-        return sigBreak(s.seq, ev.event_id, `the event at signed seq ${s.seq} no longer matches its signature — content was altered after signing`, rows.length, sessions.size, !!meta);
+        return sigBreak(s.seq, ev.event_id, `the event at signed seq ${s.seq} no longer matches its signature — content was altered after signing`, walked, sessions.size, !!meta);
       }
     }
     // Anti-deletion: the newest checkpoint recorded OUT OF THE DB must still be
@@ -132,12 +144,12 @@ export function verify(store: Store, opts: VerifyOptions = {}): VerifyResult {
       const w = opts.watermark;
       const match = sigs.find((s) => s.seq === w.seq && s.head_hash === w.head_hash);
       if (!match || !verifyCheckpoint(w.seq, w.head_hash, match.ts, match.sig, opts.trustedPublicKey)) {
-        return sigBreak(w.seq, bySeq.get(w.seq)?.event_id, `the newest signed checkpoint (seq ${w.seq}) recorded outside the DB is missing or invalid — signatures were deleted or rolled back`, rows.length, sessions.size, !!meta);
+        return sigBreak(w.seq, captured.get(w.seq)?.event_id, `the newest signed checkpoint (seq ${w.seq}) recorded outside the DB is missing or invalid — signatures were deleted or rolled back`, walked, sessions.size, !!meta);
       }
     }
   }
 
-  return { ok: true, count: rows.length, sessions: sessions.size, anchored: !!meta };
+  return { ok: true, count: walked, sessions: sessions.size, anchored: !!meta };
 }
 
 function sigBreak(seq: number, eventId: string | undefined, detail: string, count: number, sessions: number, anchored: boolean): VerifyResult {

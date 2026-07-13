@@ -1,8 +1,8 @@
-import { readFileSync } from 'node:fs';
 import { actionSummary, explainEvent } from './explain';
 import { buildTrace, ALL_DEPTH, type TraceView } from './graph';
 import { buildStory, type EventDetail, type SessionStory } from './provenance';
 import { RECON_VERSION, type Coverage, type Discrepancy } from './reconcile';
+import { sessionTitleFromTranscript } from './transcript';
 import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
 import type { SessionRiskRow, Store } from './store';
 import type { BlackboxEvent } from './types';
@@ -129,34 +129,17 @@ function sessionCwd(store: Store, sessionId: string): string | null {
 }
 
 /** Human-readable session name: the user's `/rename` (customTitle) if set, else
- *  the AI-generated title (aiTitle), read from the session transcript. Cached
+ *  the AI-generated title (aiTitle), read from the session transcript via a
+ *  BOUNDED tail read (never the whole multi-MB file on the HTTP path). Cached
  *  once found (names rarely change; a daemon restart re-resolves). */
 const nameCache = new Map<string, string>();
-function lastMatch(text: string, re: RegExp): string | null {
-  let m: RegExpExecArray | null;
-  let last: string | null = null;
-  while ((m = re.exec(text)) !== null) last = m[1] ?? null;
-  return last;
-}
 function sessionName(store: Store, sessionId: string): string | null {
   const cached = nameCache.get(sessionId);
   if (cached) return cached;
   const tp = store.sessionTranscriptPath(sessionId);
   if (!tp) return null;
-  let text: string;
-  try {
-    text = readFileSync(tp, 'utf8');
-  } catch {
-    return null;
-  }
-  const raw = lastMatch(text, /"customTitle":"((?:[^"\\]|\\.)*)"/g) ?? lastMatch(text, /"aiTitle":"((?:[^"\\]|\\.)*)"/g);
-  if (raw == null) return null;
-  let name = raw;
-  try {
-    name = JSON.parse(`"${raw}"`); // unescape any JSON escapes
-  } catch {
-    /* keep raw */
-  }
+  const name = sessionTitleFromTranscript(tp);
+  if (name == null) return null;
   if (nameCache.size > 4096) nameCache.clear();
   nameCache.set(sessionId, name);
   return name;

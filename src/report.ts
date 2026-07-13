@@ -11,11 +11,11 @@
  * never writes, never rescores, and never touches the hash chain. Risk is read
  * from the persisted layer with the same r2→r1 version fallback the UI uses.
  */
-import { readFileSync } from 'node:fs';
 import { explainEvent, type Danger } from './explain';
 import { hashString } from './hash';
 import { sessionCards, sessionStory } from './read-api';
 import { redactText } from './redact';
+import { sessionTitleFromTranscript } from './transcript';
 import type { ComboFire } from './risk-engine';
 import { RISK_FLAGS, RULESET_VERSION, type FlagId, type RulesetVersion } from './risk-rules';
 import type { Store } from './store';
@@ -99,29 +99,10 @@ const COMBO_LABEL: Record<string, string> = {
 };
 
 // Human-readable session name: the user's /rename (customTitle), else the AI title
-// (aiTitle), read from the session transcript — the same source read-api uses.
-function lastMatch(text: string, re: RegExp): string | null {
-  let m: RegExpExecArray | null;
-  let last: string | null = null;
-  while ((m = re.exec(text)) !== null) last = m[1] ?? null;
-  return last;
-}
+// (aiTitle), via the same bounded tail read read-api uses (never the whole file).
 function sessionName(store: Store, sessionId: string): string | null {
   const tp = store.sessionTranscriptPath(sessionId);
-  if (!tp) return null;
-  let text: string;
-  try {
-    text = readFileSync(tp, 'utf8');
-  } catch {
-    return null;
-  }
-  const raw = lastMatch(text, /"customTitle":"((?:[^"\\]|\\.)*)"/g) ?? lastMatch(text, /"aiTitle":"((?:[^"\\]|\\.)*)"/g);
-  if (raw == null) return null;
-  try {
-    return JSON.parse(`"${raw}"`); // unescape JSON escapes
-  } catch {
-    return raw;
-  }
+  return tp ? sessionTitleFromTranscript(tp) : null;
 }
 
 /** One RISK-flagged action, collapsed across its Pre/Post rows. */

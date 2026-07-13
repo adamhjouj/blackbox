@@ -46,7 +46,10 @@ function mergeUsage(acc: Record<string, number> | null, u: Record<string, unknow
  * it; otherwise uses the LAST assistant record's promptId (the just-finished turn —
  * the Stop payload may not carry a prompt_id). Returns null if nothing usable.
  */
-export function readTurnIntent(path: string, promptId?: string | null): TurnIntent | null {
+/** Read at most the last `tailBytes` of a file as UTF-8, dropping the partial
+ *  first line when the cut lands mid-line. Both transcript readers use this so
+ *  neither loads a multi-MB `.jsonl` in full on the read/HTTP path. */
+export function readTail(path: string, tailBytes: number = TAIL_BYTES): string | null {
   let fd: number;
   try {
     fd = openSync(path, 'r');
@@ -55,7 +58,7 @@ export function readTurnIntent(path: string, promptId?: string | null): TurnInte
   }
   try {
     const size = fstatSync(fd).size;
-    const start = Math.max(0, size - TAIL_BYTES);
+    const start = Math.max(0, size - tailBytes);
     const len = size - start;
     if (len <= 0) return null;
     const buf = Buffer.alloc(len);
@@ -65,7 +68,51 @@ export function readTurnIntent(path: string, promptId?: string | null): TurnInte
       const nl = text.indexOf('\n'); // drop a partial first line from the tail cut
       if (nl >= 0) text = text.slice(nl + 1);
     }
+    return text;
+  } catch {
+    return null;
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
+const CUSTOM_TITLE = /"customTitle":"((?:[^"\\]|\\.)*)"/g;
+const AI_TITLE = /"aiTitle":"((?:[^"\\]|\\.)*)"/g;
+
+function lastTitleMatch(text: string, re: RegExp): string | null {
+  re.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  let last: string | null = null;
+  while ((m = re.exec(text)) !== null) last = m[1] ?? null;
+  return last;
+}
+
+/**
+ * The human-readable session title from a transcript: the user's /rename
+ * (customTitle) if set, else the AI-generated aiTitle. Bounded tail read — the
+ * title record is re-emitted continuously, so the newest sits near EOF (verified
+ * within 512 KB across every local transcript, incl. a 36 MB one). Last-match-wins.
+ */
+export function sessionTitleFromTranscript(path: string): string | null {
+  const text = readTail(path);
+  if (text == null) return null;
+  const raw = lastTitleMatch(text, CUSTOM_TITLE) ?? lastTitleMatch(text, AI_TITLE);
+  if (raw == null) return null;
+  try {
+    return JSON.parse('"' + raw + '"') as string; // unescape any JSON escapes
+  } catch {
+    return raw;
+  }
+}
+
+export function readTurnIntent(path: string, promptId?: string | null): TurnIntent | null {
+  const text = readTail(path);
+  if (text == null) return null;
+  try {
     // Only `user` records carry `promptId`; `assistant` records don't. So assign
     // each assistant to the most recent user promptId before it (the turn it belongs
     // to). Tool-result "user" records within a turn carry no new promptId, so the
@@ -119,11 +166,5 @@ export function readTurnIntent(path: string, promptId?: string | null): TurnInte
     return { promptId: resolvedPromptId, reasoning: parts.join('\n\n'), model, usage, stop_reason, assistant_messages: matching.length };
   } catch {
     return null;
-  } finally {
-    try {
-      closeSync(fd);
-    } catch {
-      /* ignore */
-    }
   }
 }

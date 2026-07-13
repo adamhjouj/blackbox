@@ -276,6 +276,19 @@ export class Store {
 
   constructor(path: string) {
     this.db = new Database(path);
+    // Read the on-disk schema version BEFORE any exec/ALTER. A newer blackbox may
+    // have written a hash-format this build can't reproduce; touching it (even a
+    // metadata-only ADD COLUMN) then re-stamping the version would mask the
+    // mismatch and could break verify(). Refuse instead. (user_version is 0 on a
+    // fresh or legacy DB — both are safely stamped to SCHEMA_VERSION below.)
+    const onDisk = this.db.pragma('user_version', { simple: true });
+    if (typeof onDisk === 'number' && onDisk > SCHEMA_VERSION) {
+      this.db.close();
+      throw new Error(
+        `blackbox: the store at ${path} is schema version ${onDisk}, but this build only understands ${SCHEMA_VERSION}. ` +
+          `It was written by a newer blackbox — upgrade this install instead of risking a hash-format mismatch.`,
+      );
+    }
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.pragma('busy_timeout = 5000');
@@ -366,6 +379,13 @@ export class Store {
   /** All events in chain order. */
   all(): BlackboxEvent[] {
     return this.db.prepare('SELECT * FROM events ORDER BY seq ASC').all() as BlackboxEvent[];
+  }
+
+  /** Stream every event in chain order without materialising the whole chain —
+   *  constant memory for verify() on a large store (the full chain includes the
+   *  heavy `raw` column). Holds a read transaction for the life of the iterator. */
+  *iterateAll(): Generator<BlackboxEvent> {
+    yield* this.db.prepare('SELECT * FROM events ORDER BY seq ASC').iterate() as IterableIterator<BlackboxEvent>;
   }
 
   count(): number {
