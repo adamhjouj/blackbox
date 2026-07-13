@@ -11,6 +11,7 @@ import {
 } from './git-collector';
 import { sessionAnchor } from './mutation';
 import { normalize, normalizeAndCapture, reasoningEvent, worktreeBaseEvent, worktreeDeltaEvent } from './normalize';
+import { emitReceipt, loadAnchorConfig, receiptFromSignature } from './anchor';
 import { persistReconciliation } from './reconcile';
 import { readTurnIntent } from './transcript';
 import { captureWorktreeDelta } from './worktree';
@@ -130,6 +131,12 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     /* no config yet — accept unauthenticated git events (local-trust) */
   }
 
+  // R6 external anchoring: emit a signed head receipt to the configured target at
+  // the same boundaries we sign at. Loaded at startup; enabling it takes effect on
+  // the next daemon restart (a `blackbox anchor --to` also emits one immediately).
+  const anchorCfg = loadAnchorConfig();
+  let lastAnchoredSeq = 0;
+
   const hdr = (h: http.IncomingHttpHeaders, k: string): string => {
     const v = h[k];
     return Array.isArray(v) ? (v[0] ?? '') : (v ?? '');
@@ -168,7 +175,20 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     if (!signingKeys) return;
     try {
       const s = signHead(store, signingKeys, new Date().toISOString());
-      if (s) writeWatermark(blackboxDir(), { seq: s.seq, head_hash: s.head_hash }); // out-of-DB anti-deletion anchor
+      if (s) {
+        writeWatermark(blackboxDir(), { seq: s.seq, head_hash: s.head_hash }); // out-of-DB anti-deletion anchor
+        // External anchor: ship the receipt off the hook path (git plumbing / a POST
+        // must never delay the reply), and only once per distinct signed head.
+        if (anchorCfg.target && s.seq > lastAnchoredSeq) {
+          lastAnchoredSeq = s.seq;
+          const receipt = receiptFromSignature(s);
+          setTimeout(() => {
+            void emitReceipt(anchorCfg.target!, receipt, { token: anchorCfg.token }).then((r) => {
+              if (!r.ok) log(`anchor emit failed (${anchorCfg.target!.kind}): ${r.error}`);
+            });
+          }, 0).unref?.();
+        }
+      }
     } catch (err) {
       log(`signing failed: ${(err as Error).message}`);
     }

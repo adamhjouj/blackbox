@@ -4,7 +4,7 @@ A forensic **black-box recorder** for AI coding agents (Claude Code first) and M
 
 **One sentence:** *When your AI agent does something risky, know exactly what it touched — every file, every command, every MCP call — in five minutes, not five hours.*
 
-V1 is **record + flag**: read-only, local-first, zero-config. Nothing leaves the machine. Incident response and rollback are later rungs. The only V1 metric that matters is **2-week retention** — does anyone keep it installed?
+V1 is **record + flag**: read-only, local-first, zero-config. Nothing leaves the machine *by default* — the sole exception is an opt-in external anchor target (`blackbox anchor --to https://…`), which sends only tiny signed head *receipts* off-machine, and only when you configure one. Incident response and rollback are later rungs. The only V1 metric that matters is **2-week retention** — does anyone keep it installed?
 
 > **New agent / new session picking this up? Read this file, then `docs/ARCHITECTURE.md`, then the `docs/PHASE*.md` for each shipped system.** The recorder and four forensic systems on top of it are built; work now is hardening + new forensic capability.
 

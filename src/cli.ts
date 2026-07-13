@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import { ANCHOR_REF, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAnchor, readReceipts, receiptFromSignature, setAnchorTarget, type AnchorTarget } from './anchor';
 import { disableAutostart, enableAutostart } from './autostart';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { canonical } from './hash';
@@ -9,7 +10,7 @@ import { init, uninit, versionWarning } from './init';
 import { normalizeAndCapture } from './normalize';
 import { persistReconciliation } from './reconcile';
 import { buildForensicReport, buildReport, defaultReportSession } from './report';
-import { loadPublicKey, loadWatermark } from './sign';
+import { ensureKeypair, loadPublicKey, loadWatermark, signHead } from './sign';
 import { backfill, computeSession, rescoreSession } from './risk-engine';
 import { isKnownRuleset, KNOWN_RULESETS, RULESET_VERSION, rulesFingerprint, type RulesetVersion } from './risk-rules';
 import { unwatchGlobal, unwatchRepo, watchGlobal, watchRepo } from './watch';
@@ -33,6 +34,9 @@ interface Args {
   olderThan?: string;
   forensic?: boolean;
   anchor?: string;
+  to?: string;
+  useAnchors?: boolean;
+  anchorTarget?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -53,7 +57,12 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--older-than') out.olderThan = argv[++i];
     else if (a === '--forensic') out.forensic = true;
     else if (a === '--anchor') out.anchor = argv[++i];
-    else if (a === '-h' || a === '--help') out._.push('help');
+    else if (a === '--to') out.to = argv[++i];
+    else if (a === '--anchors') {
+      out.useAnchors = true;
+      const nx = argv[i + 1];
+      if (nx && !nx.startsWith('-')) out.anchorTarget = argv[++i]; // optional explicit target
+    } else if (a === '-h' || a === '--help') out._.push('help');
     else out._.push(a as string);
   }
   return out;
@@ -244,16 +253,33 @@ function cmdIngest(args: Args): number {
   return n === 0 || skipped > 0 || errored > 0 ? 3 : 0;
 }
 
+function resolveAnchorReceipts(args: Args): { receipts: ReturnType<typeof readReceipts>; label: string } | null {
+  if (!args.useAnchors) return { receipts: [], label: '' };
+  const target = args.anchorTarget ? parseAnchorTarget(args.anchorTarget) : loadAnchorConfig().target;
+  if (!target) {
+    console.error('--anchors: no anchor target (pass one, or set it with `blackbox anchor --to <target>`)');
+    return null;
+  }
+  return { receipts: readReceipts(target), label: anchorLabel(target) };
+}
+
+function anchorLabel(t: AnchorTarget): string {
+  return t.kind === 'file' ? `file ${t.path}` : t.kind === 'git' ? `git ${t.repo}` : `url ${t.url}`;
+}
+
 function cmdVerify(args: Args): number {
+  const resolved = resolveAnchorReceipts(args);
+  if (!resolved) return 2;
   const store = new Store(resolveDb(args.db));
   const pubkey = loadPublicKey();
   const sigCount = store.signatures().length;
-  const r = verify(store, { trustedPublicKey: pubkey, watermark: loadWatermark() });
+  const r = verify(store, { trustedPublicKey: pubkey, watermark: loadWatermark(), anchors: resolved.receipts });
   store.close();
   if (r.ok) {
     const anchor = r.anchored ? '' : ' (no head anchor — truncation not checked)';
     const sig = pubkey && sigCount ? ` · ${sigCount} signed checkpoint(s) OK` : pubkey ? '' : ' (unsigned — run `blackbox init` to enable signing)';
-    console.log(`✓ chain intact — ${r.count} event(s) across ${r.sessions} session(s)${anchor}${sig}`);
+    const anc = resolved.receipts.length ? ` · ${resolved.receipts.length} external anchor(s) OK` : '';
+    console.log(`✓ chain intact — ${r.count} event(s) across ${r.sessions} session(s)${anchor}${sig}${anc}`);
     return 0;
   }
   const b = r.break!;
@@ -261,6 +287,78 @@ function cmdVerify(args: Args): number {
   console.error(`  event_id: ${b.event_id}`);
   console.error(`  ${b.detail}`);
   return 1;
+}
+
+async function cmdAnchor(args: Args): Promise<number> {
+  const sub = args._[1];
+
+  if (sub === 'verify') {
+    const target = args.anchorTarget ? parseAnchorTarget(args.anchorTarget) : loadAnchorConfig().target;
+    if (!target) {
+      console.error('anchor verify: no anchor target (set one with `blackbox anchor --to <target>`)');
+      return 2;
+    }
+    const receipts = readReceipts(target);
+    if (!receipts.length) {
+      console.error(`anchor verify: no receipts found at ${anchorLabel(target)}`);
+      return 2;
+    }
+    const store = new Store(resolveDb(args.db));
+    const r = verify(store, { trustedPublicKey: loadPublicKey(), watermark: loadWatermark(), anchors: receipts });
+    store.close();
+    if (r.ok) {
+      console.log(`✓ ${receipts.length} external anchor(s) at ${anchorLabel(target)} match the chain — no rewrite`);
+      return 0;
+    }
+    console.error(`✗ anchor check FAILED at seq ${r.break!.seq} (${r.break!.reason})`);
+    console.error(`  ${r.break!.detail}`);
+    return 1;
+  }
+
+  if (sub === 'push') {
+    const target = loadAnchorConfig().target;
+    if (!target || target.kind !== 'git') {
+      console.error('anchor push: the configured target is not a git anchor');
+      return 2;
+    }
+    try {
+      pushGitAnchor(target.repo);
+      console.log(`pushed ${ANCHOR_REF} to origin`);
+      return 0;
+    } catch (err) {
+      console.error(`anchor push failed: ${(err as Error).message}`);
+      return 1;
+    }
+  }
+
+  // default: `anchor --to <target>` — set the target and emit a receipt now.
+  if (!args.to) {
+    console.error('usage: blackbox anchor --to <file:PATH | git:REPO | https://URL>   |   anchor verify   |   anchor push');
+    return 2;
+  }
+  let target: AnchorTarget;
+  try {
+    target = setAnchorTarget(args.to);
+  } catch (err) {
+    console.error((err as Error).message);
+    return 2;
+  }
+  const store = new Store(resolveDb(args.db));
+  const s = signHead(store, ensureKeypair(), new Date().toISOString());
+  store.close();
+  if (!s) {
+    console.log(`anchor target set to ${args.to} (chain is empty — nothing to anchor yet).`);
+    return 0;
+  }
+  const res = await emitReceipt(target, receiptFromSignature(s), { token: loadAnchorConfig().token });
+  if (!res.ok) {
+    console.error(`anchor target set to ${args.to}, but the first receipt failed to emit: ${res.error}`);
+    return 1;
+  }
+  console.log(`anchor target set to ${args.to}; receipt for head seq ${s.seq} written.`);
+  if (target.kind === 'https') console.log('  note: https anchoring sends signed head receipts off-machine — the one exception to blackbox staying local.');
+  console.log('  the daemon will emit a fresh receipt at each session boundary (restart it to pick up this target).');
+  return 0;
 }
 
 function cmdHead(args: Args): number {
@@ -678,11 +776,20 @@ function cmdReport(args: Args): number {
       console.error('report: no sessions recorded');
       return 2;
     }
+    // Fold any configured external anchors into the case-file's custody block.
+    const anchorTarget = loadAnchorConfig().target;
+    const anchors = anchorTarget ? readReceipts(anchorTarget) : [];
     const md = args.forensic
-      ? buildForensicReport(store, sessionId, { ruleset, trustedPublicKey: loadPublicKey(), watermark: loadWatermark() })
+      ? buildForensicReport(store, sessionId, {
+          ruleset,
+          trustedPublicKey: loadPublicKey(),
+          watermark: loadWatermark(),
+          anchors,
+          anchorLabel: anchorTarget ? anchorLabel(anchorTarget) : null,
+        })
       : buildReport(store, sessionId, ruleset);
     if (args.forensic && args.anchor) {
-      console.error(`  (--anchor ${args.anchor} is a stub — remote head anchoring is not yet wired; see docs)`);
+      console.error(`  (note: external anchoring is now its own command — \`blackbox anchor --to ${args.anchor}\`; --anchor on report is ignored)`);
     }
     if (args.out) {
       writeFileSync(args.out, md);
@@ -729,6 +836,8 @@ async function main(): Promise<number> {
       return cmdPrune(args);
     case 'reconcile':
       return cmdReconcile(args);
+    case 'anchor':
+      return cmdAnchor(args);
     case 'report':
       return cmdReport(args);
     case 'head':

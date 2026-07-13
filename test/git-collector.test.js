@@ -7,7 +7,7 @@ const { execFileSync } = require('node:child_process');
 const { mkdtempSync, rmSync, writeFileSync, existsSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { normalizeGit } = require('../dist/git-collector.js');
+const { normalizeGit, parseRefLines } = require('../dist/git-collector.js');
 const { captureWorktreeDelta } = require('../dist/worktree.js');
 const { GIT_SAFE_FLAGS } = require('../dist/git-safe.js');
 
@@ -36,6 +36,16 @@ test('normalizeGit redacts a secret in the commit subject/author before persiste
 // not run that program. GIT_SAFE_FLAGS (`-c core.fsmonitor=false`) neutralises it.
 test('W0.1b: GIT_SAFE_FLAGS pins core.fsmonitor=false and core.hooksPath', () => {
   assert.deepEqual([...GIT_SAFE_FLAGS], ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null']);
+});
+
+test('R6: parseRefLines skips blackbox own anchor ref (no self-generated noise)', () => {
+  const z = '0'.repeat(40);
+  const a = 'a'.repeat(40);
+  const b = 'b'.repeat(40);
+  const body = [`${z} ${a} refs/blackbox/anchors`, `${a} ${b} refs/heads/main`].join('\n');
+  const deltas = parseRefLines(body);
+  assert.equal(deltas.length, 1);
+  assert.equal(deltas[0].ref, 'refs/heads/main');
 });
 
 test('W0.1b: captureWorktreeDelta does NOT execute a hostile core.fsmonitor', () => {

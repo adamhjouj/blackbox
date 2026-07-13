@@ -13,7 +13,8 @@ const { join } = require('node:path');
 const { normalizeAndCapture } = require('../dist/normalize.js');
 const { verify } = require('../dist/verify.js');
 const { signCheckpoint } = require('../dist/sign.js');
-const { parseAnchorTarget, keyFingerprint, receiptFromSignature, emitReceipt, readReceipts, ANCHOR_REF } = require('../dist/anchor.js');
+const { buildForensicReport } = require('../dist/report.js');
+const { parseAnchorTarget, keyFingerprint, receiptFromSignature, emitReceipt, readReceipts, setAnchorTarget, loadAnchorConfig, ANCHOR_REF } = require('../dist/anchor.js');
 const { tempStore } = require('./util.js');
 
 const TS = '2026-02-01T00:00:00.000Z';
@@ -176,6 +177,56 @@ test('git provider: receipts commit to a dedicated ref, read back, and verify', 
   } finally {
     store.cleanup();
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// ---- config round-trip -----------------------------------------------------
+test('setAnchorTarget persists to config and loadAnchorConfig reads it back', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bb-anchor-cfg-'));
+  try {
+    const cfg = join(dir, 'config.json');
+    const t = setAnchorTarget('file:/var/anchors.jsonl', cfg);
+    assert.deepEqual(t, { kind: 'file', path: '/var/anchors.jsonl' });
+    assert.deepEqual(loadAnchorConfig(cfg).target, { kind: 'file', path: '/var/anchors.jsonl' });
+    assert.throws(() => setAnchorTarget('not-a-target', cfg), /invalid anchor target/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- forensic case-file custody block --------------------------------------
+test('case-file custody block reports matching external anchors', () => {
+  const store = tempStore();
+  try {
+    seed(store, 3);
+    const A = kp();
+    const md = buildForensicReport(store, 'S', {
+      trustedPublicKey: A.publicKeyPem,
+      anchors: [receipt(A, 3, store.chainMeta().head_hash)],
+      anchorLabel: 'file ~/anchors.jsonl',
+      generatedAt: TS,
+    });
+    assert.match(md, /External anchors:/);
+    assert.match(md, /match the chain/);
+    assert.ok(!md.includes('MISMATCH'));
+  } finally {
+    store.cleanup();
+  }
+});
+
+test('case-file custody block flags an external-anchor mismatch', () => {
+  const store = tempStore();
+  try {
+    seed(store, 3);
+    const A = kp();
+    const md = buildForensicReport(store, 'S', {
+      trustedPublicKey: A.publicKeyPem,
+      anchors: [receipt(A, 3, 'sha256:' + 'e'.repeat(64))],
+      generatedAt: TS,
+    });
+    assert.match(md, /MISMATCH/);
+  } finally {
+    store.cleanup();
   }
 });
 

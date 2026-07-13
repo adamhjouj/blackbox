@@ -11,6 +11,7 @@
  * never writes, never rescores, and never touches the hash chain. Risk is read
  * from the persisted layer with the same r2→r1 version fallback the UI uses.
  */
+import type { AnchorReceipt } from './anchor';
 import { explainEvent, type Danger } from './explain';
 import { hashString } from './hash';
 import { sessionCards, sessionStory } from './read-api';
@@ -237,6 +238,10 @@ export interface ForensicOptions {
   trustedPublicKey?: string | null;
   /** Out-of-DB high-watermark — enables the anti-deletion check. */
   watermark?: Watermark | null;
+  /** R6 external anchor receipts — enables the off-machine rewrite-proof check. */
+  anchors?: AnchorReceipt[] | null;
+  /** Human label for where the anchors came from (e.g. "file ~/anchors.jsonl"). */
+  anchorLabel?: string | null;
   /** Wall-clock stamp (ISO); passed in so the case-file is deterministic in tests. */
   generatedAt?: string;
 }
@@ -250,7 +255,8 @@ export interface ForensicOptions {
  */
 export function buildForensicReport(store: Store, sessionId: string, opts: ForensicOptions = {}): string {
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
-  const v = verify(store, { trustedPublicKey: opts.trustedPublicKey, watermark: opts.watermark });
+  const anchors = opts.anchors ?? [];
+  const v = verify(store, { trustedPublicKey: opts.trustedPublicKey, watermark: opts.watermark, anchors });
   const meta = store.chainMeta();
   const sig = store.latestSignature();
   // Redact the session name — it's read raw from the transcript and could carry a secret.
@@ -281,10 +287,28 @@ export function buildForensicReport(store: Store, sessionId: string, opts: Foren
   } else {
     L.push(`- **Signature:** none — this store was never keyed (\`blackbox init\` generates the key; the daemon signs at session boundaries).`);
   }
-  L.push(
-    `- **Honest limit:** signing is local. Detected: wrong-key re-signing, content alteration at/below a signed head, and signature deletion/rollback (via the out-of-DB \`signing.head\` watermark). NOT resisted: an attacker with full \`~/.blackbox\` write access (DB + key + watermark) can re-sign — **true** off-machine resistance is \`--anchor\` (ship signed heads to a remote append-only log), a later/enterprise capability.`,
-    '',
-  );
+  // ── external anchors (R6) ─────────────────────────────────────────────────
+  if (anchors.length) {
+    const seqs = anchors.map((a) => a.seq).sort((x, y) => x - y);
+    const anchorOk = v.ok || v.break!.reason !== 'anchor-mismatch';
+    L.push(
+      `- **External anchors:** ${anchors.length} signed head receipt(s)${opts.anchorLabel ? ` from ${opts.anchorLabel}` : ''}, covering seq ${seqs[0]}–${seqs[seqs.length - 1]} — ` +
+        (opts.trustedPublicKey
+          ? anchorOk
+            ? 'all match the chain under the trusted key (no off-machine-witnessed rewrite)'
+            : `**MISMATCH** — an off-machine receipt no longer matches the chain: ${v.break!.detail}`
+          : 'present but not checked (no trusted key supplied)'),
+    );
+    L.push(
+      `- **Honest limit:** the internal chain + local signing prove tamper-*evidence*; these external receipts add tamper-*resistance* a full-\`~/.blackbox\` attacker can't forge, because a receipt off the machine can't be re-signed. Any surviving receipt that no longer matches PROVES a rewrite.`,
+      '',
+    );
+  } else {
+    L.push(
+      `- **Honest limit:** signing is local. Detected: wrong-key re-signing, content alteration at/below a signed head, and signature deletion/rollback (via the out-of-DB \`signing.head\` watermark). NOT resisted: an attacker with full \`~/.blackbox\` write access (DB + key + watermark) can re-sign — **true** off-machine resistance is external anchoring (\`blackbox anchor --to …\`, R6): signed head receipts placed where that attacker can't reach.`,
+      '',
+    );
+  }
 
   // ── the plain-English risk report (its own H1 dropped) ────────────────────
   const rep = buildReport(store, sessionId, opts.ruleset);

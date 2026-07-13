@@ -295,7 +295,9 @@ export function parseRefLines(body: string): RefDelta[] {
     const [old, nw, ...rest] = parts;
     if (!SHA_RE.test(old!) || !SHA_RE.test(nw!)) continue; // reject non-SHA → blocks arg injection
     const ref = rest.join(' ');
-    if (/^(AUTO_MERGE|ORIG_HEAD)$/.test(ref) || ref.startsWith('refs/stash')) continue;
+    // Skip housekeeping refs and blackbox's OWN anchor ref — anchoring a watched
+    // repo (refs/blackbox/anchors) must not feed self-generated noise back in.
+    if (/^(AUTO_MERGE|ORIG_HEAD)$/.test(ref) || ref.startsWith('refs/stash') || ref.startsWith('refs/blackbox/')) continue;
     if (ZERO.test(old!) && ZERO.test(nw!)) continue;
     out.push({ old: old!, new: nw!, ref });
   }

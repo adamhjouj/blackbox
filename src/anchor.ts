@@ -14,9 +14,10 @@
  * to an explicitly-configured `https:` target — off unless the user sets one.
  */
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { GIT_SAFE_FLAGS } from './git-safe';
 import { hashString } from './hash';
+import { configPath } from './paths';
 import type { SignatureRow } from './store';
 
 /** The ref a git-provider anchor writes its receipt chain to. Skipped by the git
@@ -110,6 +111,38 @@ export async function emitReceipt(target: AnchorTarget, receipt: AnchorReceipt, 
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
+}
+
+/** The anchor target + optional bearer token from `~/.blackbox/config.json`. */
+export function loadAnchorConfig(cfgPath: string = configPath()): { target: AnchorTarget | null; token: string | null } {
+  try {
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as { anchor?: string; anchor_token?: string };
+    return { target: parseAnchorTarget(cfg.anchor), token: typeof cfg.anchor_token === 'string' ? cfg.anchor_token : null };
+  } catch {
+    return { target: null, token: null };
+  }
+}
+
+/** Persist an anchor target into config.json (validating it first). Returns the
+ *  parsed target so the caller can act on it. Throws on an unrecognised spec. */
+export function setAnchorTarget(spec: string, cfgPath: string = configPath()): AnchorTarget {
+  const target = parseAnchorTarget(spec);
+  if (!target) throw new Error(`invalid anchor target "${spec}" — use file:<path>, git:<repo>, or https://<url>`);
+  let cfg: Record<string, unknown> = {};
+  try {
+    cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
+  } catch {
+    /* fresh/absent config */
+  }
+  cfg.anchor = spec;
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  return target;
+}
+
+/** Push the git receipt ref to the repo's default remote — the one explicit step
+ *  that takes a local-secondary git anchor off-machine (custom refs don't auto-push). */
+export function pushGitAnchor(repo: string): void {
+  git(repo, ['push', 'origin', `${ANCHOR_REF}:${ANCHOR_REF}`]);
 }
 
 /** Read back the receipts a target holds. `file`/`git` are locally readable; `https`
