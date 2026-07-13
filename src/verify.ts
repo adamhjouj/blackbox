@@ -1,3 +1,4 @@
+import type { AnchorReceipt } from './anchor';
 import { GENESIS, hashEvent } from './hash';
 import { verifyCheckpoint, type Watermark } from './sign';
 import type { Store } from './store';
@@ -8,7 +9,8 @@ export type BreakReason =
   | 'broken-link' // prev_hash doesn't match the prior event (deletion / reorder / insertion)
   | 'bad-sequence' // seq isn't contiguous from 1
   | 'truncated' // fewer events than the head anchor records (tail deleted / full wipe)
-  | 'signature-invalid'; // a signed checkpoint doesn't verify (chain re-signed with a wrong key / altered after signing)
+  | 'signature-invalid' // a signed checkpoint doesn't verify (chain re-signed with a wrong key / altered after signing)
+  | 'anchor-mismatch'; // an off-machine anchor receipt no longer matches the chain (rewrite PROVEN)
 
 export interface VerifyOptions {
   /** The trusted Ed25519 public key (PEM). When present, signed checkpoints are
@@ -18,6 +20,10 @@ export interface VerifyOptions {
    *  that checkpoint to still be present + valid in the DB — catching signature
    *  deletion / tail-rollback by a writer who can't reach the watermark file. */
   watermark?: Watermark | null;
+  /** R6 external anchor receipts (from a file / git / remote target). When present
+   *  with a trusted key, verify requires the chain's event at each anchored seq to
+   *  still hash to the receipt — a mismatch PROVES an off-machine-witnessed rewrite. */
+  anchors?: AnchorReceipt[] | null;
 }
 
 export interface VerifyResult {
@@ -45,8 +51,10 @@ export function verify(store: Store, opts: VerifyOptions = {}): VerifyResult {
   // capture just the {hash, event_id} at the seqs they reference — no need to hold
   // the whole chain in memory to cross-check signatures afterwards.
   const sigs = opts.trustedPublicKey ? store.signatures() : [];
+  const anchors = opts.trustedPublicKey ? opts.anchors ?? [] : [];
   const neededSeqs = new Set<number>();
   for (const s of sigs) neededSeqs.add(s.seq);
+  for (const a of anchors) neededSeqs.add(a.seq);
   if (opts.watermark) neededSeqs.add(opts.watermark.seq);
   const captured = new Map<number, { hash: string; event_id: string }>();
 
@@ -147,9 +155,29 @@ export function verify(store: Store, opts: VerifyOptions = {}): VerifyResult {
         return sigBreak(w.seq, captured.get(w.seq)?.event_id, `the newest signed checkpoint (seq ${w.seq}) recorded outside the DB is missing or invalid — signatures were deleted or rolled back`, walked, sessions.size, !!meta);
       }
     }
+
+    // R6 external anchors. A receipt witnessed off-machine can't be re-signed by a
+    // ~/.blackbox writer, so a receipt that no longer matches the chain PROVES a
+    // rewrite — the one attack R3's local key + watermark cannot resist.
+    for (const a of anchors) {
+      if (!verifyCheckpoint(a.seq, a.head_hash, a.signed_at, a.sig, opts.trustedPublicKey)) {
+        return anchorBreak(a.seq, captured.get(a.seq)?.event_id, `an external anchor receipt at seq ${a.seq} does not verify under the trusted key — it is forged, or the key was rotated`, walked, sessions.size, !!meta);
+      }
+      const ev = captured.get(a.seq);
+      if (!ev) {
+        return anchorBreak(a.seq, undefined, `an external anchor witnessed a head at seq ${a.seq} but the chain has no such event — history was truncated below an anchored head`, walked, sessions.size, !!meta);
+      }
+      if (ev.hash !== a.head_hash) {
+        return anchorBreak(a.seq, ev.event_id, `the event at externally-anchored seq ${a.seq} no longer matches its off-machine receipt — history was rewritten (the anchor proves it)`, walked, sessions.size, !!meta);
+      }
+    }
   }
 
   return { ok: true, count: walked, sessions: sessions.size, anchored: !!meta };
+}
+
+function anchorBreak(seq: number, eventId: string | undefined, detail: string, count: number, sessions: number, anchored: boolean): VerifyResult {
+  return { ok: false, count, sessions, anchored, break: { seq, event_id: eventId ?? '(none)', reason: 'anchor-mismatch', detail } };
 }
 
 function sigBreak(seq: number, eventId: string | undefined, detail: string, count: number, sessions: number, anchored: boolean): VerifyResult {
