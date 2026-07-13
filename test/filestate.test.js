@@ -5,11 +5,24 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
+const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const { normalizeAndCapture, worktreeDeltaEvent } = require('../dist/normalize.js');
 const { fileHistory, reconstructAt } = require('../dist/filestate.js');
 const { tempStore, normEv } = require('./util.js');
 
 const sha256 = (s) => 'sha256:' + createHash('sha256').update(s, 'utf8').digest('hex');
+
+// An edit event whose cwd is a REAL git repo (for git-base reconstruction).
+function editIn(store, cwd, file, oldS, newS, session = 'S') {
+  const { event, blob } = normalizeAndCapture(
+    { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: file, old_string: oldS, new_string: newS }, session_id: session, tool_use_id: 'ge' + ++TU, cwd },
+    '2026-02-01T00:00:0' + (TU % 10) + '.000Z',
+  );
+  return store.append(event, blob);
+}
 
 let TU = 0;
 function write(store, file, content, session = 'S') {
@@ -177,14 +190,69 @@ test('reconstructAt STOPS (never fabricates) when an edit diverges from the base
   }
 });
 
-test('reconstructAt is unavailable when the first in-session touch is an edit (needs git base)', () => {
+test('reconstructAt is unavailable when the first in-session touch is an edit and there is no git base', () => {
   const store = tempStore();
   try {
-    const e = edit(store, '/repo/pre-existing.ts', 'old', 'new'); // no prior Write snapshot
+    const e = edit(store, '/repo/pre-existing.ts', 'old', 'new'); // cwd /repo is not a real repo
     const r = reconstructAt(store, 'S', '/repo/pre-existing.ts', e.seq);
     assert.equal(r.confidence, 'unavailable');
     assert.match(r.divergence.reason, /no in-session snapshot/);
   } finally {
     store.cleanup();
+  }
+});
+
+test('reconstructAt anchors on the GIT BASE for an edit-only file (the common case)', () => {
+  const store = tempStore();
+  const repo = mkdtempSync('/tmp/bbfsgit-');
+  try {
+    const g = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'ignore' });
+    g('init', '-q');
+    g('config', 'user.email', 't@t');
+    g('config', 'user.name', 't');
+    writeFileSync(join(repo, 'auth.ts'), 'a\nb\nc\n');
+    g('add', '-A');
+    g('commit', '-q', '-m', 'base');
+    const base = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+    // a session anchored at that HEAD edits the pre-existing file (no in-session Write)
+    store.append(normEv({ session_id: 'S', phase: 'session_start', hook_event: 'SessionStart', tool_use_id: null, cwd: repo, detail: JSON.stringify({ anchor: { head_sha: base, branch: 'main' } }) }));
+    const e = editIn(store, repo, join(repo, 'auth.ts'), 'b', 'B');
+
+    const r = reconstructAt(store, 'S', join(repo, 'auth.ts'), e.seq);
+    assert.equal(r.content, 'a\nB\nc\n', 'replayed the edit onto the git-base content');
+    assert.equal(r.confidence, 'replayed', 'git-base replay is unverified without an end hash');
+  } finally {
+    store.cleanup();
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('reconstructAt REFUSES the git base when the file was dirty at session start', () => {
+  const store = tempStore();
+  const repo = mkdtempSync('/tmp/bbfsdirty-');
+  try {
+    const g = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'ignore' });
+    g('init', '-q');
+    g('config', 'user.email', 't@t');
+    g('config', 'user.name', 't');
+    writeFileSync(join(repo, 'auth.ts'), 'a\nb\nc\n');
+    g('add', '-A');
+    g('commit', '-q', '-m', 'base');
+    const base = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+    store.append(normEv({ session_id: 'S', phase: 'session_start', hook_event: 'SessionStart', tool_use_id: null, cwd: repo, detail: JSON.stringify({ anchor: { head_sha: base, branch: 'main' } }) }));
+    // worktree_base says auth.ts was already dirty at start (sha256 != HEAD content)
+    const baseDelta = { base, head: base, files: [{ path: 'auth.ts', status: 'M', insertions: 0, deletions: 0, sha256: sha256('DIRTY DIFFERENT\n') }], truncated: false, hash_truncated: false };
+    const { worktreeBaseEvent } = require('../dist/normalize.js');
+    store.append(worktreeBaseEvent('S', baseDelta, '2026-02-01T00:00:00.000Z'));
+    const e = editIn(store, repo, join(repo, 'auth.ts'), 'b', 'B');
+
+    const r = reconstructAt(store, 'S', join(repo, 'auth.ts'), e.seq);
+    assert.equal(r.confidence, 'unavailable');
+    assert.match(r.divergence.reason, /already modified at session start/);
+  } finally {
+    store.cleanup();
+    rmSync(repo, { recursive: true, force: true });
   }
 });

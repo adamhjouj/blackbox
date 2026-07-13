@@ -11,7 +11,11 @@
  * (dirty-base detection, multi-match stops, ghost-mutation demotion, end-hash
  * validation) so it can never present a file state that never existed on disk.
  */
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
+import { resolveRepoTop } from './git-collector';
+import { GIT_SAFE_FLAGS } from './git-safe';
 import type { DiffStat, MutationFact } from './mutation';
 import type { Store } from './store';
 import type { BlackboxEvent } from './types';
@@ -61,12 +65,13 @@ function asFact(detail: string | null): MutationFact | null {
   }
 }
 
-/** The end-of-session on-disk sha256 for a path, from the R2 worktree delta fact. */
-function endSha(store: Store, sessionId: string, query: string): string | null {
+/** The recorded on-disk sha256 for a path from an R2 worktree fact — `WorktreeDelta`
+ *  (end of session) or `WorktreeBase` (dirty-at-start baseline). */
+function worktreeSha(store: Store, sessionId: string, query: string, hookEvent: 'WorktreeDelta' | 'WorktreeBase', key: 'worktree_delta' | 'worktree_base'): string | null {
   for (const e of store.eventsLight(sessionId)) {
-    if (e.hook_event !== 'WorktreeDelta' || !e.detail) continue;
+    if (e.hook_event !== hookEvent || !e.detail) continue;
     try {
-      const files = (JSON.parse(e.detail) as { worktree_delta?: { files?: { path: string; sha256: string | null }[] } }).worktree_delta?.files ?? [];
+      const files = (JSON.parse(e.detail) as Record<string, { files?: { path: string; sha256: string | null }[] }>)[key]?.files ?? [];
       const hit = files.find((f) => pathMatches(query, f.path) || pathMatches(f.path, query));
       if (hit) return hit.sha256;
     } catch {
@@ -75,6 +80,7 @@ function endSha(store: Store, sessionId: string, query: string): string | null {
   }
   return null;
 }
+const endSha = (store: Store, sessionId: string, query: string): string | null => worktreeSha(store, sessionId, query, 'WorktreeDelta', 'worktree_delta');
 
 /**
  * The ordered mutation history for a file within a session. Mutation facts ride on
@@ -196,11 +202,51 @@ function stop(path: string, seq: number, content: string | null, divSeq: number,
  * full-body Write at/before atSeq, then replays the patches after it. Refuses
  * (never fabricates) when it can't anchor or hits a divergence.
  */
+/** The repo-relative path for `git show`, robust to symlinked roots (e.g. macOS
+ *  /var → /private/var): canonicalize both the repo top and the target before the
+ *  prefix strip. Falls back to the raw prefix; null when the target isn't in-repo. */
+function repoRelative(top: string, query: string): string | null {
+  let realTop = top;
+  try {
+    realTop = realpathSync(top);
+  } catch {
+    /* top should exist, but tolerate */
+  }
+  let q = query;
+  try {
+    q = realpathSync(query); // the target may be gone (edited/deleted) — then use as-is
+  } catch {
+    /* keep the raw query */
+  }
+  if (q.startsWith(realTop + '/')) return q.slice(realTop.length + 1);
+  if (query.startsWith(top + '/')) return query.slice(top.length + 1);
+  return null;
+}
+
+/** The file's committed bytes at the session's start HEAD (`git show base:relpath`),
+ *  or null if unrecoverable (no repo / gone object / file didn't exist at base). */
+function gitBaseContent(store: Store, sessionId: string, baseSha: string | null, query: string): string | null {
+  if (!baseSha) return null;
+  const cwd = store.eventsLight(sessionId).find((e) => e.cwd)?.cwd ?? null;
+  if (!cwd) return null;
+  const top = resolveRepoTop(cwd);
+  if (!top) return null;
+  const relpath = repoRelative(top, query);
+  if (relpath == null) return null;
+  try {
+    return execFileSync('git', ['-C', top, ...GIT_SAFE_FLAGS, 'show', `${baseSha}:${relpath}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 500, maxBuffer: 16 * 1024 * 1024 });
+  } catch {
+    return null;
+  }
+}
+
 export function reconstructAt(store: Store, sessionId: string, query: string, atSeq: number): Reconstruction {
   const h = fileHistory(store, sessionId, query);
   const upto = h.mutations.filter((m) => m.seq <= atSeq);
   if (!upto.length) return { path: query, seq: atSeq, content: null, confidence: 'unavailable' };
 
+  // Anchor: the latest in-session full-body Write ≤ atSeq (an exact snapshot), else
+  // the file's committed git-base content. Replay the patches AFTER the anchor.
   let anchorIdx = -1;
   for (let i = upto.length - 1; i >= 0; i--) {
     if (upto[i]!.kind === 'body') {
@@ -208,22 +254,36 @@ export function reconstructAt(store: Store, sessionId: string, query: string, at
       break;
     }
   }
-  if (anchorIdx === -1) {
-    return {
-      path: query,
-      seq: atSeq,
-      content: null,
-      confidence: 'unavailable',
-      divergence: { seq: upto[0]!.seq, reason: 'no in-session snapshot before this seq; the pre-session state would need the git base (not reconstructed here)' },
-    };
-  }
-  const anchor = upto[anchorIdx]!;
-  if (anchor.content == null) {
-    return { path: query, seq: atSeq, content: null, confidence: 'unavailable', divergence: { seq: anchor.seq, reason: `the snapshot at seq ${anchor.seq} was not stored (${anchor.skip_reason ?? 'pruned'})` } };
+
+  let content: string;
+  let replayFrom: number;
+  if (anchorIdx !== -1) {
+    const anchor = upto[anchorIdx]!;
+    if (anchor.content == null) {
+      return { path: query, seq: atSeq, content: null, confidence: 'unavailable', divergence: { seq: anchor.seq, reason: `the snapshot at seq ${anchor.seq} was not stored (${anchor.skip_reason ?? 'pruned'})` } };
+    }
+    content = anchor.content;
+    replayFrom = anchorIdx + 1;
+  } else {
+    // No in-session snapshot — anchor on the git base (an edit-only file the agent
+    // changed but didn't create this session).
+    const base = gitBaseContent(store, sessionId, h.base_sha, query);
+    if (base == null) {
+      return { path: query, seq: atSeq, content: null, confidence: 'unavailable', divergence: { seq: upto[0]!.seq, reason: 'no in-session snapshot and the pre-session git base is unrecoverable (no repo / GC-d object / file absent at base)' } };
+    }
+    // Dirty-base check: if the path was already modified at SessionStart, the git
+    // base (= HEAD) is NOT the true starting bytes, and no body was stored → refuse
+    // rather than replay onto a wrong anchor. (A recorded base sha matching the
+    // git content means the "dirty" file equalled HEAD — safe to proceed.)
+    const baseSha = worktreeSha(store, sessionId, query, 'WorktreeBase', 'worktree_base');
+    if (baseSha && baseSha !== 'sha256:' + createHash('sha256').update(base, 'utf8').digest('hex')) {
+      return { path: query, seq: atSeq, content: null, confidence: 'unavailable', divergence: { seq: upto[0]!.seq, reason: 'the file was already modified at session start; the git-base anchor is not its true starting state' } };
+    }
+    content = base;
+    replayFrom = 0;
   }
 
-  let content = anchor.content;
-  for (let i = anchorIdx + 1; i < upto.length; i++) {
+  for (let i = replayFrom; i < upto.length; i++) {
     const m = upto[i]!;
     if (m.redacted) return stop(query, atSeq, content, m.seq, 'a redacted mutation cannot be replayed (its content was scrubbed at capture)');
     if (m.tool === 'NotebookEdit') return stop(query, atSeq, content, m.seq, 'NotebookEdit cell sources are not line-replayable');
