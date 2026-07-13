@@ -68,10 +68,3 @@ Phases 0 and 1 are built (`docs/PHASE0.md`, `docs/PHASE1.md`). Remaining:
 - **Hardening follow-ups** — durable (redacting) spool + launchd auto-start so daemon-down loss is closed; `--global` git watch broader testing.
 
 **Pending doc task:** `docs/ARCHITECTURE.md` still describes collectors loosely (pre-Tier-1) and repeats the docs' `tool_output` field name — reconcile it with what shipped (see `docs/PHASE1.md`).
-
----
-
-## Environment notes (for whoever/whatever runs here)
-- This workspace is a **standalone clone** of `github.com/adamhjouj/blackbox` on `main`. Push/pull works via SSH (`adamhjouj`). `gh` CLI is **not** logged in.
-- The original parent repo lives under `a local directory`, which macOS TCC blocks from terminal access — don't try to reach it.
-- Tier-2 tools (`eslogger`) need root; the machine has the full native stack (`eslogger`, `fs_usage`, `dtrace`, `lsof`, `tcpdump`, git 2.50) if deep-mode work resumes.
