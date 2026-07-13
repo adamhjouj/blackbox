@@ -93,7 +93,7 @@ function emitGit(repo: string, receipt: AnchorReceipt): void {
  * `https` POSTs the receipt (the sole off-machine egress, opt-in only) with a short
  * timeout. Never throws into the caller — anchoring can never fail a recording.
  */
-export async function emitReceipt(target: AnchorTarget, receipt: AnchorReceipt, opts: { token?: string | null } = {}): Promise<{ ok: boolean; error?: string }> {
+export async function emitReceipt(target: AnchorTarget, receipt: AnchorReceipt, opts: { token?: string | null; push?: boolean } = {}): Promise<{ ok: boolean; error?: string; warn?: string }> {
   try {
     if (target.kind === 'file') {
       appendFileSync(target.path, JSON.stringify(receipt) + '\n');
@@ -101,6 +101,16 @@ export async function emitReceipt(target: AnchorTarget, receipt: AnchorReceipt, 
     }
     if (target.kind === 'git') {
       emitGit(target.repo, receipt);
+      // Default-on external anchoring pushes the receipt ref off-machine. A push
+      // failure (offline / no remote) must NOT discard the receipt we just wrote to
+      // the local ref — surface it as a warning, keep the local emit successful.
+      if (opts.push) {
+        try {
+          pushGitAnchor(target.repo);
+        } catch (err) {
+          return { ok: true, warn: `git anchor push failed: ${(err as Error).message}` };
+        }
+      }
       return { ok: true };
     }
     // https — the only path that leaves the machine.
@@ -113,13 +123,18 @@ export async function emitReceipt(target: AnchorTarget, receipt: AnchorReceipt, 
   }
 }
 
-/** The anchor target + optional bearer token from `~/.blackbox/config.json`. */
-export function loadAnchorConfig(cfgPath: string = configPath()): { target: AnchorTarget | null; token: string | null } {
+/** The anchor target + optional bearer token from `~/.blackbox/config.json`, plus
+ *  the derived posture: whether a git anchor auto-pushes (default on — the point of
+ *  default-on anchoring; disable with `anchor_push:false` for a local-secondary ref),
+ *  and whether the user explicitly accepted the reduced-security local-only mode. */
+export function loadAnchorConfig(cfgPath: string = configPath()): { target: AnchorTarget | null; token: string | null; push: boolean; localOnly: boolean } {
   try {
-    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as { anchor?: string; anchor_token?: string };
-    return { target: parseAnchorTarget(cfg.anchor), token: typeof cfg.anchor_token === 'string' ? cfg.anchor_token : null };
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as { anchor?: string; anchor_token?: string; anchor_push?: boolean; anchor_local_only?: boolean };
+    const target = parseAnchorTarget(cfg.anchor);
+    const push = target?.kind === 'git' && cfg.anchor_push !== false;
+    return { target, token: typeof cfg.anchor_token === 'string' ? cfg.anchor_token : null, push, localOnly: cfg.anchor_local_only === true };
   } catch {
-    return { target: null, token: null };
+    return { target: null, token: null, push: false, localOnly: false };
   }
 }
 
@@ -139,10 +154,67 @@ export function setAnchorTarget(spec: string, cfgPath: string = configPath()): A
   return target;
 }
 
+/** Mark (or clear) the explicit reduced-security "local-only" custody posture in
+ *  config — receipts stay on this machine. Recorded so `status`/reports can warn
+ *  that off-machine tamper-evidence is OFF as an ACKNOWLEDGED choice, not a silent
+ *  one. Anchoring on by default means this flag should be the exception. */
+export function setAnchorLocalOnly(on: boolean, cfgPath: string = configPath()): void {
+  let cfg: Record<string, unknown> = {};
+  try {
+    cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
+  } catch {
+    /* fresh/absent config */
+  }
+  if (on) cfg.anchor_local_only = true;
+  else delete cfg.anchor_local_only;
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+}
+
 /** Push the git receipt ref to the repo's default remote — the one explicit step
  *  that takes a local-secondary git anchor off-machine (custom refs don't auto-push). */
 export function pushGitAnchor(repo: string): void {
   git(repo, ['push', 'origin', `${ANCHOR_REF}:${ANCHOR_REF}`]);
+}
+
+/** Best-effort: the top-level of the git repo containing `cwd`, or null if `cwd`
+ *  isn't inside a work tree. */
+export function repoTopOf(cwd: string): string | null {
+  try {
+    return git(cwd, ['rev-parse', '--show-toplevel']) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The push URL of the repo's default remote (`origin`, else the first remote), or
+ *  null if the repo has no remote configured. */
+export function repoRemoteUrl(repo: string): string | null {
+  try {
+    const remotes = git(repo, ['remote'])
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!remotes.length) return null;
+    const name = remotes.includes('origin') ? 'origin' : remotes[0]!;
+    return git(repo, ['remote', 'get-url', name]) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the DEFAULT external anchor for `blackbox init`: a git receipt-ref anchor
+ * on the repo containing `cwd`, but ONLY if that repo has a remote to push receipts
+ * to (somewhere genuinely off-machine). Returns null when `cwd` isn't a git repo or
+ * the repo has no remote — the caller must then FAIL LOUDLY rather than silently
+ * degrade to local-only custody.
+ */
+export function resolveDefaultAnchor(cwd: string): { spec: string; repo: string; remote: string } | null {
+  const repo = repoTopOf(cwd);
+  if (!repo) return null;
+  const remote = repoRemoteUrl(repo);
+  if (!remote) return null;
+  return { spec: `git:${repo}`, repo, remote };
 }
 
 /** Read back the receipts a target holds. `file`/`git` are locally readable; `https`

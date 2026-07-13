@@ -3,8 +3,9 @@ import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { configPath, ensureBlackboxDir } from './paths';
+import { blackboxDir, configPath, ensureBlackboxDir } from './paths';
 import { ensureKeypair } from './sign';
+import { loadAnchorConfig, resolveDefaultAnchor, type AnchorTarget } from './anchor';
 
 /** Tool events get a "*" matcher; the rest are matcher-less groups. */
 const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'];
@@ -120,6 +121,46 @@ export function init(port: number): { settingsPath: string; addedEvents: string[
   return { settingsPath: path, addedEvents, token };
 }
 
+export type InitAnchorDecision =
+  | { ok: true; kind: 'existing'; target: AnchorTarget }
+  | { ok: true; kind: 'git'; spec: string; remote: string }
+  | { ok: true; kind: 'local-only'; path: string }
+  | { ok: false; message: string };
+
+/**
+ * Decide the external-anchor custody posture for `blackbox init`. External anchoring
+ * is REQUIRED by default: a signed head receipt placed off-machine, so a process with
+ * full ~/.blackbox write access can't rewrite history and re-sign it undetectably.
+ * Order of resolution:
+ *   1. an anchor already configured → keep it;
+ *   2. explicit `--local-only-anchor` → the acknowledged reduced-security fallback;
+ *   3. else auto-resolve a git receipt anchor from a repo (with a remote) at `cwd`;
+ *   4. else FAIL LOUDLY — never silently run with no off-machine custody.
+ * Pure: reads config + runs `git`, writes nothing. The CLI applies the result.
+ */
+export function decideInitAnchor(opts: { cwd: string; localOnly?: boolean; cfgPath?: string }): InitAnchorDecision {
+  const existing = loadAnchorConfig(opts.cfgPath).target;
+  if (existing) return { ok: true, kind: 'existing', target: existing };
+  if (opts.localOnly) return { ok: true, kind: 'local-only', path: join(blackboxDir(), 'anchors.jsonl') };
+  const resolved = resolveDefaultAnchor(opts.cwd);
+  if (resolved) return { ok: true, kind: 'git', spec: resolved.spec, remote: resolved.remote };
+  return {
+    ok: false,
+    message:
+      'refusing to finish setup: no external anchor target could be resolved.\n\n' +
+      'External anchoring places a signed head receipt OFF this machine, so a process\n' +
+      'with full ~/.blackbox write access cannot rewrite history and re-sign it\n' +
+      'undetectably. It is required by default. Fix it one of these ways:\n' +
+      '  • run `blackbox init` from a git repo that has a remote (receipts push there), or\n' +
+      '  • set a target explicitly:\n' +
+      '      blackbox anchor --to git:<repo>          (push receipts to that repo’s remote)\n' +
+      '      blackbox anchor --to file:</other/disk>  (a second disk / synced folder)\n' +
+      '      blackbox anchor --to https://<url>       (a receipt endpoint), or\n' +
+      '  • accept the reduced-security local-only posture EXPLICITLY:\n' +
+      '      blackbox init --local-only-anchor\n',
+  };
+}
+
 /** Remove blackbox http hooks; leave every other hook untouched. */
 export function uninit(): { settingsPath: string; removed: number } {
   const path = claudeSettingsPath();
@@ -141,8 +182,11 @@ export function uninit(): { settingsPath: string; removed: number } {
   return { settingsPath: path, removed };
 }
 
-/** Ensure ~/.blackbox/config.json has a token; update the port. Returns the token. */
-function ensureConfig(port: number): string {
+/** Ensure ~/.blackbox/config.json has a /git auth token (generated once if absent,
+ *  never rotated) and update the port. Returns the token. The daemon REQUIRES this
+ *  token on the /git route by default, so provisioning it here keeps "secure by
+ *  default" from becoming a setup-failure mode. */
+export function ensureConfig(port: number): string {
   ensureBlackboxDir();
   const path = configPath();
   let cfg: { token?: string; port?: number } = {};

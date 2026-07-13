@@ -34,6 +34,10 @@ export interface DaemonOptions {
   maxBodyBytes?: number;
   captureOutput?: boolean;
   logFile?: string;
+  /** Opt out of the default /git-token requirement (accept unauthenticated git
+   *  writes). The explicit "I understand the risk" escape hatch; absence of a token
+   *  is NOT enough — without this (or `insecure_git` in config) the daemon refuses. */
+  allowInsecureGit?: boolean;
 }
 
 export interface Daemon {
@@ -112,9 +116,35 @@ function isBrowserForged(headers: http.IncomingHttpHeaders): boolean {
  * handler is wrapped so a malformed request can never crash the process; hooks
  * are async/fire-and-forget so we always answer 200 after logging.
  */
-export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
+export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   const port = opts.port ?? DEFAULT_PORT;
   const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
+
+  // /git auth is REQUIRED by default. Without a token that route would accept
+  // UNAUTHENTICATED writes straight into the forensic chain, so read the token (and
+  // the explicit `insecure_git` opt-out) FIRST and refuse to start if neither is
+  // present — before opening a Store or binding a socket. `blackbox init`/`start`
+  // generate a token automatically, so this only fires on a deliberately token-less
+  // config, not on a fresh install.
+  let configToken = '';
+  let cfgInsecureGit = false;
+  try {
+    const raw = JSON.parse(readFileSync(configPath(), 'utf8')) as { token?: string; insecure_git?: boolean };
+    configToken = raw.token ?? '';
+    cfgInsecureGit = raw.insecure_git === true;
+  } catch {
+    /* no config yet */
+  }
+  const allowInsecureGit = opts.allowInsecureGit ?? cfgInsecureGit;
+  if (!configToken && !allowInsecureGit) {
+    throw new Error(
+      'refusing to start: no /git auth token is configured, so the git-collector route ' +
+        'would accept unauthenticated writes into the forensic chain. Run `blackbox init` ' +
+        '(it generates a token automatically), or, to accept the risk, start with ' +
+        '`--allow-insecure-git` (or set "insecure_git": true in ~/.blackbox/config.json).',
+    );
+  }
+
   const store = new Store(opts.db);
   const startedAt = Date.now();
   const correlator = new Correlator();
@@ -126,13 +156,6 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     signingKeys = ensureKeypair();
   } catch {
     /* signing stays off until a key exists */
-  }
-
-  let configToken = '';
-  try {
-    configToken = (JSON.parse(readFileSync(configPath(), 'utf8')) as { token?: string }).token ?? '';
-  } catch {
-    /* no config yet — accept unauthenticated git events (local-trust) */
   }
 
   // R6 external anchoring: emit a signed head receipt to the configured target at
@@ -187,8 +210,9 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           lastAnchoredSeq = s.seq;
           const receipt = receiptFromSignature(s);
           setTimeout(() => {
-            void emitReceipt(anchorCfg.target!, receipt, { token: anchorCfg.token }).then((r) => {
+            void emitReceipt(anchorCfg.target!, receipt, { token: anchorCfg.token, push: anchorCfg.push }).then((r) => {
               if (!r.ok) log(`anchor emit failed (${anchorCfg.target!.kind}): ${r.error}`);
+              else if (r.warn) log(`anchor warning (${anchorCfg.target!.kind}): ${r.warn}`);
             });
           }, 0).unref?.();
         }
@@ -554,6 +578,12 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     server.listen(port, '127.0.0.1', () => {
       server.removeListener('error', onError);
       log(`listening on 127.0.0.1:${port} (db ${opts.db})`);
+      // Surface the security posture LOUDLY at startup so a weaker mode is never a
+      // silent surprise: git-route auth + external-anchor (off-machine custody).
+      if (configToken) log('git route: authenticated (x-bb-token required)');
+      else log('⚠ SECURITY: git route is UNAUTHENTICATED (insecure_git opt-out) — any local process can write to the forensic chain');
+      if (anchorCfg.target) log(`external anchor: ${anchorCfg.target.kind}${anchorCfg.push ? ' + auto-push' : ''} — off-machine custody ON`);
+      else log('⚠ SECURITY: external anchor NOT configured — reduced-security custody (signed receipts stay on this machine; a full-write attacker could rewrite + re-sign undetectably). Set one with `blackbox anchor --to` or `blackbox init`.');
       // R5.2 coverage ledger: record daemon_start. If the last event wasn't a clean
       // DaemonStop, the prior run crashed/was killed → a recording GAP from that
       // event's ts to now (downtime_from). A signable boundary, so signNow() below

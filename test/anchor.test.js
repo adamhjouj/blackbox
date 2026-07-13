@@ -14,7 +14,7 @@ const { normalizeAndCapture } = require('../dist/normalize.js');
 const { verify } = require('../dist/verify.js');
 const { signCheckpoint } = require('../dist/sign.js');
 const { buildForensicReport } = require('../dist/report.js');
-const { parseAnchorTarget, keyFingerprint, receiptFromSignature, emitReceipt, readReceipts, setAnchorTarget, loadAnchorConfig, ANCHOR_REF } = require('../dist/anchor.js');
+const { parseAnchorTarget, keyFingerprint, receiptFromSignature, emitReceipt, readReceipts, setAnchorTarget, loadAnchorConfig, resolveDefaultAnchor, ANCHOR_REF } = require('../dist/anchor.js');
 const { tempStore } = require('./util.js');
 
 const TS = '2026-02-01T00:00:00.000Z';
@@ -177,6 +177,50 @@ test('git provider: receipts commit to a dedicated ref, read back, and verify', 
   } finally {
     store.cleanup();
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// ---- default anchor resolution (init: on by default) -----------------------
+test('resolveDefaultAnchor: null outside a repo, null without a remote, git spec with a remote', () => {
+  const plain = mkdtempSync(join(tmpdir(), 'bb-norepo-'));
+  const norem = mkdtempSync(join(tmpdir(), 'bb-norem-'));
+  const withrem = mkdtempSync(join(tmpdir(), 'bb-withrem-'));
+  const g = (dir, ...a) => execFileSync('git', ['-C', dir, ...a], { stdio: 'ignore' });
+  try {
+    // not a git repo at all → cannot resolve
+    assert.equal(resolveDefaultAnchor(plain), null);
+    // a repo with NO remote → nowhere off-machine to push, must not silently degrade
+    g(norem, 'init', '-q');
+    assert.equal(resolveDefaultAnchor(norem), null);
+    // a repo WITH a remote → a git spec pointing at its toplevel + the remote url
+    g(withrem, 'init', '-q');
+    g(withrem, 'remote', 'add', 'origin', 'https://example.com/x.git');
+    const r = resolveDefaultAnchor(withrem);
+    assert.ok(r, 'a repo with a remote resolves');
+    assert.match(r.spec, /^git:/);
+    assert.equal(r.remote, 'https://example.com/x.git');
+  } finally {
+    for (const d of [plain, norem, withrem]) rmSync(d, { recursive: true, force: true });
+  }
+});
+
+test('loadAnchorConfig reports auto-push for a git target, and honors anchor_push:false', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bb-anchor-push-'));
+  try {
+    const cfg = join(dir, 'config.json');
+    setAnchorTarget('git:/repos/x', cfg);
+    assert.equal(loadAnchorConfig(cfg).push, true, 'git anchors auto-push by default');
+    // a local-secondary git ref opts out of pushing
+    const fs = require('node:fs');
+    const c = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+    c.anchor_push = false;
+    fs.writeFileSync(cfg, JSON.stringify(c));
+    assert.equal(loadAnchorConfig(cfg).push, false);
+    // file targets never push
+    setAnchorTarget('file:/var/a.jsonl', cfg);
+    assert.equal(loadAnchorConfig(cfg).push, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

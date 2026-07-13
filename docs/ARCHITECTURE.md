@@ -228,14 +228,17 @@ Each event's hash includes the previous event's hash. Alter or delete any event 
 
 **Honest limit (state this in your README — it builds credibility rather than undermining it):** a local hash chain proves *internal consistency and tamper-evidence*, not *tamper-proofing*. Someone with write access to the machine can recompute the whole chain from a chosen point. The chain detects casual/partial edits and accidental corruption, and gives you a verifiable artifact. **Real** tamper-*resistance* requires anchoring — periodically signing the head hash with a key the local user doesn't hold, or shipping heads to an append-only remote. That anchoring is exactly a paid/enterprise feature → **[LATER]**. Don't overclaim the local version; security people will catch it and it'll cost you trust.
 
+> **Update (shipped):** external anchoring now exists and is **on by default**. A signed head *receipt* placed off-machine — a git remote, a second disk, or a URL — turns a silent rewrite into a *provable* one (any surviving receipt that no longer matches the chain proves it, since it can't be re-signed without the key). `blackbox init` requires an anchor target and **fails loudly** if it can't resolve one; the local-only fallback is explicit and labeled reduced-security. This closes the gap the paragraph above reserves for [LATER] — for the default install, not just the paid tier.
+
 ### Store choice: SQLite (WAL mode)
 The earlier "JSONL or SQLite" hedge was a wobble. **Just use SQLite from the start.** It's a single local file (keeps the "local-first" promise), needs no server, and gives you the indexed queries the timeline UI's filters need. WAL mode handles concurrent writes from async hooks landing while the UI reads. JSONL saves you nothing meaningful and you'd migrate off it within a week. Keep the hash chain in a column.
 
 ### Privacy posture (non-negotiable — this IS the adoption lever)
-- Local-first. Nothing leaves the machine by default.
+- Local-first. The only egress is **external anchoring**, on by default: tiny signed head *receipts* pushed to a git remote (or a file/URL you configure) — never events, code, or secrets. Reducible to an explicit, labeled local-only posture (`blackbox init --local-only-anchor`).
 - **Redact at capture, not at display.** A secret must never be written to disk in the clear by a tool that markets itself as *security* software — that's a worse failure for you than for a normal app. Redaction gets its own hardening pass (Section 6), not one bullet.
 - Store output hashes, not bodies, unless the user opts in per-session.
 - The daemon binds to `127.0.0.1` only. Never `0.0.0.0`.
+- The `/git` collector route requires a per-install auth token **by default**: the daemon **refuses to start** if none is configured, rather than silently accepting unauthenticated writes into the chain. `init`/`start` generate the token automatically (never rotating an existing one); the only way to run token-less is the explicit `--allow-insecure-git` flag or `"insecure_git": true` in config.
 
 ---
 

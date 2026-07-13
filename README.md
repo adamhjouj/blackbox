@@ -4,7 +4,7 @@ A forensic **black-box recorder** for AI coding agents (Claude Code first) and M
 
 **One sentence:** *When your AI agent does something risky, know exactly what it touched — every file, every command, every MCP call — in five minutes, not five hours.*
 
-V1 is **record + flag**: read-only, local-first, zero-config. Nothing leaves the machine *by default* — the sole exception is an opt-in external anchor target (`blackbox anchor --to https://…`), which sends only tiny signed head *receipts* off-machine, and only when you configure one. Incident response and rollback are later rungs. The only V1 metric that matters is **2-week retention** — does anyone keep it installed?
+V1 is **record + flag**: read-only and local-first. The one thing that can leave the machine is **external anchoring**, now **on by default**: `blackbox init` finds a git remote and pushes tiny signed head *receipts* there, so a store-rewriting attacker can be *proven* wrong. Only the receipts travel — never events, code, or secrets — and you can drop to an explicit, clearly-labeled **local-only** posture (`blackbox init --local-only-anchor`) if you accept the reduced tamper-evidence. Incident response and rollback are later rungs. The only V1 metric that matters is **2-week retention** — does anyone keep it installed?
 
 > **New agent / new session picking this up? Read this file, then `docs/ARCHITECTURE.md`, then the `docs/PHASE*.md` for each shipped system.** The recorder and four forensic systems on top of it are built; work now is hardening + new forensic capability.
 
@@ -74,7 +74,7 @@ README.md                This file — orientation entry point
 
 Phases 0–9 / R1–R4 are built (see the `docs/PHASE*.md`). The next milestone, in priority order:
 - **Recording integrity** — anti-forensics detection (a ruleset-`r3` flag for the agent attacking the recorder: killing the daemon, editing `~/.blackbox`, disabling hooks, rewriting history) + a capture-coverage ledger (daemon-lifecycle facts + a transcript-completeness reconciliation, so silent capture loss is *visible and attributable*).
-- **External anchoring** — signed head *receipts* to a file / URL / git ref outside `~/.blackbox`, so a store-rewriting attacker can be *proven* wrong; closes the `--anchor` stub. The one opt-in exception to "nothing leaves the machine."
+- **External anchoring (on by default)** — signed head *receipts* to a git ref / file / URL outside `~/.blackbox`, so a store-rewriting attacker can be *proven* wrong. `blackbox init` requires one (auto-resolving the repo's git remote and auto-pushing receipts to it) and **fails loudly** if none can be found; `--local-only-anchor` is the explicit, clearly-labeled reduced-security fallback (receipts stay on this machine). The only thing that leaves the machine — and only the receipts do.
 - **Deeper capture** — a SessionStart environment/toolchain snapshot (versions, MCP inventory, hooks hash) and file history / point-in-time reconstruction from the blob store.
 - **Analytics & IR** — corpus-wide FTS search, a blast-radius containment checklist (ARCHITECTURE §11), and a fleet overview strip.
 

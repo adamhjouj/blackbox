@@ -6,7 +6,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
-const { mkdtempSync, rmSync } = require('node:fs');
+const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 
@@ -28,6 +28,8 @@ function req(port, method, path, { headers = {}, body } = {}) {
 test('daemon: recording, read API, and the security gauntlet', async () => {
   const home = mkdtempSync(join(tmpdir(), 'bb-daemon-home-'));
   process.env.BLACKBOX_HOME = home;
+  // A real install always has a /git token; the daemon now REQUIRES one to start.
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ token: 'test-token', port: TEST_PORT }));
   const { startDaemon } = require('../dist/daemon.js'); // require AFTER BLACKBOX_HOME is set
   const daemon = await startDaemon({ db: join(home, 'test.db'), port: TEST_PORT, logFile: join(home, 'd.log') });
   try {
@@ -70,6 +72,54 @@ test('daemon: recording, read API, and the security gauntlet', async () => {
     // ---- an unknown path 404s ----
     const missing = await req(TEST_PORT, 'GET', '/api/nope');
     assert.equal(missing.status, 404);
+  } finally {
+    await daemon.close();
+    rmSync(home, { recursive: true, force: true });
+    delete process.env.BLACKBOX_HOME;
+  }
+});
+
+test('daemon REFUSES to start with no /git token and no explicit opt-out', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bb-daemon-notoken-'));
+  process.env.BLACKBOX_HOME = home; // no config.json written → no token
+  const { startDaemon } = require('../dist/daemon.js');
+  try {
+    // Fail-closed: an unauthenticated /git route would accept forged writes into the
+    // forensic chain, so the daemon must refuse rather than silently open it.
+    await assert.rejects(() => startDaemon({ db: join(home, 't.db'), port: TEST_PORT + 1 }), /refusing to start/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    delete process.env.BLACKBOX_HOME;
+  }
+});
+
+test('daemon starts token-less ONLY with an explicit insecure opt-out', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bb-daemon-insecure-'));
+  process.env.BLACKBOX_HOME = home; // no token, but we opt out explicitly
+  const { startDaemon } = require('../dist/daemon.js');
+  const port = TEST_PORT + 2;
+  const daemon = await startDaemon({ db: join(home, 't.db'), port, logFile: join(home, 'd.log'), allowInsecureGit: true });
+  try {
+    const h = await req(port, 'GET', '/health');
+    assert.equal(h.status, 200);
+    assert.equal(JSON.parse(h.body).ok, true);
+  } finally {
+    await daemon.close();
+    rmSync(home, { recursive: true, force: true });
+    delete process.env.BLACKBOX_HOME;
+  }
+});
+
+test('the config insecure_git flag is also an accepted opt-out', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bb-daemon-cfgoptout-'));
+  process.env.BLACKBOX_HOME = home;
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ insecure_git: true }));
+  const { startDaemon } = require('../dist/daemon.js');
+  const port = TEST_PORT + 3;
+  const daemon = await startDaemon({ db: join(home, 't.db'), port, logFile: join(home, 'd.log') });
+  try {
+    const h = await req(port, 'GET', '/health');
+    assert.equal(h.status, 200);
   } finally {
     await daemon.close();
     rmSync(home, { recursive: true, force: true });

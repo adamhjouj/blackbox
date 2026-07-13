@@ -2,13 +2,13 @@
 import { spawn } from 'node:child_process';
 import { openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
-import { ANCHOR_REF, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAnchor, readReceipts, receiptFromSignature, setAnchorTarget, type AnchorTarget } from './anchor';
+import { ANCHOR_REF, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAnchor, readReceipts, receiptFromSignature, setAnchorLocalOnly, setAnchorTarget, type AnchorTarget } from './anchor';
 import { disableAutostart, enableAutostart } from './autostart';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { canonical } from './hash';
 import { blastRadius } from './blast';
 import { fileHistory, reconstructAt } from './filestate';
-import { init, uninit, versionWarning } from './init';
+import { decideInitAnchor, ensureConfig, init, uninit, versionWarning } from './init';
 import { reindexAll, search } from './search';
 import { normalizeAndCapture } from './normalize';
 import { persistReconciliation } from './reconcile';
@@ -17,7 +17,7 @@ import { ensureKeypair, loadPublicKey, loadWatermark, signHead } from './sign';
 import { backfill, computeSession, rescoreSession } from './risk-engine';
 import { isKnownRuleset, KNOWN_RULESETS, RULESET_VERSION, rulesFingerprint, type RulesetVersion } from './risk-rules';
 import { unwatchGlobal, unwatchRepo, watchGlobal, watchRepo } from './watch';
-import { ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
+import { configPath, ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
 import { Store } from './store';
 import { verify } from './verify';
 
@@ -42,6 +42,8 @@ interface Args {
   anchorTarget?: string;
   at?: number;
   rebuild?: boolean;
+  allowInsecureGit?: boolean;
+  localOnlyAnchor?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -65,6 +67,8 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--to') out.to = argv[++i];
     else if (a === '--at') out.at = Number(argv[++i]);
     else if (a === '--rebuild') out.rebuild = true;
+    else if (a === '--allow-insecure-git') out.allowInsecureGit = true;
+    else if (a === '--local-only-anchor') out.localOnlyAnchor = true;
     else if (a === '--anchors') {
       out.useAnchors = true;
       const nx = argv[i + 1];
@@ -169,6 +173,8 @@ Usage:
   blackbox reconcile             Cross-check hooks vs git ground truth (--session, --check for details)
   blackbox report                Export a shareable Markdown session report (--session, --ruleset, --out <file>)
                                  Add --forensic for an evidentiary case-file (custody + signature + manifest)
+  blackbox anchor --to <target>  Set the external anchor (file:<path> | git:<repo> | https://<url>) and emit a
+                                 receipt now; also: anchor verify | anchor push
   blackbox head                  Print the current head anchor (seq, count, hash)
   blackbox list                  List recorded events (--session <id> to filter)
   blackbox audit                 Show what was redacted (type + path, never the secret)
@@ -179,6 +185,8 @@ Options:
   --port <n>           Daemon port (default: 7842)
   --foreground         Run the daemon in the foreground (start)
   --capture-output     Store tool output bodies (still redacted) instead of eliding to a hash
+  --allow-insecure-git start: accept unauthenticated /git writes (INSECURE opt-out of the token requirement)
+  --local-only-anchor  init: accept local-only custody instead of an off-machine anchor (reduced security)
   --session <id>       Filter to one session (list/audit/report)
   --out <file>         Write the report to a file instead of stdout (report)
   --older-than <dur>   Retention cutoff for prune (e.g. 30d, 12h; default 30d)
@@ -472,6 +480,17 @@ async function cmdInit(args: Args): Promise<number> {
   const port = args.port ?? DEFAULT_PORT;
   const warn = versionWarning();
   if (warn) console.error(`warning: ${warn}`);
+
+  // Decide the custody posture FIRST (pure) — init is all-or-nothing; we never
+  // silently set up recording with no off-machine anchor. Fail loudly here if none
+  // resolves, before touching hooks/config, so re-running with a fix is clean.
+  ensureBlackboxDir();
+  const decision = decideInitAnchor({ cwd: process.cwd(), localOnly: args.localOnlyAnchor });
+  if (!decision.ok) {
+    console.error(decision.message);
+    return 2;
+  }
+
   const { settingsPath, addedEvents } = init(port);
   if (addedEvents.length) {
     console.log(`registered blackbox hooks for ${addedEvents.length} event(s) in ${settingsPath}`);
@@ -479,6 +498,24 @@ async function cmdInit(args: Args): Promise<number> {
   } else {
     console.log(`blackbox hooks already registered in ${settingsPath} (nothing to do)`);
   }
+
+  // Apply the anchor decision (writes config) and report the posture plainly.
+  if (decision.kind === 'git') {
+    setAnchorTarget(decision.spec);
+    setAnchorLocalOnly(false);
+    console.log(`external anchor: git receipts on ${ANCHOR_REF} → ${decision.remote} (auto-push ON)`);
+  } else if (decision.kind === 'local-only') {
+    setAnchorTarget(`file:${decision.path}`);
+    setAnchorLocalOnly(true);
+    console.log('⚠ external anchor: LOCAL-ONLY (reduced security)');
+    console.log(`  receipts are written to ${decision.path} — on the SAME machine as the DB`);
+    console.log('  and signing key, so a full-write attacker could rewrite history AND re-sign it');
+    console.log('  undetectably. For real tamper-evidence, point --to an off-machine target:');
+    console.log('    blackbox anchor --to git:<repo-with-remote>  |  file:</other/disk/receipts.jsonl>');
+  } else {
+    console.log(`external anchor: already configured (${anchorLabel(decision.target)})`);
+  }
+
   // Bring the daemon up (idempotent: a healthy daemon is left as-is) and confirm /health.
   const code = await cmdStart(args);
   if (code !== 0) {
@@ -521,6 +558,18 @@ function cmdAutostart(args: Args): number {
 async function cmdStart(args: Args): Promise<number> {
   const db = resolveDb(args.db);
   const port = args.port ?? DEFAULT_PORT;
+  // Secure-by-default provisioning: ensure a /git auth token exists before the daemon
+  // enforces one (first run generates it; an existing token is preserved, never
+  // rotated). Skipped only under an explicit insecure opt-out — the `--allow-insecure-git`
+  // flag OR a persisted `insecure_git` in config — so that mode stays genuinely
+  // token-less rather than silently regaining a token.
+  let cfgInsecureGit = false;
+  try {
+    cfgInsecureGit = (JSON.parse(readFileSync(configPath(), 'utf8')) as { insecure_git?: boolean }).insecure_git === true;
+  } catch {
+    /* no config yet */
+  }
+  if (!args.allowInsecureGit && !cfgInsecureGit) ensureConfig(port);
   const existing = readPid();
   if (existing && isAlive(existing.pid)) {
     // Confirm the PID is actually our daemon (not a recycled PID) via /health.
@@ -536,7 +585,7 @@ async function cmdStart(args: Args): Promise<number> {
     ensureBlackboxDir();
     let daemon;
     try {
-      daemon = await startDaemon({ db, port, logFile: logPath(), captureOutput: args.captureOutput });
+      daemon = await startDaemon({ db, port, logFile: logPath(), captureOutput: args.captureOutput, allowInsecureGit: args.allowInsecureGit });
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
       console.error(e.code === 'EADDRINUSE' ? `port ${port} is already in use` : `failed to start: ${e.message}`);
@@ -561,6 +610,7 @@ async function cmdStart(args: Args): Promise<number> {
   const logFd = openSync(logPath(), 'a');
   const childArgs = [process.argv[1] as string, 'start', '--foreground', '--db', db, '--port', String(port)];
   if (args.captureOutput) childArgs.push('--capture-output');
+  if (args.allowInsecureGit) childArgs.push('--allow-insecure-git');
   const child = spawn(process.execPath, childArgs, { detached: true, stdio: ['ignore', logFd, logFd] });
   child.unref();
   if (!(await waitForHealth(port, 3000))) {
@@ -624,6 +674,18 @@ async function cmdStatus(_args: Args): Promise<number> {
   console.log(`  pid ${h.pid}  port ${h.port}  uptime ${h.uptime_s}s`);
   console.log(`  db ${h.db}`);
   console.log(`  ${h.count} event(s), head seq ${h.head_seq}`);
+  // Security posture — so a weaker mode is visible now, not discovered later.
+  let tok = '';
+  try {
+    tok = (JSON.parse(readFileSync(configPath(), 'utf8')) as { token?: string }).token ?? '';
+  } catch {
+    /* no config */
+  }
+  const acfg = loadAnchorConfig();
+  console.log(`  git route: ${tok ? 'authenticated' : 'UNAUTHENTICATED (insecure_git)'}`);
+  console.log(
+    `  external anchor: ${acfg.target ? anchorLabel(acfg.target) + (acfg.push ? ' + auto-push' : '') : acfg.localOnly ? 'local-only (reduced security)' : 'NONE (reduced security)'}`,
+  );
   return 0;
 }
 
