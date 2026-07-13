@@ -8,7 +8,10 @@ import { ensureKeypair } from './sign';
 
 /** Tool events get a "*" matcher; the rest are matcher-less groups. */
 const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'];
-const OTHER_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'];
+// PreCompact + Notification make context-compaction and permission/idle prompts
+// visible facts: compaction explains a mid-session behavior shift, and a
+// permission Notification before a dangerous action is forensic signal.
+const OTHER_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop', 'PreCompact', 'Notification'];
 
 const MIN_VERSION = [2, 1, 119]; // duration_ms floor
 

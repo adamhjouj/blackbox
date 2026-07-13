@@ -670,7 +670,7 @@ export class Store {
                 MIN(ts)                                   AS started,
                 MAX(ts)                                   AS ended,
                 SUM(CASE WHEN phase = 'failure' THEN 1 ELSE 0 END) AS failures,
-                SUM(CASE WHEN phase NOT IN ('session_start','session_end') THEN 1 ELSE 0 END) AS activity
+                SUM(CASE WHEN phase NOT IN ('session_start','session_end','compact','notify') THEN 1 ELSE 0 END) AS activity
          FROM events
          GROUP BY session_id
          ORDER BY started ASC`,

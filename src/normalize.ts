@@ -22,6 +22,10 @@ function toPhase(hookEvent: string): Phase {
       return 'failure';
     case 'Stop':
       return 'stop';
+    case 'PreCompact':
+      return 'compact';
+    case 'Notification':
+      return 'notify';
     case 'SessionEnd':
       return 'session_end';
     default:

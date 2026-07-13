@@ -9,7 +9,7 @@ const { buildHookConfig, mergeHooks } = require('../dist/init.js');
 const { buildLaunchAgentPlist } = require('../dist/autostart.js');
 
 const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'];
-const OTHER_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop'];
+const OTHER_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd', 'SubagentStart', 'SubagentStop', 'PreCompact', 'Notification'];
 
 // ---- buildHookConfig: shape --------------------------------------------------
 
