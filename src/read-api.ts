@@ -3,7 +3,7 @@ import { buildTrace, ALL_DEPTH, type TraceView } from './graph';
 import { buildStory, type EventDetail, type SessionStory } from './provenance';
 import { RECON_VERSION, type Coverage, type Discrepancy } from './reconcile';
 import { sessionTitleFromTranscript } from './transcript';
-import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
+import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, KNOWN_RULESETS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
 import { loadPublicKey, loadWatermark } from './sign';
 import type { SessionRiskRow, Store } from './store';
 import type { BlackboxEvent } from './types';
@@ -109,7 +109,13 @@ const headSeq = (store: Store): number => store.chainMeta()?.head_seq ?? 0;
 // r1 rows — render those rather than a blanket "unscored". Returns the highest
 // ruleset for which the session has a verdict, or the current one if none yet.
 function resolveRuleset(store: Store, sessionId: string): RulesetVersion {
-  return store.sessionRisk(sessionId, RULESET_VERSION) ? RULESET_VERSION : 'r1';
+  // Highest ruleset for which the session has a verdict — walk ALL known versions
+  // descending (not just current→r1), so an r2-only session between an r3 bump and
+  // its backfill renders r2, never a stale r1 or a blank "unscored".
+  for (const rs of [...KNOWN_RULESETS].sort((a, b) => rulesetNum(b) - rulesetNum(a))) {
+    if (store.sessionRisk(sessionId, rs)) return rs;
+  }
+  return RULESET_VERSION;
 }
 
 // Split a seq's flags into row chips (signals) vs dossier-only context (notes):
@@ -169,13 +175,16 @@ export function sessionCards(store: Store): SessionCard[] {
   const head = headSeq(store);
   if (cardsCache && cardsCache.head === head) return cardsCache.cards;
 
-  // Merge r1 + r2 verdicts, preferring the highest ruleset per session — so cards
-  // never blank out in the window between an r2 bump and the backfill pass.
+  // Merge verdicts across ALL known rulesets, preferring the highest per session —
+  // so cards never blank out (or show a stale lower version) in the window between
+  // a ruleset bump and the backfill pass. KNOWN_RULESETS is ascending, so keeping
+  // the max as we go lands on the newest available verdict per session.
   const risk = new Map<string, SessionRiskRow>();
-  for (const r of store.sessionRiskAll('r1')) risk.set(r.session_id, r);
-  for (const r of store.sessionRiskAll(RULESET_VERSION)) {
-    const prev = risk.get(r.session_id);
-    if (!prev || rulesetNum(r.ruleset_version) >= rulesetNum(prev.ruleset_version)) risk.set(r.session_id, r);
+  for (const rs of KNOWN_RULESETS) {
+    for (const r of store.sessionRiskAll(rs)) {
+      const prev = risk.get(r.session_id);
+      if (!prev || rulesetNum(r.ruleset_version) >= rulesetNum(prev.ruleset_version)) risk.set(r.session_id, r);
+    }
   }
   const cards: SessionCard[] = store
     .sessions()

@@ -18,7 +18,7 @@ import { sessionCards, sessionStory } from './read-api';
 import { redactText } from './redact';
 import { sessionTitleFromTranscript } from './transcript';
 import type { ComboFire } from './risk-engine';
-import { RISK_FLAGS, RULESET_VERSION, type FlagId, type RulesetVersion } from './risk-rules';
+import { KNOWN_RULESETS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
 import type { Store } from './store';
 import type { Watermark } from './sign';
 import { verify } from './verify';
@@ -37,7 +37,10 @@ function safeParse<T>(s: string | null, fallback: T): T {
 // before backfill a session only has r1 rows — report those rather than blank
 // "unscored". Returns the highest ruleset for which the session has a verdict.
 function resolveRuleset(store: Store, sessionId: string): RulesetVersion {
-  return store.sessionRisk(sessionId, RULESET_VERSION) ? RULESET_VERSION : 'r1';
+  for (const rs of [...KNOWN_RULESETS].sort((a, b) => rulesetNum(b) - rulesetNum(a))) {
+    if (store.sessionRisk(sessionId, rs)) return rs;
+  }
+  return RULESET_VERSION;
 }
 
 /** The parsed tool_input from an event's raw payload, for explainEvent. The report
@@ -97,6 +100,7 @@ const COMBO_LABEL: Record<string, string> = {
   'injected-rce': 'Injection → remote code execution',
   'injected-ci-write': 'Injection → CI/build-config write',
   'tool-poisoning': 'Tool poisoning',
+  'anti-forensics': 'Anti-forensics (recorder tampered with)',
 };
 
 // Human-readable session name: the user's /rename (customTitle), else the AI title

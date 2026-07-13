@@ -6,15 +6,19 @@ const { computeSession, rescoreSession, RiskEngine } = require('../dist/risk-eng
 const { verify } = require('../dist/verify.js');
 const { normEv, injDetail, tempStore } = require('./util.js');
 
-// The r1 fingerprint is FROZEN: this is the exact value stored in real DBs scored
-// under the original r1 code. If it ever changes, every r1 report silently loses
-// reproducibility — so this guards the frozen spec byte-for-byte.
+// r1 and r2 fingerprints are FROZEN: the exact values stored in real DBs scored
+// under those codepaths. If either changes, every report on those rows silently
+// loses reproducibility — so this guards each frozen spec byte-for-byte. r2 is
+// frozen now that r3 is current (mirrors the r1 freeze at the r2 bump).
 const GOLDEN_R1 = 'sha256:92ec93a2a2beff5d08d3f17f7db4a5ff7a4203198133a1150e5160e95282dae3';
+const GOLDEN_R2 = 'sha256:320aab0226baebfbd2bcfec7a5a0e8214e15346c5ed4fcaae77696989b68ae32';
 
-test('r1 fingerprint is byte-frozen; r2 is distinct; current is r2', () => {
+test('r1 + r2 fingerprints are byte-frozen; r3 is distinct; current is r3', () => {
   assert.equal(rulesFingerprint('r1'), GOLDEN_R1);
-  assert.notEqual(rulesFingerprint('r2'), GOLDEN_R1);
-  assert.equal(RULESET_VERSION, 'r2');
+  assert.equal(rulesFingerprint('r2'), GOLDEN_R2);
+  assert.notEqual(rulesFingerprint('r3'), GOLDEN_R1);
+  assert.notEqual(rulesFingerprint('r3'), GOLDEN_R2);
+  assert.equal(RULESET_VERSION, 'r3');
 });
 
 /** A crafted session that fires BOTH an injected-tamper and a tool-poisoning combo

@@ -30,7 +30,7 @@ const TAMPER_WINDOW = 20;
 const POISON_FIRST_CONTACT_MED = false;
 
 export type Verdict = 'none' | 'low' | 'medium' | 'high';
-export type ComboId = 'exfil-chain' | 'injected-tamper' | 'injected-exfil' | 'injected-rce' | 'injected-ci-write' | 'tool-poisoning';
+export type ComboId = 'exfil-chain' | 'injected-tamper' | 'injected-exfil' | 'injected-rce' | 'injected-ci-write' | 'tool-poisoning' | 'anti-forensics';
 
 export interface ComboFire {
   id: ComboId;
@@ -105,12 +105,15 @@ export class RiskEngine {
   private readonly maxSessions = 128;
   /** New (r2) combos are gated on this so an r1 replay is byte-identical. */
   private readonly comboR2: boolean;
+  /** r3 anti-forensics combo gate (an r1/r2 replay stays byte-identical). */
+  private readonly comboR3: boolean;
 
   constructor(
     private hydrate?: (sessionId: string) => BlackboxEvent[],
     private ruleset: RulesetVersion = RULESET_VERSION,
   ) {
     this.comboR2 = rulesetNum(this.ruleset) >= 2;
+    this.comboR3 = rulesetNum(this.ruleset) >= 3;
   }
 
   private stateFor(sessionId: string, beforeSeq: number): SessionState {
@@ -235,6 +238,19 @@ export class RiskEngine {
             // first-contact MED tier — intentionally unreachable in v1 (see const).
           }
         }
+      }
+    }
+
+    // ── r3 combo: anti-forensics — the recorder itself under attack ────────
+    // A single recorder-tamper event (already a score-80 HIGH flag) also names
+    // itself as a combo, so the verdict panel + case-file surface it explicitly.
+    if (this.comboR3 && !state.combos.has('anti-forensics')) {
+      const tamper = hits.find((h) => h.flag === 'recorder-tamper');
+      if (tamper) {
+        const what = (tamper.evidence as { target?: string } | undefined)?.target ?? e.target ?? 'recorder state';
+        const cf: ComboFire = { id: 'anti-forensics', severity: 'high', antecedent_seq: e.seq, consequent_seq: e.seq, note: 'the agent attacked the recorder: ' + what };
+        state.combos.set('anti-forensics', cf);
+        fired.push(cf);
       }
     }
 

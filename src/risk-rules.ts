@@ -5,9 +5,10 @@ import type { BlackboxEvent } from './types';
 /** Ruleset version. Bump when rules/scores/thresholds change; old versions stay
  *  scoreable/reproducible via `blackbox rescore --ruleset`. r1 tables are FROZEN;
  *  r2 recalibrates scores (secret-touch/new-mcp → 0) and adds the injected-* and
- *  tool-poisoning combos. */
-export type RulesetVersion = 'r1' | 'r2';
-export const RULESET_VERSION: RulesetVersion = 'r2';
+ *  tool-poisoning combos; r3 adds anti-forensics detection (the recorder-tamper
+ *  flag + combo) — the agent attacking the recorder itself. */
+export type RulesetVersion = 'r1' | 'r2' | 'r3';
+export const RULESET_VERSION: RulesetVersion = 'r3';
 
 /** Numeric ruleset compare — a string compare gets 'r10' < 'r2' wrong. */
 export function rulesetNum(v: string): number {
@@ -18,7 +19,7 @@ export function rulesetNum(v: string): number {
 /** The rulesets this build can compute. Anything else must be rejected before
  *  scoring (an unknown ruleset has no score table → a crash, and its fingerprint
  *  would silently collide with r2). */
-export const KNOWN_RULESETS: RulesetVersion[] = ['r1', 'r2'];
+export const KNOWN_RULESETS: RulesetVersion[] = ['r1', 'r2', 'r3'];
 export function isKnownRuleset(v: string): v is RulesetVersion {
   return (KNOWN_RULESETS as string[]).includes(v);
 }
@@ -32,7 +33,8 @@ export type FlagId =
   | 'failed'
   | 'destructive-git'
   | 'external-send'
-  | 'injection-output';
+  | 'injection-output'
+  | 'recorder-tamper';
 
 export interface RuleHit {
   flag: FlagId;
@@ -44,7 +46,7 @@ export interface RuleHit {
  *  timeline red and score >0; ANNOTATION_FLAGS are combo fuel / muted context
  *  (score 0). This split is what kills the per-event chip noise (secret-touch
  *  fired 345x) while keeping every combo antecedent fully intact. */
-export const RISK_FLAGS = new Set<FlagId>(['dangerous-shell', 'auth-edit', 'mass-diff', 'destructive-git']);
+export const RISK_FLAGS = new Set<FlagId>(['dangerous-shell', 'auth-edit', 'mass-diff', 'destructive-git', 'recorder-tamper']);
 export const ANNOTATION_FLAGS = new Set<FlagId>(['secret-touch', 'external-send', 'new-mcp-server', 'injection-output', 'failed']);
 /** Annotations that stay visible as a MUTED (non-red) chip even off a combo seq —
  *  an outbound send or a detected injection is never silently invisible. */
@@ -60,10 +62,15 @@ const SCORES_R1: Record<ScoreKey, number> = {
   'secret-touch': 30, 'dangerous-shell': 60, 'auth-edit': 50, 'auth-edit-test': 25,
   'mass-diff': 50, 'mass-diff-bulk': 60, 'new-mcp-server': 20, 'destructive-git': 25,
   'external-send': 0, 'injection-output': 0, failed: 0,
+  'recorder-tamper': 0, // r3-only (predicate is version-gated); inert under r1/r2
 };
+const SCORES_R2: Record<ScoreKey, number> = { ...SCORES_R1, 'secret-touch': 0, 'new-mcp-server': 0 };
 const SCORES: Record<RulesetVersion, Record<ScoreKey, number>> = {
   r1: SCORES_R1,
-  r2: { ...SCORES_R1, 'secret-touch': 0, 'new-mcp-server': 0 },
+  r2: SCORES_R2,
+  // r3: recorder-tamper is a top-tier flag — score 80 makes a single tamper event
+  // a HIGH session on its own (the recorder being attacked is always incident-grade).
+  r3: { ...SCORES_R2, 'recorder-tamper': 80 },
 };
 
 /** Per-session state a rule needs (superset of Phase-2 SignalCtx). */
@@ -191,6 +198,37 @@ const AUTH_SEGMENT =
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec|specs|fixtures|mocks?)(\/)/i;
 export function isAuthPath(p: string): boolean {
   return AUTH_SEGMENT.test(p);
+}
+
+// ---- anti-forensics: the agent attacking the recorder (r3) ----------------
+// FIXED-TEXT matching only. The rule layer must be re-derivable from the events
+// alone (rescore runs later / on another machine), so NO pid/env/filesystem
+// resolution at eval time — match process/label/path NAMES, never a live pid.
+// Input is the (500-cp-truncated) target; a command padded past 500 cp evades —
+// a stated limit, not a silent gap (the full command is in the hashed `raw`).
+// Precision is STRUCTURAL: hooks only capture the AGENT's tool calls, so a human
+// running `blackbox stop` in a terminal never becomes an event here.
+const BLACKBOX_STATE = /(\/\.blackbox(\/|$)|\$\{?BLACKBOX_HOME\}?|\bblackbox\.db\b|\bsigning\.(key|head)\b)/;
+const BLACKBOX_KILL = /\b(pkill|killall|kill)\b[^\n|&;]*\bblackbox\b/;
+const BLACKBOX_LAUNCHCTL = /\blaunchctl\s+(unload|bootout|remove|disable)\b[^\n]*\bcom\.blackbox/;
+const BLACKBOX_CLI = /\bblackbox\s+(stop|uninit|prune)\b/;
+const SQLITE_DB = /\bsqlite3\b[^\n]*\bblackbox\.db\b/;
+const SETTINGS_HOOKS = /\/\.claude\/settings(\.local)?\.json$/;
+const GIT_HOOK_ATTACK = /(\.git\/hooks\/(reference-transaction|pre-push)\b|\bgit\s+config\b[^\n]*\bcore\.hooksPath\b)/;
+
+/** The agent tampering with the RECORDER itself: writing/deleting `~/.blackbox`
+ *  (the DB, signing keys, config), killing the daemon, disabling its hooks
+ *  (editing `~/.claude/settings.json`, deleting the git-forensics hook, moving
+ *  `core.hooksPath`), or running `blackbox stop|uninit|prune`. This is the one
+ *  attack the recorder must always flag — it's an attempt to blind the evidence. */
+export function isRecorderTamper(e: BlackboxEvent): boolean {
+  const t = e.target ?? '';
+  if (!t) return false;
+  const isWrite = e.action_type === 'file_write' || e.action_type === 'file_edit';
+  const isShell = e.action_type === 'shell_command' || e.action_type === 'git_action';
+  if (isWrite) return BLACKBOX_STATE.test(t) || SETTINGS_HOOKS.test(t);
+  if (isShell) return BLACKBOX_STATE.test(t) || BLACKBOX_CLI.test(t) || BLACKBOX_KILL.test(t) || BLACKBOX_LAUNCHCTL.test(t) || SQLITE_DB.test(t) || GIT_HOOK_ATTACK.test(t);
+  return false;
 }
 // injected-tamper uses a STRONGER auth predicate: it drops the ambiguous,
 // high-churn 'middleware'|'guard' segments (they still earn a per-event auth-edit
@@ -410,6 +448,10 @@ export function evaluateEvent(e: BlackboxEvent, ctx: SessionRuleCtx, rs: Ruleset
   const inj = (detail?.output_signals as { injection?: string[] } | undefined)?.injection;
   if (inj?.length) hits.push({ flag: 'injection-output', score: sc['injection-output'], evidence: { patterns: inj } });
 
+  // r3: the agent attacking the recorder. Version-gated so an r1/r2 rescore stays
+  // byte-identical (the flag is absent from those score tables' live behavior).
+  if (rulesetNum(rs) >= 3 && isRecorderTamper(e)) hits.push({ flag: 'recorder-tamper', score: sc['recorder-tamper'], evidence: { target: cmd } });
+
   return hits;
 }
 
@@ -442,5 +484,23 @@ export function rulesFingerprint(ruleset: RulesetVersion = RULESET_VERSION): str
     strongInjection: { arm: TAMPER_ARM_STRONG, corroborate: TAMPER_ARM_CORROBORATE, untrustedChannels: ['web_fetch', 'mcp_call'], webFetchNeedsCorroboration: true },
     verdict: { comboWeight: 40, highScore: 80, medScore: 50 },
   };
-  return sha(r2spec);
+  if (ruleset === 'r2') return sha(r2spec);
+  const r3spec = {
+    version: 'r3',
+    scores: { 'secret-touch': 0, 'dangerous-shell': 60, 'auth-edit': 50, 'auth-edit-test': 25, 'mass-diff': 50, 'mass-diff-bulk': 60, 'new-mcp-server': 0, 'destructive-git': 25, 'injection-output': 0, 'external-send': 0, failed: 0, 'recorder-tamper': 80 },
+    thresholds: { massDiffFiles: 25, massDiffLines: 1500, bulkDelDeletions: 500, bulkDelRatio: 3, queryPayloadMinLen: 40, exfilTemporalWindow: 20, tamperWindow: 20, dangerousShellRm: 'target-scoped' },
+    combos: {
+      'exfil-chain': { dataLinked: 'high', temporal: 'medium' },
+      'injected-tamper': { auth: 'high', authTest: 'medium' },
+      'injected-exfil': { push: 'high' },
+      'injected-rce': { shell: 'high' },
+      'injected-ci-write': { ci: 'high' },
+      'tool-poisoning': { dataLinked: 'high', firstContact: 'medium-disabled' },
+      'anti-forensics': { tamper: 'high' },
+    },
+    strongInjection: { arm: TAMPER_ARM_STRONG, corroborate: TAMPER_ARM_CORROBORATE, untrustedChannels: ['web_fetch', 'mcp_call'], webFetchNeedsCorroboration: true },
+    antiForensics: { targets: ['blackbox-state', 'daemon-kill', 'launchctl', 'settings-hooks', 'git-hooks', 'blackbox-cli'] },
+    verdict: { comboWeight: 40, highScore: 80, medScore: 50 },
+  };
+  return sha(r3spec);
 }
