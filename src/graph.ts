@@ -1,186 +1,135 @@
 /**
- * R4 — the provenance graph. A PURE, read-time projection of the session story +
- * risk combos into a node-link graph (the "Obsidian" view). No capture, no schema,
- * nothing hashed — `verify()` is untouched. What a linear timeline hides, a graph
- * shows: fan-out, shared-entity relationships (a file touched by many steps), and a
- * fired exfil chain drawn as a red path.
+ * R4 — the provenance TREE. A PURE, read-time projection of the session story into
+ * a rooted tree: a prompt and the things it produced (files changed · commits ·
+ * subagents · risk) branch beneath it. No capture, no schema, nothing hashed —
+ * `verify()` is untouched.
  *
- * Two resolutions, so the whole-session view stays readable while a single turn is
- * fully detailed:
- *  - session overview: prompt · file · commit · risk nodes (steps are aggregated).
- *  - single turn (`promptId`): prompt · every step · files · commits · risk.
+ * This replaces the earlier force-directed "Obsidian" graph, which was unreadable:
+ * a session is mostly disconnected prompts, so a physics layout had nothing to
+ * organise. A tree answers the actual question — *what did this prompt create?* —
+ * deterministically and legibly.
  *
- * Every node also carries two lightweight layout hints, `rank` (its role in the
- * causal flow) and `turn` (the turn it first appears in). These drive the hybrid
- * force layout in the UI — prompts drift up, outcomes down, earlier turns left — so
- * a busy session settles into a readable shape instead of a hairball. They are pure
- * interpretation (derived from the story), never captured, never hashed.
+ * Two resolutions:
+ *  - session overview: a `session` root → one `prompt` node per turn (its outcomes
+ *    collapsed by the UI until you open a turn).
+ *  - single turn (`promptId`): that turn's `prompt` is the root, fully expanded.
  */
-import type { SessionStory } from './provenance';
+import type { SessionStory, Turn, FileChange } from './provenance';
 import type { ComboEvidence } from './read-api';
-import { RISK_FLAGS, type FlagId } from './risk-rules';
 
-export type NodeType = 'prompt' | 'step' | 'file' | 'commit' | 'host' | 'secret' | 'mcp';
-export type EdgeType = 'caused' | 'changed' | 'committed' | 'spawned' | 'read' | 'sent' | 'combo';
+export type TreeType = 'session' | 'prompt' | 'file' | 'commit' | 'subagent' | 'secret' | 'host' | 'mcp';
 
-export interface GraphNode {
+export interface TreeNode {
   id: string;
-  type: NodeType;
+  type: TreeType;
   label: string;
-  /** The event seq to drill into (null for aggregate/entity nodes). */
-  seq: number | null;
+  sub: string | null; // a small subtitle (churn, counts, a tool name)
+  seq: number | null; // the event seq to drill into (null for aggregate/entity nodes)
   risk: boolean;
-  degree: number;
-  /** Role in the causal flow: 0 prompt · 1 step · 2 file/entity · 3 commit. Drives the vertical (flow) bias. */
-  rank: number;
-  /** The turn index this node first appears in. Drives the horizontal (time) bias. */
-  turn: number;
+  children: TreeNode[];
 }
-export interface GraphEdge {
-  from: string;
-  to: string;
-  type: EdgeType;
-  risk: boolean;
-  /** How many times this exact relationship occurs — parallel edges are merged, not duplicated. */
-  weight: number;
-}
-export interface SessionGraph {
+export interface SessionTree {
   session_id: string;
-  detailed: boolean; // a single-turn subgraph (steps shown) vs a session overview
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-  counts: { nodes: number; edges: number };
+  detailed: boolean; // a single-turn tree vs the session overview
+  root: TreeNode;
+  counts: { nodes: number };
 }
 
 const basename = (p: string): string => p.split('/').filter(Boolean).pop() ?? p;
-const isRiskySignal = (sigs: FlagId[] | undefined): boolean => !!sigs && sigs.some((s) => RISK_FLAGS.has(s));
+const churn = (f: FileChange): string | null => {
+  const parts: string[] = [];
+  if (f.insertions) parts.push('+' + f.insertions);
+  if (f.deletions) parts.push('-' + f.deletions);
+  return parts.length ? parts.join(' ') : (f.status === 'skipped' ? 'skipped' : null);
+};
+const countNodes = (n: TreeNode): number => 1 + n.children.reduce((a, c) => a + countNodes(c), 0);
+const hasContent = (t: Turn): boolean => !!t.prompt || t.steps.length > 0 || t.files_changed.length > 0 || t.commits.length > 0;
 
-// Role → vertical rank. Entities (file/host/secret/mcp) all sit on the "outcome" band.
-const RANK: Record<NodeType, number> = { prompt: 0, step: 1, file: 2, host: 2, secret: 2, mcp: 2, commit: 3 };
-
-export function buildGraph(story: SessionStory, combos: ComboEvidence[], promptId?: string | null): SessionGraph {
-  const nodes = new Map<string, GraphNode>();
-  const edgeMap = new Map<string, GraphEdge>();
-  const detailed = !!promptId;
-
-  const addNode = (id: string, type: NodeType, label: string, seq: number | null, risk = false, turn = 0): void => {
-    const cur = nodes.get(id);
-    if (cur) {
-      if (risk) cur.risk = true;
-      if (turn < cur.turn) cur.turn = turn; // a shared entity anchors to its earliest turn
-      return;
-    }
-    nodes.set(id, { id, type, label, seq, risk, degree: 0, rank: RANK[type], turn });
-  };
-  const addEdge = (from: string, to: string, type: EdgeType, risk = false): void => {
-    if (from === to || !nodes.has(from) || !nodes.has(to)) return;
-    const k = JSON.stringify([from, to, type]);
-    const cur = edgeMap.get(k);
-    if (cur) {
-      cur.weight++;
-      if (risk) cur.risk = true;
-      return;
-    }
-    edgeMap.set(k, { from, to, type, risk, weight: 1 });
-  };
-
-  // seq → the node a risk combo should attach to. A step's seq AND its post_seq both
-  // map to the step node (combos often cite the POST/output seq, e.g. a redaction-
-  // detected secret-touch), preferred over the owning prompt.
-  const seqToPrompt = new Map<number, string>();
-  const seqToStep = new Map<number, string>();
-
-  const turns = promptId ? story.turns.filter((t) => t.prompt_id === promptId) : story.turns;
-  turns.forEach((t, ti) => {
-    const pid = 'p:' + (t.prompt_id || '#' + ti);
-    const plabel = t.prompt ? t.prompt.replace(/\s+/g, ' ').slice(0, 60) : 'turn ' + (ti + 1);
-    addNode(pid, 'prompt', plabel, t.steps[0]?.seq ?? null, false, ti);
-
-    if (detailed) {
-      let lastTask: string | null = null;
-      for (const s of t.steps) {
-        const sid = 's:' + s.seq;
-        addNode(sid, 'step', (s.summary || s.tool || s.type || 'step').slice(0, 40), s.post_seq ?? s.seq, isRiskySignal(s.signals), ti);
-        if (s.is_subagent && lastTask) addEdge(lastTask, sid, 'spawned');
-        else addEdge(pid, sid, 'caused');
-        if (s.type === 'task_control') lastTask = sid;
-        seqToPrompt.set(s.seq, pid);
-        seqToStep.set(s.seq, sid);
-        if (s.post_seq != null) {
-          seqToPrompt.set(s.post_seq, pid);
-          seqToStep.set(s.post_seq, sid);
-        }
-        for (const f of s.files) {
-          const fid = 'f:' + f.path;
-          addNode(fid, 'file', basename(f.path), f.seq, false, ti);
-          addEdge(sid, fid, 'changed');
-        }
-      }
-    } else {
-      for (const s of t.steps) {
-        seqToPrompt.set(s.seq, pid);
-        if (s.post_seq != null) seqToPrompt.set(s.post_seq, pid);
-      }
-      // overview: connect the prompt straight to the files it changed
-      for (const f of t.files_changed) {
-        const fid = 'f:' + f.path;
-        addNode(fid, 'file', basename(f.path), f.seq, false, ti);
-        addEdge(pid, fid, 'changed');
-      }
-    }
-    for (const c of t.commits) {
-      const cid = 'c:' + c.seq;
-      addNode(cid, 'commit', ((c.sha ?? '').slice(0, 7) + ' ' + (c.subject ?? '')).trim() || 'commit', c.seq, false, ti);
-      addEdge(pid, cid, 'committed');
+export function buildTree(story: SessionStory, combos: ComboEvidence[], promptId?: string | null): SessionTree {
+  // Map every step seq (and its post_seq) to the turn it belongs to, so a fired risk
+  // combo can be attached to the exact turn that produced it (never a different one).
+  const seqTurn = new Map<number, number>();
+  story.turns.forEach((t, ti) => {
+    for (const s of t.steps) {
+      seqTurn.set(s.seq, ti);
+      if (s.post_seq != null) seqTurn.set(s.post_seq, ti);
     }
   });
-
-  // risk combos → secret / host / mcp entities + the red exfil path. Anchor to the
-  // step node (via seqToStep, incl. post_seq) when present, else the owning prompt.
-  const anchorFor = (seq: number): string | null => seqToStep.get(seq) ?? seqToPrompt.get(seq) ?? null;
-  const turnOf = (id: string | null): number => {
-    const n = id ? nodes.get(id) : undefined;
-    return n ? n.turn : 0;
-  };
-  const markRisk = (id: string | null): void => {
-    if (id && nodes.has(id)) nodes.get(id)!.risk = true;
+  const riskByTurn = new Map<number, TreeNode[]>();
+  const pushRisk = (ti: number, node: TreeNode): void => {
+    const arr = riskByTurn.get(ti) ?? [];
+    arr.push(node);
+    riskByTurn.set(ti, arr);
   };
   for (const cb of combos) {
-    const ant = anchorFor(cb.antecedent_seq);
-    const con = anchorFor(cb.consequent_seq);
-    // A combo that anchors nowhere in this (sub)graph belongs to a different turn —
-    // never draw a fabricated exfil path on an unrelated turn.
-    if (!ant && !con) continue;
+    const ti = seqTurn.get(cb.antecedent_seq) ?? seqTurn.get(cb.consequent_seq);
+    if (ti == null) continue; // the combo belongs to no visible turn — never fabricate it
     if (cb.id === 'exfil-chain' || cb.id.startsWith('injected')) {
-      const sec = 'sec:' + cb.antecedent_seq;
-      addNode(sec, 'secret', 'secret', cb.antecedent_seq, true, turnOf(ant ?? con));
-      markRisk(ant);
-      markRisk(con);
-      if (ant) addEdge(ant, sec, 'read', true);
-      if (cb.host) {
-        const h = 'host:' + cb.host;
-        addNode(h, 'host', cb.host, null, true, turnOf(con ?? ant));
-        if (con) addEdge(con, h, 'sent', true);
-        addEdge(sec, h, 'combo', true); // the drawn red path
-      } else if (con) {
-        addEdge(sec, con, 'combo', true); // exfil path without a resolved host node
-      }
+      const host: TreeNode[] = cb.host
+        ? [{ id: 'host:' + ti + ':' + cb.host, type: 'host', label: cb.host, sub: 'exfil target', seq: null, risk: true, children: [] }]
+        : [];
+      pushRisk(ti, { id: 'sec:' + cb.antecedent_seq, type: 'secret', label: 'secret touched', sub: 'exfil chain', seq: cb.antecedent_seq, risk: true, children: host });
     }
     if (cb.server) {
-      const m = 'mcp:' + cb.server;
-      addNode(m, 'mcp', cb.server, null, true, turnOf(con ?? ant));
-      const a = con || ant; // link the poisoned server to the step/prompt that used it
-      if (a) addEdge(a, m, 'read', true);
+      pushRisk(ti, { id: 'mcp:' + ti + ':' + cb.server, type: 'mcp', label: cb.server, sub: 'tool poisoning', seq: null, risk: true, children: [] });
     }
   }
 
-  const edges = [...edgeMap.values()];
-  for (const e of edges) {
-    const a = nodes.get(e.from);
-    const b = nodes.get(e.to);
-    if (a) a.degree++;
-    if (b) b.degree++;
+  const turnNode = (t: Turn, ti: number): TreeNode => {
+    const children: TreeNode[] = [];
+    for (const f of t.files_changed) {
+      children.push({ id: 'f:' + ti + ':' + f.path, type: 'file', label: basename(f.path), sub: churn(f), seq: f.seq, risk: false, children: [] });
+    }
+    for (const c of t.commits) {
+      const label = ((c.sha ?? '').slice(0, 7) + ' ' + (c.subject ?? '')).trim() || 'commit';
+      children.push({ id: 'c:' + c.seq, type: 'commit', label, sub: c.files ? c.files + ' files' : 'commit', seq: c.seq, risk: false, children: [] });
+    }
+    // subagents delegated within the turn (distinct agent types), most-recent seq kept
+    const subs = new Map<string, { count: number; seq: number }>();
+    for (const s of t.steps) {
+      if (s.is_subagent && s.agent_type) {
+        const cur = subs.get(s.agent_type);
+        if (cur) cur.count++;
+        else subs.set(s.agent_type, { count: 1, seq: s.seq });
+      }
+    }
+    for (const [name, info] of subs) {
+      children.push({ id: 'sub:' + ti + ':' + name, type: 'subagent', label: name, sub: info.count + ' step' + (info.count === 1 ? '' : 's'), seq: info.seq, risk: false, children: [] });
+    }
+    for (const rn of riskByTurn.get(ti) ?? []) children.push(rn);
+
+    const parts: string[] = [];
+    if (t.steps.length) parts.push(t.steps.length + ' step' + (t.steps.length === 1 ? '' : 's'));
+    if (t.files_changed.length) parts.push(t.files_changed.length + ' file' + (t.files_changed.length === 1 ? '' : 's'));
+    if (t.commits.length) parts.push(t.commits.length + ' commit' + (t.commits.length === 1 ? '' : 's'));
+    return {
+      id: 'p:' + (t.prompt_id || '#' + ti),
+      type: 'prompt',
+      label: t.prompt ? t.prompt.replace(/\s+/g, ' ') : 'turn ' + (ti + 1),
+      sub: parts.join(' · ') || 'no changes',
+      seq: t.steps[0]?.seq ?? null,
+      risk: t.flagged > 0,
+      children,
+    };
+  };
+
+  let root: TreeNode;
+  if (promptId) {
+    const ti = story.turns.findIndex((t) => t.prompt_id === promptId);
+    root = ti >= 0 ? turnNode(story.turns[ti]!, ti) : { id: 'empty', type: 'session', label: story.name ?? 'session', sub: 'turn not found', seq: null, risk: false, children: [] };
+  } else {
+    const turnNodes = story.turns.map((t, ti) => (hasContent(t) ? turnNode(t, ti) : null)).filter((n): n is TreeNode => !!n);
+    const flagged = story.verdict !== 'none' && story.verdict !== 'unscored' && story.verdict !== '';
+    root = {
+      id: 'session:' + story.session_id,
+      type: 'session',
+      label: story.name ?? 'session',
+      sub: turnNodes.length + ' turn' + (turnNodes.length === 1 ? '' : 's'),
+      seq: null,
+      risk: flagged,
+      children: turnNodes,
+    };
   }
-  const arr = [...nodes.values()];
-  return { session_id: story.session_id, detailed, nodes: arr, edges, counts: { nodes: arr.length, edges: edges.length } };
+
+  return { session_id: story.session_id, detailed: !!promptId, root, counts: { nodes: countNodes(root) } };
 }

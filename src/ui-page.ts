@@ -288,38 +288,26 @@ const PAGE_CSS = `  :root {
   .glegend { display:flex; gap:13px; margin-left:auto; flex-wrap:wrap; }
   .gleg { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--fg-3); }
   .gdot { width:8px; height:8px; border-radius:50%; display:inline-block; }
-  .graphhost { position:relative; }
-  .graphcanvas { display:block; width:100%; height:560px; cursor:grab; touch-action:none;
-    background:radial-gradient(680px 460px at 50% 40%, rgba(255,255,255,.022), transparent 72%); }
-  .graphcanvas:active { cursor:grabbing; }
-  .graphcanvas:focus-visible { outline:2px solid rgba(233,233,238,.4); outline-offset:-2px; }
-  .ghint { position:absolute; left:16px; bottom:11px; font-size:11px; color:var(--fg-4); pointer-events:none; opacity:.85; }
-  .gtip { position:absolute; z-index:6; pointer-events:none; background:var(--surface-2); border:1px solid var(--border);
-    border-radius:var(--r1); padding:3px 8px; font-size:11px; color:var(--fg-1); max-width:280px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ghint { display:block; padding:9px 18px 0; font-size:11px; color:var(--fg-4); }
   .gexpand { font-weight:500; }
-  .gpanel { padding:0 18px 24px; }
+  .treescroll { position:relative; overflow:auto; height:560px;
+    background:radial-gradient(760px 520px at 30% 14%, rgba(255,255,255,.02), transparent 72%); border-bottom:1px solid var(--border-subtle); }
+  .treecanvas { display:block; }
+  .gpanel { padding:14px 18px 24px; }
   .gpanel .detailrow { margin-top:12px; }
   .gpanel .detail { border:1px solid var(--border); border-radius:var(--r3); }
-  /* fullscreen graph explorer */
+  /* fullscreen tree explorer */
   .gfull { position:fixed; inset:0; z-index:50; background:var(--bg); display:flex; flex-direction:column; }
   .gfull-bar { flex:none; display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--border); }
   .gfull-title { font-size:12px; color:var(--fg-2); font-weight:600; letter-spacing:-.01em; }
   .gsearch { flex:0 0 220px; background:var(--surface); border:1px solid var(--border); border-radius:var(--r2);
     color:var(--fg); font:12px var(--sans); padding:5px 9px; }
   .gsearch:focus { outline:none; border-color:var(--border-strong); }
-  .gchips { display:flex; gap:7px; flex-wrap:wrap; }
-  .gchip { font-size:11px; color:var(--fg-3); background:transparent; border:1px solid var(--border); border-radius:20px;
-    padding:3px 11px; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
-  .gchip::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--chip,#8a919c); opacity:.35; }
-  .gchip.on { color:var(--fg-1); border-color:var(--border-strong); }
-  .gchip.on::before { opacity:1; }
   .gfull-close { margin-left:auto; font-size:12px; color:var(--fg-2); background:transparent; border:1px solid var(--border);
     border-radius:var(--r2); padding:5px 11px; cursor:pointer; }
   .gfull-close:hover { color:var(--fg); border-color:var(--border-strong); }
-  .gfull-stage { flex:1 1 auto; position:relative; overflow:hidden; }
-  .gfull-canvas { height:100%; background:radial-gradient(900px 620px at 50% 42%, rgba(255,255,255,.02), transparent 72%); }
-  .gminimap { position:absolute; right:16px; bottom:16px; width:190px; height:120px; z-index:4;
-    background:rgba(13,15,18,.82); border:1px solid var(--border); border-radius:var(--r2); cursor:pointer; }
+  .gfull-stage { flex:1 1 auto; }
+  .gfull-stage.treescroll { height:auto; border-bottom:none; }
   .gfull-panel { position:absolute; left:0; right:0; bottom:0; max-height:46%; overflow:auto;
     background:linear-gradient(to top, var(--bg) 84%, rgba(11,13,16,0)); padding:0 18px 18px; }
   .gfull-panel:empty { display:none; }
@@ -393,9 +381,12 @@ let fpGraph = null, graphState = null, graphPrompt = '', graphTurns = [], graphF
 const NODE_COLOR = { prompt:'#8ab4f8', file:'#59b783', commit:'#6cc38a', step:'#8a919c', secret:'#e5595a', host:'#e5595a', mcp:'#b48ead' };
 // R4 graph render palette (dark-only, tuned off the design tokens). Kept here so the
 // canvas never hardcodes a raw rgba white — edges/labels read against --bg consistently.
-const G_EDGE = 'rgba(201,205,214,0.16)', G_EDGE_HI = 'rgba(233,233,238,0.72)', G_EDGE_COMMIT = 'rgba(108,195,138,0.34)';
-const G_RISK = '#e5595a', G_LABEL = '#b7bbc4', G_HALO = '#0b0d10';
-const G_FONT = '10px -apple-system,BlinkMacSystemFont,system-ui,sans-serif';
+const G_RISK = '#e5595a';
+const G_SANS = '-apple-system,BlinkMacSystemFont,system-ui,sans-serif';
+const G_TREE_EDGE = 'rgba(122,128,140,0.42)', G_TREE_EDGE_HI = 'rgba(210,214,222,0.8)', G_RISK_LINE = 'rgba(229,89,90,0.72)';
+const TREE_FILL = { session:'#141821', prompt:'#131a26', file:'#111c16', commit:'#111c17', subagent:'#191426', secret:'#201417', host:'#201417', mcp:'#191426' };
+const TREE_BORDER = { session:'#2c313b', prompt:'#31405c', file:'#254a38', commit:'#264a39', subagent:'#3d3557', secret:'#5e2f31', host:'#5e2f31', mcp:'#3d3557' };
+const TREE_DOT = { session:'#9098a4', prompt:'#8ab4f8', file:'#59b783', commit:'#6cc38a', subagent:'#b48ead', secret:'#e5595a', host:'#e5595a', mcp:'#b48ead' };
 let fpSessions = null, fpTimeline = null, fpVerdict = null, fpHud = null;
 let rowState = [];            // [{fp, tr, a}] parallel to the rendered action list
 let tbody = null;
@@ -1329,7 +1320,7 @@ function stopGraph(){
 
 async function loadGraph(){
   const main = document.getElementById('timeline');
-  if(graphFull) return;   // a fullscreen explorer owns the graph — don't churn the pane beneath it
+  if(graphFull) return;   // a fullscreen explorer owns the tree — don't churn the pane beneath it
   if(!current){
     const key = haveSessions ? 'sel' : 'armed';
     if(fpGraph !== 'e:'+key){ fpGraph='e:'+key; stopGraph(); main.textContent=''; main.append(viewBar(), emptyState(key)); }
@@ -1337,358 +1328,202 @@ async function loadGraph(){
   }
   const sid = current;
   const q = graphPrompt ? ('?prompt='+encodeURIComponent(graphPrompt)) : '';
-  const g = await api('/api/session/'+encodeURIComponent(sid)+'/graph'+q);
+  const tree = await api('/api/session/'+encodeURIComponent(sid)+'/graph'+q);
   if(current !== sid || viewMode !== 'graph' || graphFull) return;
-  const fp = JSON.stringify([sid, graphPrompt, g.counts]);
-  if(fp === fpGraph) return;   // stable graph → let the running sim keep going
-  renderGraph(main, g);
+  const fp = JSON.stringify([sid, graphPrompt, tree.counts]);
+  if(fp === fpGraph) return;   // stable tree → keep the current view/collapse state
+  renderTree(main, tree);
   fpGraph = fp;
 }
 
 function graphLegend(){
   const box = el('div',{className:'glegend'});
-  const items = [['prompt','prompt'],['step','step'],['file','file'],['commit','commit'],['secret','risk']];
-  for(const [type,label] of items){ box.append(el('span',{className:'gleg'},
-    el('span',{className:'gdot',style:'background:'+(NODE_COLOR[type]||'#8a919c')}), label)); }
+  for(const spec of [['prompt','prompt'],['file','file'],['commit','commit'],['subagent','subagent'],['secret','risk']]){
+    box.append(el('span',{className:'gleg'}, el('span',{className:'gdot',style:'background:'+(TREE_DOT[spec[0]]||'#8a919c')}), spec[1]));
+  }
   return box;
 }
-function graphControls(g){
+
+function graphControls(tree){
   const bar = el('div',{className:'graphctl'});
+  if(!tree.detailed){ graphTurns = ((tree.root && tree.root.children) || []).map((n)=>({ id:String(n.id||'').slice(2), label:n.label })); }
   const sel = el('select',{className:'fb-tool',title:'focus one turn',
     onchange:()=>{ graphPrompt = sel.value; fpGraph = null; loadGraph().catch(()=>{}); }});
   sel.append(el('option',{value:'',textContent:'whole session'}));
-  for(const t of graphTurns) sel.append(el('option',{value:t.id,textContent:(t.label||t.id).slice(0,44)}));
+  for(const t of graphTurns) sel.append(el('option',{value:t.id,textContent:'turn · '+(t.label||t.id).slice(0,38)}));
   sel.value = graphPrompt;
-  const activeMount = ()=> graphState && graphState.mounts && graphState.mounts[graphState.mounts.length-1];
-  const fit = el('button',{type:'button',className:'fb-tool',textContent:'fit',title:'frame the whole graph',
-    onclick:()=>{ const m=activeMount(); if(m) m.fit(); }});
-  const expand = el('button',{type:'button',className:'fb-tool gexpand',textContent:'⤢ fullscreen',title:'open the fullscreen explorer',
-    onclick:()=> openGraphFull()});
-  bar.append(sel, fit, expand, el('span',{className:'gcount',textContent:g.counts.nodes+' nodes · '+g.counts.edges+' links'}), graphLegend());
+  const active = ()=> graphState && graphState.mounts && graphState.mounts[graphState.mounts.length-1];
+  const expand = el('button',{type:'button',className:'fb-tool',textContent:'expand all',title:'open every branch',onclick:()=>{ const m=active(); if(m) m.expandAll(); }});
+  const fit = el('button',{type:'button',className:'fb-tool',textContent:'fit',title:'fit the tree to view',onclick:()=>{ const m=active(); if(m) m.fit(); }});
+  const full = el('button',{type:'button',className:'fb-tool gexpand',textContent:'⤢ fullscreen',title:'open the fullscreen explorer',onclick:()=> openGraphFull()});
+  bar.append(sel, expand, fit, full, el('span',{className:'gcount',textContent:tree.counts.nodes+' nodes'}), graphLegend());
   return bar;
 }
 
-function renderGraph(main, g){
+function renderTree(main, tree){
   stopGraph();
   main.textContent='';
   main.append(viewBar());
-  if(!g.detailed) graphTurns = g.nodes.filter(n=>n.type==='prompt').map((n)=>({ id:String(n.id||'').slice(2), label:n.label }));
-  main.append(graphControls(g));
-  if((g.counts.nodes||0) <= 1){
-    main.append(el('div',{className:'empty'}, el('p',{textContent:'Not enough recorded relationships to graph — try the Story view, or pick a busier turn.'})));
+  main.append(graphControls(tree));
+  const root = tree.root;
+  if(!root || (root.type==='session' && !root.children.length)){
+    main.append(el('div',{className:'empty'}, el('p',{textContent:'No recorded activity to show yet — run a prompt, or pick another session.'})));
     return;
   }
-  const host = el('div',{className:'graphhost'});
-  const canvas = el('canvas',{className:'graphcanvas',tabIndex:0});
-  const hint = el('div',{className:'ghint',textContent:'drag a node to pin · scroll to zoom · double-click to fit'});
-  host.append(canvas, hint);
+  const container = el('div',{className:'treescroll'});
+  const canvas = el('canvas',{className:'treecanvas'});
+  const hint = el('div',{className:'ghint',textContent:'click a node to open / collapse it · leaf nodes open the evidence'});
+  container.append(canvas);
   const panel = el('div',{className:'gpanel'});
-  main.append(host, panel);
+  main.append(container, hint, panel);
 
-  const model = buildGraphModel(g);
-  const mount = mountGraph(canvas, host, model, {
-    panel: panel,
-    onPrompt: g.detailed ? null : (n)=>{ graphPrompt = String(n.id||'').slice(2); fpGraph = null; loadGraph().catch(()=>{}); },
-  });
-  graphState = { mounts:[mount], model: model, overlay: null };
+  // collapse state: the overview shows session -> turns (outcomes collapsed); a single
+  // turn opens fully. Kept on graphState so a stable poll never resets the user's view.
+  const collapsed = new Set();
+  if(!tree.detailed) for(const t of root.children) if(t.children.length) collapsed.add(t.id);
+
+  const mount = mountTree(canvas, container, root, collapsed, { panel: panel });
+  graphState = { mounts:[mount], tree: tree, collapsed: collapsed, overlay: null };
 }
 
-// Turn a /graph payload into a mutable simulation model. Node positions are seeded
-// from rank (vertical flow) and turn (horizontal time) so the layout starts from a
-// sane shape instead of a random ring, then the force sim only has to refine it.
-function buildGraphModel(g){
-  const nodes = g.nodes.map((n)=> Object.assign({}, n, { x:0, y:0, vx:0, vy:0, pinned:false }));
-  const byId = Object.create(null); nodes.forEach((n)=> byId[n.id]=n);
-  const edges = (g.edges||[]).filter((e)=> byId[e.from] && byId[e.to]);
-  const adj = Object.create(null); nodes.forEach((n)=> adj[n.id]=Object.create(null));
-  edges.forEach((e)=>{ adj[e.from][e.to]=1; adj[e.to][e.from]=1; });
-  let turns = 1; for(const n of nodes){ const t=(n.turn||0)+1; if(t>turns) turns=t; }
-  nodes.forEach((n,i)=>{
-    const rx = turns>1 ? ((n.turn||0)-(turns-1)/2) : 0;
-    const ry = (n.rank||0)-1.3;
-    const jx = ((i*2654435761)%1000)/1000 - 0.5, jy = ((i*40503)%1000)/1000 - 0.5;
-    n.x = rx*130 + jx*46; n.y = ry*150 + jy*46;
-  });
-  return { nodes, byId, edges, adj, turns };
-}
-
-// Mount one interactive graph onto a canvas. Owns its force sim, draw loop and all
-// listeners; returns a controller so the caller can pause/resume/destroy it. Zero
-// deps: Barnes–Hut repulsion + springs + a gentle time bias, hand-rolled. Retina-
-// sharp (DPR-scaled buffer; all hit-testing in CSS px).
-function mountGraph(canvas, hostEl, model, opts){
+// Render one interactive provenance tree onto a canvas inside a scroll container.
+// Deterministic tidy layout (top-down): leaves are placed left-to-right, parents
+// centre over their children — no physics, always readable. DPR-sharp; the container
+// scrolls, a zoom fits it to the pane. Returns a controller for teardown/fit.
+function mountTree(canvas, container, root, collapsed, opts){
   opts = opts || {};
   const ctx = canvas.getContext('2d');
-  const nodes = model.nodes, edges = model.edges, byId = model.byId, adj = model.adj;
-  const N = nodes.length || 1;
-  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const NODE_W=252, NODE_H=44, H_GAP=22, V_GAP=38, PAD=24, BAND_GAP=28;
+  let dpr=1, zoom=1, treeW=1, treeH=1, hover=null, selected=null, term='';
+  const listeners=[]; const on=(t,e,f,o)=>{ t.addEventListener(e,f,o); listeners.push([t,e,f,o]); };
 
-  let view = { x:0, y:0, z:1 };
-  let hover = null, selected = null;
-  const hidden = Object.create(null);   // node types toggled off in the fullscreen filters
-  let term = '';                        // active search term (lowercased)
-  let cssW = 320, cssH = 560, dpr = 1;
-  let raf = null, running = true, settle = 0, autoFitted = false, miniT = null;
-  const listeners = [];
-  const on = (t,ev,fn,o)=>{ t.addEventListener(ev,fn,o); listeners.push([t,ev,fn,o]); };
+  // The session overview is a FOREST: each turn is its own top-down tree, stacked
+  // vertically (so a busy session reads as a scrollable list, not a 28-wide row). A
+  // single turn (?prompt) is one tree with the prompt at the root.
+  const forest = root.type==='session';
+  const roots = ()=> forest ? visKids(root) : [root];
+  const visKids = (n)=> collapsed.has(n.id) ? [] : n.children;
+  function eachVisible(cb){ for(const r of roots()){ (function rec(n,parent){ cb(n,parent); const k=visKids(n); for(let i=0;i<k.length;i++) rec(k[i], n); })(r, null); } }
+  const isMatch = (n)=> !!term && String(n.label||'').toLowerCase().indexOf(term) >= 0;
 
-  const tip = el('div',{className:'gtip'}); tip.style.display='none'; hostEl.append(tip);
-  const radius = (n)=> 4 + Math.min(10,(n.degree||0)*1.4) + (n.type==='prompt'?2.5:0);
-  const visible = (n)=> !hidden[n.type];
-  const matches = (n)=> !!term && String(n.label||'').toLowerCase().indexOf(term) >= 0;
-
-  // ── Barnes–Hut repulsion: build a quadtree once per step, approximate far cells ──
-  function repulsion(){
-    let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
-    for(const n of nodes){ if(n.x<minx)minx=n.x; if(n.y<miny)miny=n.y; if(n.x>maxx)maxx=n.x; if(n.y>maxy)maxy=n.y; }
-    if(!isFinite(minx)) return ()=>[0,0];
-    const size = Math.max(maxx-minx, maxy-miny, 1);
-    const root = { x:minx, y:miny, s:size, m:0, cx:0, cy:0, n:null, q:null };
-    function insert(cell,nd){
-      if(cell.m===0){ cell.n=nd; cell.cx=nd.x; cell.cy=nd.y; cell.m=1; return; }
-      if(cell.s < 0.002){ cell.cx=(cell.cx*cell.m+nd.x)/(cell.m+1); cell.cy=(cell.cy*cell.m+nd.y)/(cell.m+1); cell.m++; return; }
-      if(!cell.q){ cell.q=[null,null,null,null]; const ex=cell.n; cell.n=null; place(cell,ex); }
-      place(cell,nd);
-      cell.cx=(cell.cx*cell.m+nd.x)/(cell.m+1); cell.cy=(cell.cy*cell.m+nd.y)/(cell.m+1); cell.m++;
+  function layout(){
+    let maxRight = 0, yTop = PAD;
+    for(const r of roots()){
+      let cursor = PAD, maxDepth = 0;
+      (function place(n,depth){
+        n._depth=depth; if(depth>maxDepth) maxDepth=depth;
+        const kids=visKids(n);
+        if(!kids.length){ n._x=cursor+NODE_W/2; cursor+=NODE_W+H_GAP; }
+        else { for(let i=0;i<kids.length;i++) place(kids[i], depth+1); n._x=(kids[0]._x + kids[kids.length-1]._x)/2; }
+        n._y = yTop + depth*(NODE_H+V_GAP) + NODE_H/2;
+      })(r, 0);
+      yTop += (maxDepth+1)*(NODE_H+V_GAP) - V_GAP + BAND_GAP;
+      if(cursor - H_GAP > maxRight) maxRight = cursor - H_GAP;
     }
-    function place(cell,nd){
-      const half=cell.s/2, i=(nd.x>=cell.x+half?1:0)+(nd.y>=cell.y+half?2:0);
-      let k=cell.q[i];
-      if(!k){ k={ x:cell.x+((i&1)?half:0), y:cell.y+((i&2)?half:0), s:half, m:0, cx:0, cy:0, n:null, q:null }; cell.q[i]=k; }
-      insert(k,nd);
-    }
-    for(const n of nodes) insert(root,n);
-    const REP=1300, THETA2=0.81;
-    return function(n){
-      let fx=0, fy=0; const stack=[root];
-      while(stack.length){
-        const c=stack.pop(); if(!c || c.m===0) continue;
-        let dx=n.x-c.cx, dy=n.y-c.cy, d2=dx*dx+dy*dy;
-        if(c.n){ if(c.n===n) continue; if(d2<1)d2=1; const d=Math.sqrt(d2), f=REP*c.m/(d2*d); fx+=dx*f; fy+=dy*f; continue; }
-        if((c.s*c.s) < THETA2*d2){ if(d2<1)d2=1; const d=Math.sqrt(d2), f=REP*c.m/(d2*d); fx+=dx*f; fy+=dy*f; }
-        else if(c.q){ for(let i=0;i<4;i++) if(c.q[i]) stack.push(c.q[i]); }
-      }
-      return [fx,fy];
-    };
+    treeW = Math.max(maxRight + PAD, NODE_W + PAD*2);
+    treeH = Math.max(yTop - BAND_GAP + PAD, NODE_H + PAD*2);
   }
 
-  function step(){
-    const SPRING=0.02, GRAV=0.008, DAMP=0.85, CAP=15, XK=0.022, YK=0.03, COL=130, BAND=155;
-    const T = model.turns, force = repulsion();
-    for(const n of nodes){ if(n.pinned) continue; const f=force(n); n.vx+=f[0]; n.vy+=f[1]; }
-    for(const e of edges){ const a=byId[e.from], b=byId[e.to];
-      let dx=b.x-a.x, dy=b.y-a.y; const d=Math.sqrt(dx*dx+dy*dy)+0.01;
-      const rest = 60 + radius(a) + radius(b);
-      const f=(d-rest)*SPRING*Math.min(2.5, e.weight||1)/d, ux=dx*f, uy=dy*f;
-      if(!a.pinned){ a.vx+=ux; a.vy+=uy; } if(!b.pinned){ b.vx-=ux; b.vy-=uy; } }
-    for(const n of nodes){ if(n.pinned) continue;
-      const tx = T>1 ? ((n.turn||0)-(T-1)/2)*COL : 0;
-      const ty = ((n.rank||0)-1.3)*BAND;
-      n.vx += (tx-n.x)*XK; n.vy += (ty-n.y)*YK;   // the hybrid: bias toward the time/flow grid
-      n.vx -= n.x*GRAV;                            // a touch of horizontal center-pull
-      n.vx*=DAMP; n.vy*=DAMP;
-      n.x += Math.max(-CAP,Math.min(CAP,n.vx)); n.y += Math.max(-CAP,Math.min(CAP,n.vy)); }
-  }
+  function trunc(text, maxpx){ text=String(text||''); if(ctx.measureText(text).width<=maxpx) return text;
+    let lo=0, hi=text.length; while(lo<hi){ const mid=(lo+hi+1)>>1; if(ctx.measureText(text.slice(0,mid)+'…').width<=maxpx) lo=mid; else hi=mid-1; }
+    return text.slice(0,Math.max(0,lo))+'…'; }
+  function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
 
-  function toWorld(sx,sy){ return { x:(sx-cssW/2-view.x)/view.z, y:(sy-cssH/2-view.y)/view.z }; }
-  function localXY(e){ const rect=canvas.getBoundingClientRect(); return [e.clientX-rect.left, e.clientY-rect.top]; }
-  function nodeAt(sx,sy){ const p=toWorld(sx,sy); let best=null, bd=1e9;
-    for(const n of nodes){ if(!visible(n)) continue; const dx=n.x-p.x, dy=n.y-p.y, d=dx*dx+dy*dy, r=radius(n)+5; if(d<r*r && d<bd){ bd=d; best=n; } }
-    return best; }
-
-  function drawEdge(a,b,e,hot,dim){
-    let dx=b.x-a.x, dy=b.y-a.y; const len=Math.sqrt(dx*dx+dy*dy)||1;
-    const mx=(a.x+b.x)/2, my=(a.y+b.y)/2, nx=-dy/len, ny=dx/len, bend=Math.min(16, len*0.11);
-    const cx=mx+nx*bend, cy=my+ny*bend;
-    const col = e.risk ? G_RISK : (e.type==='committed' ? G_EDGE_COMMIT : (hot ? G_EDGE_HI : G_EDGE));
-    ctx.globalAlpha = dim?0.09:1;
-    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.quadraticCurveTo(cx,cy,b.x,b.y);
-    ctx.strokeStyle = col; ctx.lineWidth = (e.risk?1.6:1) + Math.min(2,((e.weight||1)-1)*0.5);
-    if(e.type==='combo') ctx.setLineDash([5,4]);
-    ctx.stroke(); ctx.setLineDash([]);
-    if(e.type==='caused'||e.type==='changed'||e.type==='committed'||e.type==='spawned'||e.type==='sent'){
-      const ang=Math.atan2(b.y-cy, b.x-cx), r=radius(b)+2, ax=b.x-Math.cos(ang)*r, ay=b.y-Math.sin(ang)*r, s=4.4;
-      ctx.globalAlpha = dim?0.09:0.85; ctx.fillStyle=col;
-      ctx.beginPath(); ctx.moveTo(ax,ay);
-      ctx.lineTo(ax-Math.cos(ang-0.42)*s, ay-Math.sin(ang-0.42)*s);
-      ctx.lineTo(ax-Math.cos(ang+0.42)*s, ay-Math.sin(ang+0.42)*s);
-      ctx.closePath(); ctx.fill();
-    }
-    ctx.globalAlpha=1;
-  }
-
-  function drawNode(n,isHover,dim){
-    const r=radius(n);
-    ctx.globalAlpha = dim?0.20:1;
-    if(n.risk){ const gr=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,r*3.2);
-      gr.addColorStop(0,'rgba(229,89,90,0.32)'); gr.addColorStop(1,'rgba(229,89,90,0)');
-      ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(n.x,n.y,r*3.2,0,6.2832); ctx.fill(); }
-    ctx.beginPath(); ctx.arc(n.x,n.y,r,0,6.2832);
-    ctx.fillStyle = n.risk ? G_RISK : (NODE_COLOR[n.type]||'#8a919c'); ctx.fill();
-    if(n.pinned){ ctx.lineWidth=1.5; ctx.strokeStyle='rgba(233,233,238,0.5)'; ctx.beginPath(); ctx.arc(n.x,n.y,r+2.5,0,6.2832); ctx.stroke(); }
-    if(isHover || n.id===selected){ ctx.lineWidth=2; ctx.strokeStyle='#f2f4f7'; ctx.beginPath(); ctx.arc(n.x,n.y,r,0,6.2832); ctx.stroke(); }
-    const big = n.type==='prompt'||n.type==='commit'||n.risk||(n.degree||0)>=3;
-    if(isHover || matches(n) || big || view.z>1.35){
-      const txt=String(n.label||'').slice(0,28);
-      ctx.font=G_FONT; ctx.textBaseline='middle';
-      const lx=n.x+r+4, ly=n.y;
-      ctx.globalAlpha = dim?0.22:0.94;
-      ctx.lineWidth=3; ctx.lineJoin='round'; ctx.strokeStyle=G_HALO; ctx.strokeText(txt,lx,ly);
-      ctx.fillStyle = n.risk?G_RISK:G_LABEL; ctx.fillText(txt,lx,ly);
-    }
+  function drawNode(n){
+    const w=NODE_W, h=NODE_H, x=n._x-w/2, y=n._y-h/2;
+    const sel=n.id===selected, hov=n.id===hover, match=isMatch(n);
+    ctx.globalAlpha = (term && !match) ? 0.34 : 1;
+    if(n.risk){ ctx.save(); ctx.shadowColor='rgba(229,89,90,0.55)'; ctx.shadowBlur=13; roundRect(x,y,w,h,10); ctx.fillStyle=TREE_FILL[n.type]||'#171a1f'; ctx.fill(); ctx.restore(); }
+    roundRect(x,y,w,h,10); ctx.fillStyle=TREE_FILL[n.type]||'#171a1f'; ctx.fill();
+    roundRect(x,y,w,h,10); ctx.lineWidth = sel?2:(match?1.8:1.2);
+    ctx.strokeStyle = sel?'#f2f4f7':(match?'#8ab4f8':(n.risk?G_RISK:(hov?'#4a4f59':(TREE_BORDER[n.type]||'#2a2e36')))); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x+15, y+h/2, 4.5, 0, 6.2832); ctx.fillStyle = n.risk?G_RISK:(TREE_DOT[n.type]||'#8a919c'); ctx.fill();
+    const tx=x+28, avail=w-28-(n.children.length?24:12);
+    ctx.textBaseline='middle';
+    ctx.font='600 12.5px '+G_SANS; ctx.fillStyle = n.risk?'#f2d3d3':'#e6e8ec';
+    ctx.fillText(trunc(n.label, avail), tx, n.sub? y+h/2-8 : y+h/2);
+    if(n.sub){ ctx.font='10.5px '+G_SANS; ctx.fillStyle = n.risk?'rgba(229,89,90,0.9)':'#7c828c'; ctx.fillText(trunc(n.sub, avail), tx, y+h/2+9); }
+    if(n.children.length){ const c=collapsed.has(n.id); ctx.font='700 10.5px '+G_SANS; ctx.fillStyle=c?'#aeb4be':'#565b64';
+      ctx.fillText(c ? ('▸'+n.children.length) : '▾', x+w-23, y+h/2); }
     ctx.globalAlpha=1;
   }
 
   function draw(){
-    ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,cssW,cssH);
-    ctx.save(); ctx.translate(cssW/2+view.x, cssH/2+view.y); ctx.scale(view.z, view.z);
-    for(const e of edges){ const a=byId[e.from], b=byId[e.to]; if(!visible(a)||!visible(b)) continue;
-      const hot = hover && (e.from===hover||e.to===hover);
-      const dim = (hover && !hot) || (term && !(matches(a)||matches(b)));
-      drawEdge(a,b,e,!!hot,!!dim); }
-    for(const n of nodes){ if(!visible(n)) continue;
-      const isHover = n.id===hover;
-      const neigh = hover && (isHover || adj[hover][n.id]);
-      const dim = (hover && !neigh) || (term && !matches(n));
-      drawNode(n,isHover,!!dim); }
-    ctx.restore();
-    if(opts.minimap) drawMini();
+    ctx.setTransform(dpr*zoom,0,0,dpr*zoom,0,0);
+    ctx.clearRect(0,0,treeW,treeH);
+    eachVisible((n,parent)=>{ if(!parent) return;
+      const x1=parent._x, y1=parent._y+NODE_H/2, x2=n._x, y2=n._y-NODE_H/2, my=(y1+y2)/2;
+      const on2 = hover && (n.id===hover||parent.id===hover);
+      ctx.globalAlpha = (term && !(isMatch(n)||isMatch(parent))) ? 0.3 : 1;
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.bezierCurveTo(x1,my, x2,my, x2,y2);
+      ctx.strokeStyle = n.risk ? G_RISK_LINE : (on2? G_TREE_EDGE_HI : G_TREE_EDGE); ctx.lineWidth = n.risk?1.7:1.3; ctx.stroke(); });
+    ctx.globalAlpha=1;
+    eachVisible((n)=> drawNode(n));
   }
 
-  function drawMini(){
-    const mc=opts.minimap.getContext('2d'), MW=190, MH=120;
-    mc.setTransform(dpr,0,0,dpr,0,0); mc.clearRect(0,0,MW,MH);
-    let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
-    for(const n of nodes){ if(!visible(n))continue; if(n.x<minx)minx=n.x; if(n.y<miny)miny=n.y; if(n.x>maxx)maxx=n.x; if(n.y>maxy)maxy=n.y; }
-    if(!isFinite(minx)){ miniT=null; return; }
-    const pad=12, s=Math.min((MW-pad*2)/Math.max(1,maxx-minx), (MH-pad*2)/Math.max(1,maxy-miny)), ox=pad-minx*s, oy=pad-miny*s;
-    miniT = { s:s, ox:ox, oy:oy };
-    for(const n of nodes){ if(!visible(n))continue; mc.globalAlpha=0.9; mc.fillStyle=n.risk?G_RISK:(NODE_COLOR[n.type]||'#8a919c');
-      mc.beginPath(); mc.arc(n.x*s+ox, n.y*s+oy, n.risk?2.4:1.5, 0, 6.2832); mc.fill(); }
-    mc.globalAlpha=1;
-    const wl=toWorld(0,0), wr=toWorld(cssW,cssH);
-    mc.strokeStyle='rgba(233,233,238,0.5)'; mc.lineWidth=1;
-    mc.strokeRect(wl.x*s+ox, wl.y*s+oy, (wr.x-wl.x)*s, (wr.y-wl.y)*s);
-  }
+  function applyZoom(z){ zoom=Math.max(0.3, Math.min(1.5, z));
+    canvas.width=Math.round(treeW*zoom*dpr); canvas.height=Math.round(treeH*zoom*dpr);
+    canvas.style.width=(treeW*zoom)+'px'; canvas.style.height=(treeH*zoom)+'px'; draw(); }
+  function relayout(){ layout(); applyZoom(zoom); }
+  function fitWidth(){ layout(); const cw=(container.clientWidth||900)-28; applyZoom(Math.min(cw/treeW, 1)); }
+  function fit(){ layout(); const cw=(container.clientWidth||900)-28, ch=(container.clientHeight||520)-28; applyZoom(Math.max(0.3, Math.min(cw/treeW, ch/treeH, 1))); }
 
-  function fit(){
-    let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
-    for(const n of nodes){ if(!visible(n))continue; if(n.x<minx)minx=n.x; if(n.y<miny)miny=n.y; if(n.x>maxx)maxx=n.x; if(n.y>maxy)maxy=n.y; }
-    if(!isFinite(minx)) return;
-    const w=Math.max(1,maxx-minx), h=Math.max(1,maxy-miny), pad=64;
-    view.z = Math.max(0.2, Math.min(2.2, Math.min((cssW-pad)/w, (cssH-pad)/h)));
-    view.x = -((minx+maxx)/2)*view.z; view.y = -((miny+maxy)/2)*view.z;
-    if(!raf) draw();
-  }
+  function localXY(e){ const r=canvas.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top]; }
+  function nodeAt(cx,cy){ const x=cx/zoom, y=cy/zoom; let hit=null; eachVisible((n)=>{ if(Math.abs(x-n._x)<=NODE_W/2 && Math.abs(y-n._y)<=NODE_H/2) hit=n; }); return hit; }
 
-  function resize(){
-    const rect=hostEl.getBoundingClientRect();
-    dpr = Math.max(1, Math.min(3, window.devicePixelRatio||1));
-    cssW = Math.max(320, Math.floor(rect.width||320));
-    cssH = opts.fullscreen ? Math.max(360, Math.floor(rect.height||560)) : 560;
-    canvas.width = Math.round(cssW*dpr); canvas.height = Math.round(cssH*dpr);
-    canvas.style.width = cssW+'px'; canvas.style.height = cssH+'px';
-    if(opts.minimap){ opts.minimap.width=Math.round(190*dpr); opts.minimap.height=Math.round(120*dpr); opts.minimap.style.width='190px'; opts.minimap.style.height='120px'; }
-    draw();
-  }
+  on(canvas,'click',(e)=>{ const p=localXY(e), n=nodeAt(p[0],p[1]); if(!n) return; selected=n.id;
+    if(n.children.length){ if(collapsed.has(n.id)) collapsed.delete(n.id); else collapsed.add(n.id); relayout(); }
+    else if(n.seq!=null && opts.panel){ openGraphDossier(n.seq, opts.panel); draw(); }
+    else draw(); });
+  on(canvas,'mousemove',(e)=>{ const p=localXY(e), n=nodeAt(p[0],p[1]), id=n?n.id:null; canvas.style.cursor=n?'pointer':'default'; if(id!==hover){ hover=id; draw(); } });
+  on(canvas,'mouseleave',()=>{ if(hover){ hover=null; draw(); } });
+  on(canvas,'dblclick',(e)=>{ const p=localXY(e); if(!nodeAt(p[0],p[1])) fit(); });
+  on(window,'resize', ()=>{ const z=zoom; layout(); applyZoom(z); });
 
-  function tickSim(){
-    if(!running){ raf=null; return; }
-    step(); step();
-    let ke=0; for(const n of nodes){ ke += n.vx*n.vx + n.vy*n.vy; }
-    draw();
-    if(ke/N < 0.04){ settle++; } else settle=0;
-    if(settle > 18){ raf=null; if(!autoFitted){ autoFitted=true; fit(); } return; }
-    raf = requestAnimationFrame(tickSim);
-  }
-  function reheat(){ settle=0; if(running && !raf) raf=requestAnimationFrame(tickSim); }
-
-  // ── interactions ──────────────────────────────────────────────────
-  function updateTip(n,sx,sy){ if(!n){ tip.style.display='none'; return; } tip.textContent=n.type+' · '+String(n.label||''); tip.style.display='block'; tip.style.left=(sx+13)+'px'; tip.style.top=(sy+13)+'px'; }
-
-  let drag=null;
-  on(canvas,'mousedown',(e)=>{ const p=localXY(e), n=nodeAt(p[0],p[1]);
-    if(n){ drag={ node:n, moved:false }; n.pinned=true; }
-    else drag={ pan:true, sx:p[0], sy:p[1], px:view.x, py:view.y, moved:false }; });
-  on(canvas,'mousemove',(e)=>{ const p=localXY(e), sx=p[0], sy=p[1];
-    if(drag && drag.node){ const w=toWorld(sx,sy); drag.node.x=w.x; drag.node.y=w.y; drag.node.vx=0; drag.node.vy=0; drag.moved=true; reheat(); if(!raf) draw(); return; }
-    if(drag && drag.pan){ view.x=drag.px+(sx-drag.sx); view.y=drag.py+(sy-drag.sy); if(Math.abs(sx-drag.sx)+Math.abs(sy-drag.sy)>3) drag.moved=true; if(!raf) draw(); return; }
-    const n=nodeAt(sx,sy), id=n?n.id:null; if(id!==hover){ hover=id; canvas.style.cursor=n?'pointer':'grab'; if(!raf) draw(); } updateTip(n,sx,sy); });
-  on(canvas,'mouseup',()=>{
-    if(drag && drag.node && !drag.moved){
-      const n=drag.node; n.pinned=false; selected=n.id;
-      if(n.type==='prompt' && opts.onPrompt) opts.onPrompt(n);
-      else if(n.seq!=null && opts.panel) openGraphDossier(n.seq, opts.panel);
-      if(!raf) draw();
-    }
-    drag=null; });
-  on(canvas,'mouseleave',()=>{ drag=null; if(hover){ hover=null; if(!raf) draw(); } tip.style.display='none'; });
-  on(canvas,'dblclick',(e)=>{ const p=localXY(e), n=nodeAt(p[0],p[1]); if(n){ n.pinned=false; reheat(); } else fit(); });
-  on(canvas,'wheel',(e)=>{ e.preventDefault(); const p=localXY(e), before=toWorld(p[0],p[1]);
-    view.z=Math.max(0.2, Math.min(3.5, view.z*(e.deltaY<0?1.1:0.9)));
-    const after=toWorld(p[0],p[1]); view.x+=(after.x-before.x)*view.z; view.y+=(after.y-before.y)*view.z; if(!raf) draw(); }, {passive:false});
-  on(canvas,'keydown',(e)=>{
-    const vis=nodes.filter(visible); if(!vis.length) return;
-    if(e.key==='Enter'){ const n=byId[selected]; if(n){ if(n.type==='prompt'&&opts.onPrompt) opts.onPrompt(n); else if(n.seq!=null&&opts.panel) openGraphDossier(n.seq,opts.panel); } return; }
-    const fwd=e.key==='ArrowRight'||e.key==='ArrowDown', back=e.key==='ArrowLeft'||e.key==='ArrowUp';
-    if(fwd||back){ e.preventDefault(); let i=vis.findIndex((n)=>n.id===selected); i=(i+(fwd?1:-1)+vis.length)%vis.length;
-      const n=vis[i]; selected=n.id; hover=n.id; view.x=-n.x*view.z; view.y=-n.y*view.z; if(!raf) draw(); } });
-  if(opts.minimap){ on(opts.minimap,'mousedown',(e)=>{ if(!miniT) return; const rect=opts.minimap.getBoundingClientRect();
-    const wx=((e.clientX-rect.left)-miniT.ox)/miniT.s, wy=((e.clientY-rect.top)-miniT.oy)/miniT.s;
-    view.x=-wx*view.z; view.y=-wy*view.z; if(!raf) draw(); }); }
-  on(window,'resize', ()=> resize());
-
-  resize();
-  if(reduced){ const iters=Math.min(320, Math.max(80, Math.round(60000/N))); for(let k=0;k<iters;k++) step(); running=false; fit(); draw(); }
-  else reheat();
+  dpr = Math.max(1, Math.min(3, window.devicePixelRatio||1));
+  fitWidth();
 
   return {
-    destroy(){ running=false; if(raf) cancelAnimationFrame(raf); raf=null; for(const L of listeners) L[0].removeEventListener(L[1],L[2],L[3]); listeners.length=0; tip.remove(); },
-    pause(){ running=false; if(raf) cancelAnimationFrame(raf); raf=null; },
-    resume(){ running=true; resize(); if(reduced) draw(); else reheat(); },
-    fit: fit,
-    toggleType(type,onFlag){ if(onFlag) delete hidden[type]; else hidden[type]=1; if(!raf) draw(); },
-    setSearch(v){ term=String(v||'').trim().toLowerCase(); if(term){ const m=nodes.find((n)=> visible(n)&&matches(n)); if(m){ view.x=-m.x*view.z; view.y=-m.y*view.z; } } if(!raf) draw(); },
+    destroy(){ for(const L of listeners) L[0].removeEventListener(L[1],L[2],L[3]); listeners.length=0; },
+    fit: fit, fitWidth: fitWidth, relayout: relayout,
+    expandAll(){ (function open(n){ if(n.children.length){ collapsed.delete(n.id); for(const c of n.children) open(c); } })(root); relayout(); },
+    setSearch(v){ term=String(v||'').trim().toLowerCase();
+      if(term){ const path=[]; let first=null;
+        (function rec(n){ path.push(n); if(isMatch(n)){ for(const a of path) if(a!==n) collapsed.delete(a.id); if(!first) first=n; } for(const c of n.children) rec(c); path.pop(); })(root);
+        relayout();
+        if(first){ container.scrollTo({ left:first._x*zoom-container.clientWidth/2, top:first._y*zoom-container.clientHeight/2, behavior:'smooth' }); }
+      } else draw(); },
   };
 }
 
-// The fullscreen explorer: a modal overlay reusing the same model (so the layout
-// continues seamlessly). The inline sim is paused while the overlay owns the graph.
+// Fullscreen explorer: a bigger tree over the same model (shared collapse state) with
+// a search box. One overlay at a time; fully torn down on close.
 function openGraphFull(){
-  if(!graphState || !graphState.model || graphFull) return;
-  const model = graphState.model;
-  for(const m of graphState.mounts) m.pause();
-
+  if(!graphState || !graphState.tree || graphFull) return;
   const overlay = el('div',{className:'gfull'});
   const bar = el('div',{className:'gfull-bar'});
   const search = el('input',{className:'gsearch',type:'search',placeholder:'search nodes…',spellcheck:false});
-  const chips = el('div',{className:'gchips'});
+  const expand = el('button',{type:'button',className:'fb-tool',textContent:'expand all'});
+  const fit = el('button',{type:'button',className:'fb-tool',textContent:'fit'});
   const closeBtn = el('button',{type:'button',className:'gfull-close',textContent:'✕ close',title:'close (Esc)'});
-  bar.append(el('span',{className:'gfull-title',textContent:'provenance graph'}), search, chips, closeBtn);
-  const stage = el('div',{className:'gfull-stage'});
-  const canvas = el('canvas',{className:'graphcanvas gfull-canvas',tabIndex:0});
-  const mini = el('canvas',{className:'gminimap',title:'click to jump'});
+  bar.append(el('span',{className:'gfull-title',textContent:'provenance tree'}), search, expand, fit, closeBtn);
+  const stage = el('div',{className:'gfull-stage treescroll'});
+  const canvas = el('canvas',{className:'treecanvas'});
   const panel = el('div',{className:'gpanel gfull-panel'});
-  stage.append(canvas, mini, panel);
-  overlay.append(bar, stage);
+  stage.append(canvas);
+  overlay.append(bar, stage, panel);
   document.body.append(overlay);
   graphFull = true;
 
-  const mount = mountGraph(canvas, stage, model, { panel:panel, minimap:mini, fullscreen:true });
-  graphState.overlay = overlay;
-  graphState.mounts.push(mount);
-
-  for(const spec of [['file','files'],['commit','commits'],['step','steps'],['secret','risk']]){
-    const chip = el('button',{type:'button',className:'gchip on',textContent:spec[1]});
-    chip.style.setProperty('--chip', NODE_COLOR[spec[0]]||G_LABEL);
-    chip.onclick = ()=>{ chip.classList.toggle('on'); mount.toggleType(spec[0], chip.classList.contains('on')); };
-    chips.append(chip);
-  }
+  const mount = mountTree(canvas, stage, graphState.tree.root, graphState.collapsed, { panel: panel });
+  graphState.overlay = overlay; graphState.mounts.push(mount);
+  expand.onclick = ()=> mount.expandAll();
+  fit.onclick = ()=> mount.fit();
   search.oninput = ()=> mount.setSearch(search.value);
   closeBtn.onclick = ()=> closeGraphFull();
   const esc = (e)=>{ if(e.key==='Escape') closeGraphFull(); };
   document.addEventListener('keydown', esc); overlay._esc = esc;
-  setTimeout(()=>{ try { search.focus(); } catch(_){} }, 30);
+  setTimeout(()=>{ try { mount.fitWidth(); search.focus(); } catch(_){} }, 40);
 }
 
 function closeGraphFull(){
@@ -1697,10 +1532,10 @@ function closeGraphFull(){
   const o = graphState.overlay;
   if(o){ if(o._esc) document.removeEventListener('keydown', o._esc); o.remove(); }
   graphState.overlay = null; graphFull = false;
-  for(const m of graphState.mounts) m.resume();
+  for(const m of graphState.mounts) m.relayout();
 }
 
-// Open one node's dossier below the canvas (reuses the timeline's insertDetail).
+// Open one node's evidence dossier below the tree (reuses the timeline's insertDetail).
 function openGraphDossier(seq, panel){
   panel.textContent='';
   const anchor = el('div',{className:'ganchor'});
@@ -1709,7 +1544,6 @@ function openGraphDossier(seq, panel){
   insertDetail(seq, anchor);
   panel.scrollIntoView({ block:'nearest', behavior:'smooth' });
 }
-
 /* ── poll loop ───────────────────────────────────────────────────── */
 async function render(){
   let linkOk = true;

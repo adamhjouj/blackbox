@@ -15,7 +15,7 @@ import { persistReconciliation } from './reconcile';
 import { readTurnIntent } from './transcript';
 import { captureWorktreeDelta } from './worktree';
 import { blackboxDir, configPath } from './paths';
-import { eventDetail, sessionActions, sessionCards, sessionGraph, sessionStory } from './read-api';
+import { eventDetail, sessionActions, sessionCards, sessionTree, sessionStory } from './read-api';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
 import { RULESET_VERSION } from './risk-rules';
 import { ensureKeypair, isSignableBoundary, signHead, writeWatermark, type Keypair } from './sign';
@@ -396,7 +396,7 @@ export function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             }
             const q = url.split('?')[1];
             const prompt = q ? new URLSearchParams(q).get('prompt') : null;
-            sendJson(res, 200, sessionGraph(store, id, prompt));
+            sendJson(res, 200, sessionTree(store, id, prompt));
             return;
           }
           const me = path.match(/^\/api\/event\/(\d+)$/);

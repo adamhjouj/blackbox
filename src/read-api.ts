@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { actionSummary, explainEvent } from './explain';
-import { buildGraph, type SessionGraph } from './graph';
+import { buildTree, type SessionTree } from './graph';
 import { buildStory, type EventDetail, type SessionStory } from './provenance';
 import { RECON_VERSION, type Coverage, type Discrepancy } from './reconcile';
 import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
@@ -348,12 +348,12 @@ export function sessionStory(store: Store, sessionId: string): SessionStory {
 }
 
 /** R4 — the provenance graph for a session (optionally a single turn's subgraph).
- *  Pure read-time projection of the story + risk combos; nothing is written. */
-export function sessionGraph(store: Store, sessionId: string, promptId?: string | null): SessionGraph {
+ *  Pure read-time projection of the story + risk combos into a rooted tree; nothing is written. */
+export function sessionTree(store: Store, sessionId: string, promptId?: string | null): SessionTree {
   const story = sessionStory(store, sessionId);
   const ruleset = resolveRuleset(store, sessionId);
   const combos = safeArray<ComboEvidence>(store.sessionRisk(sessionId, ruleset)?.combos ?? null);
-  return buildGraph(story, combos, promptId);
+  return buildTree(story, combos, promptId);
 }
 
 export interface MutationView {
