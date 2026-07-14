@@ -65,6 +65,7 @@ function tempStore() {
   const { Store } = require('../dist/store.js');
   const base = path.join(os.tmpdir(), `bbtest-${process.pid}-${crypto.randomUUID().slice(0, 8)}.db`);
   const store = new Store(base);
+  store.dbPath = base; // exposed so adversarial tests can open a raw 2nd connection to tamper
   store.cleanup = () => {
     store.close();
     for (const ext of ['', '-wal', '-shm']) {
