@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { addedSideOf, scanAuthWeaken } from './authweaken';
 import { GIT_SAFE_FLAGS } from './git-safe';
 import { hashString } from './hash';
 import { redactText } from './redact';
@@ -47,6 +48,10 @@ export interface MutationFact {
   skip_reason?: 'oversize' | 'binary';
   /** True when the content carries a [REDACTED:…] marker (a secret was scrubbed). */
   redacted?: boolean;
+  /** Security-weakening constructs found in the ADDED side (see authweaken.ts).
+   *  A re-derivable capture-time fact; the r4 auth-weaken flag reads it. Omitted
+   *  when the scan is clean (the common case → zero detail bloat). */
+  weakens?: string[];
 }
 
 /** A row for the content-addressed `blobs` table. */
@@ -198,8 +203,12 @@ export function captureMutation(action: ActionType, input: Record<string, unknow
   const bytes = Buffer.byteLength(content, 'utf8');
   const content_hash = hashString(content);
   const redacted = REDACTED_MARKER.test(content) || undefined;
+  // Capture-time security-weakening scan over the added side of the (redacted)
+  // change. Recorded even when the blob is skipped (oversize/binary) — the FACT is
+  // still a commitment. Clean scans stay undefined so no field is added to detail.
+  const weakens = scanAuthWeaken(addedSideOf(built.kind, content)) ?? undefined;
 
-  const base: MutationFact = { kind: built.kind, content_hash, bytes, diffstat: built.diffstat, stored: true, redacted };
+  const base: MutationFact = { kind: built.kind, content_hash, bytes, diffstat: built.diffstat, stored: true, redacted, weakens };
 
   if (looksBinary(content)) {
     return { fact: { ...base, stored: false, skip_reason: 'binary' }, blob: null };

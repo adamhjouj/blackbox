@@ -6,9 +6,11 @@ import type { BlackboxEvent } from './types';
  *  scoreable/reproducible via `blackbox rescore --ruleset`. r1 tables are FROZEN;
  *  r2 recalibrates scores (secret-touch/new-mcp → 0) and adds the injected-* and
  *  tool-poisoning combos; r3 adds anti-forensics detection (the recorder-tamper
- *  flag + combo) — the agent attacking the recorder itself. */
-export type RulesetVersion = 'r1' | 'r2' | 'r3';
-export const RULESET_VERSION: RulesetVersion = 'r3';
+ *  flag + combo) — the agent attacking the recorder itself; r4 adds semantic
+ *  auth-weakening detection (the auth-weaken flag, a content scan of mutations)
+ *  and lets it arm the injected-tamper combo. */
+export type RulesetVersion = 'r1' | 'r2' | 'r3' | 'r4';
+export const RULESET_VERSION: RulesetVersion = 'r4';
 
 /** Numeric ruleset compare — a string compare gets 'r10' < 'r2' wrong. */
 export function rulesetNum(v: string): number {
@@ -19,7 +21,7 @@ export function rulesetNum(v: string): number {
 /** The rulesets this build can compute. Anything else must be rejected before
  *  scoring (an unknown ruleset has no score table → a crash, and its fingerprint
  *  would silently collide with r2). */
-export const KNOWN_RULESETS: RulesetVersion[] = ['r1', 'r2', 'r3'];
+export const KNOWN_RULESETS: RulesetVersion[] = ['r1', 'r2', 'r3', 'r4'];
 export function isKnownRuleset(v: string): v is RulesetVersion {
   return (KNOWN_RULESETS as string[]).includes(v);
 }
@@ -34,7 +36,8 @@ export type FlagId =
   | 'destructive-git'
   | 'external-send'
   | 'injection-output'
-  | 'recorder-tamper';
+  | 'recorder-tamper'
+  | 'auth-weaken';
 
 export interface RuleHit {
   flag: FlagId;
@@ -46,7 +49,7 @@ export interface RuleHit {
  *  timeline red and score >0; ANNOTATION_FLAGS are combo fuel / muted context
  *  (score 0). This split is what kills the per-event chip noise (secret-touch
  *  fired 345x) while keeping every combo antecedent fully intact. */
-export const RISK_FLAGS = new Set<FlagId>(['dangerous-shell', 'auth-edit', 'mass-diff', 'destructive-git', 'recorder-tamper']);
+export const RISK_FLAGS = new Set<FlagId>(['dangerous-shell', 'auth-edit', 'mass-diff', 'destructive-git', 'recorder-tamper', 'auth-weaken']);
 export const ANNOTATION_FLAGS = new Set<FlagId>(['secret-touch', 'external-send', 'new-mcp-server', 'injection-output', 'failed']);
 /** Annotations that stay visible as a MUTED (non-red) chip even off a combo seq —
  *  an outbound send or a detected injection is never silently invisible. */
@@ -63,14 +66,19 @@ const SCORES_R1: Record<ScoreKey, number> = {
   'mass-diff': 50, 'mass-diff-bulk': 60, 'new-mcp-server': 20, 'destructive-git': 25,
   'external-send': 0, 'injection-output': 0, failed: 0,
   'recorder-tamper': 0, // r3-only (predicate is version-gated); inert under r1/r2
+  'auth-weaken': 0, // r4-only (version-gated); inert under r1/r2/r3
 };
 const SCORES_R2: Record<ScoreKey, number> = { ...SCORES_R1, 'secret-touch': 0, 'new-mcp-server': 0 };
+// r3: recorder-tamper is a top-tier flag — score 80 makes a single tamper event a
+// HIGH session on its own (the recorder being attacked is always incident-grade).
+const SCORES_R3: Record<ScoreKey, number> = { ...SCORES_R2, 'recorder-tamper': 80 };
 const SCORES: Record<RulesetVersion, Record<ScoreKey, number>> = {
   r1: SCORES_R1,
   r2: SCORES_R2,
-  // r3: recorder-tamper is a top-tier flag — score 80 makes a single tamper event
-  // a HIGH session on its own (the recorder being attacked is always incident-grade).
-  r3: { ...SCORES_R2, 'recorder-tamper': 80 },
+  r3: SCORES_R3,
+  // r4: auth-weaken scores 50 (MEDIUM alone, like auth-edit) — a semantic security
+  // downgrade is worth flagging on its own and arms the injected-tamper combo (HIGH).
+  r4: { ...SCORES_R3, 'auth-weaken': 50 },
 };
 
 /** Per-session state a rule needs (superset of Phase-2 SignalCtx). */
@@ -452,6 +460,14 @@ export function evaluateEvent(e: BlackboxEvent, ctx: SessionRuleCtx, rs: Ruleset
   // byte-identical (the flag is absent from those score tables' live behavior).
   if (rulesetNum(rs) >= 3 && isRecorderTamper(e)) hits.push({ flag: 'recorder-tamper', score: sc['recorder-tamper'], evidence: { target: cmd } });
 
+  // r4: semantic auth-weakening in a mutation's ADDED side — read from the hashed
+  // capture-time fact (detail.mutation.weakens), never re-scanned here, so a rescore
+  // after a blob prune is byte-identical. Version-gated so r1/r2/r3 replays are too.
+  if (rulesetNum(rs) >= 4 && (e.action_type === 'file_write' || e.action_type === 'file_edit')) {
+    const weak = (detail?.mutation as { weakens?: string[] } | undefined)?.weakens;
+    if (weak?.length) hits.push({ flag: 'auth-weaken', score: sc['auth-weaken'], evidence: { patterns: weak, path: cmd } });
+  }
+
   return hits;
 }
 
@@ -502,5 +518,24 @@ export function rulesFingerprint(ruleset: RulesetVersion = RULESET_VERSION): str
     antiForensics: { targets: ['blackbox-state', 'daemon-kill', 'launchctl', 'settings-hooks', 'git-hooks', 'blackbox-cli'] },
     verdict: { comboWeight: 40, highScore: 80, medScore: 50 },
   };
-  return sha(r3spec);
+  if (ruleset === 'r3') return sha(r3spec);
+  const r4spec = {
+    version: 'r4',
+    scores: { 'secret-touch': 0, 'dangerous-shell': 60, 'auth-edit': 50, 'auth-edit-test': 25, 'mass-diff': 50, 'mass-diff-bulk': 60, 'new-mcp-server': 0, 'destructive-git': 25, 'injection-output': 0, 'external-send': 0, failed: 0, 'recorder-tamper': 80, 'auth-weaken': 50 },
+    thresholds: { massDiffFiles: 25, massDiffLines: 1500, bulkDelDeletions: 500, bulkDelRatio: 3, queryPayloadMinLen: 40, exfilTemporalWindow: 20, tamperWindow: 20, dangerousShellRm: 'target-scoped' },
+    combos: {
+      'exfil-chain': { dataLinked: 'high', temporal: 'medium' },
+      'injected-tamper': { auth: 'high', authTest: 'medium', authWeaken: 'high' },
+      'injected-exfil': { push: 'high' },
+      'injected-rce': { shell: 'high' },
+      'injected-ci-write': { ci: 'high' },
+      'tool-poisoning': { dataLinked: 'high', firstContact: 'medium-disabled' },
+      'anti-forensics': { tamper: 'high' },
+    },
+    strongInjection: { arm: TAMPER_ARM_STRONG, corroborate: TAMPER_ARM_CORROBORATE, untrustedChannels: ['web_fetch', 'mcp_call'], webFetchNeedsCorroboration: true },
+    antiForensics: { targets: ['blackbox-state', 'daemon-kill', 'launchctl', 'settings-hooks', 'git-hooks', 'blackbox-cli'] },
+    authWeaken: { scanner: 'aw1', side: 'added-only', patterns: ['tls-verify-disabled', 'signature-verify-disabled', 'permission-open', 'cors-wildcard', 'auth-bypass', 'hostkey-check-disabled'], antecedentFor: 'injected-tamper' },
+    verdict: { comboWeight: 40, highScore: 80, medScore: 50 },
+  };
+  return sha(r4spec);
 }

