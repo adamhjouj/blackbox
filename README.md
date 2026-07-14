@@ -131,81 +131,11 @@ The demo builds an isolated store under `.blackbox-demo/`, ingests two fully syn
 
 ## How it works
 
-```mermaid
-flowchart LR
-  subgraph Sources["Evidence sources"]
-    CC["Claude Code hooks\nprompts · tools · MCP · lifecycle"]
-    GH["Git reference hook\nref changes"]
-    GT["Git worktree\nbaseline + end state"]
-  end
+<p align="center">
+  <img src="docs/assets/how-blackbox-works.svg" alt="Blackbox captures agent activity, redacts it before storage, records it in an append-only signed chain, and presents it as investigation evidence. An optional external receipt witnesses only the signed chain head." width="100%" />
+</p>
 
-  subgraph Recorder["Loopback recorder · 127.0.0.1"]
-    API["Authenticated ingest"]
-    N["Normalize + bound"]
-    R["Fail-closed redaction"]
-    H["Append + SHA-256 chain"]
-  end
-
-  subgraph Store["~/.blackbox"]
-    DB[("SQLite · WAL")]
-    B[("Content-addressed\nmutation evidence")]
-    K["Ed25519 key +\ndeletion watermark"]
-  end
-
-  subgraph Projections["Deterministic read-time projections"]
-    RE["Versioned risk engine"]
-    ST["Session story + reasoning"]
-    RC["Git reconciliation"]
-    SE["FTS search + blast radius"]
-    GR["Causal DAG"]
-  end
-
-  subgraph Surfaces["Investigation surfaces"]
-    UI["Local web UI"]
-    RP["Markdown / forensic report"]
-    CL["CLI verify · audit · file"]
-  end
-
-  EA["External signed-head receipt\nGit · file · HTTPS"]
-
-  CC --> API
-  GH --> API
-  GT --> RC
-  API --> N --> R --> H --> DB
-  H --> B
-  DB --> K --> EA
-  DB --> RE & ST & RC & SE & GR
-  RE & ST & RC & SE & GR --> UI
-  RE & ST & RC --> RP
-  DB --> CL
-
-  style RE fill:#1b1010,stroke:#d95454,color:#f2f2f2
-  style EA fill:#111,stroke:#d95454,color:#f2f2f2
-```
-
-### The custody chain
-
-```mermaid
-sequenceDiagram
-  participant C as Claude Code
-  participant D as Blackbox daemon
-  participant S as Local store
-  participant A as External anchor
-  participant I as Investigator
-
-  C->>D: asynchronous hook event
-  D->>D: normalize, bound, redact
-  D->>S: append event + previous hash
-  S->>S: advance chain head atomically
-  C->>D: session boundary
-  D->>S: sign current head with Ed25519
-  D->>A: write tiny signed receipt
-  I->>S: blackbox verify --anchors
-  S-->>I: first exact break or verified chain
-  A-->>I: independent witnessed head
-```
-
-The external receipt contains a version, sequence, head hash, signature, public-key fingerprint, and timestamp. It contains **no prompt, source code, path, command, tool output, or secret**.
+Blackbox keeps the full record on your machine. At session boundaries, it can also write a tiny signed receipt to Git, a file, or HTTPS. That receipt contains a version, sequence, head hash, signature, public-key fingerprint, and timestamp—**never** a prompt, source code, path, command, tool output, or secret.
 
 ## Investigation model
 
