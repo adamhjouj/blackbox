@@ -53,6 +53,17 @@ test('daemon: recording, read API, and the security gauntlet', async () => {
     assert.equal(profile.status, 200);
     assert.match(JSON.parse(profile.body).display_name, /^\S(?:.*\S)?$/);
 
+    // ---- local privacy posture; useful paths/custody, never collector credentials ----
+    const privacy = await req(TEST_PORT, 'GET', '/api/privacy');
+    assert.equal(privacy.status, 200);
+    const privacyBody = JSON.parse(privacy.body);
+    assert.equal(privacyBody.bind, `127.0.0.1:${TEST_PORT}`);
+    assert.equal(privacyBody.db, join(home, 'test.db'));
+    assert.equal(privacyBody.capture_output_bodies, false);
+    assert.equal(privacyBody.anchor.kind, 'none');
+    assert.ok(privacyBody.storage_bytes > 0);
+    assert.equal(privacy.body.includes('test-token'), false, 'privacy API must never expose collector credentials');
+
     // ---- the read-only investigation graph remains available as a deterministic projection ----
     const trace = await req(TEST_PORT, 'GET', '/api/session/SESS1/trace?depth=2');
     assert.equal(trace.status, 200);

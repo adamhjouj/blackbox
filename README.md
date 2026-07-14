@@ -1,81 +1,466 @@
-# blackbox
+<div align="center">
 
-A forensic **black-box recorder** for AI coding agents (Claude Code first) and MCP tools. It sits *beside* the agent as a passive observer, captures every action as a structured, tamper-evident event, scores each for risk, and renders the session as a reviewable timeline with a one-command report.
+![Blackbox — know what your agent did and prove what happened](docs/assets/blackbox-banner.svg)
 
-**One sentence:** *When your AI agent does something risky, know exactly what it touched — every file, every command, every MCP call — in five minutes, not five hours.*
+# Blackbox
 
-V1 is **record + flag**: read-only and local-first. The one thing that can leave the machine is **external anchoring**, now **on by default**: `blackbox init` finds a git remote and pushes tiny signed head *receipts* there, so a store-rewriting attacker can be *proven* wrong. Only the receipts travel — never events, code, or secrets — and you can drop to an explicit, clearly-labeled **local-only** posture (`blackbox init --local-only-anchor`) if you accept the reduced tamper-evidence. Incident response and rollback are later rungs. The only V1 metric that matters is **2-week retention** — does anyone keep it installed?
+**A local-first forensic flight recorder for AI coding agents.**
 
-> **New agent / new session picking this up? Read this file, then `docs/ARCHITECTURE.md`, then the `docs/PHASE*.md` for each shipped system.** The recorder and four forensic systems on top of it are built; work now is hardening + new forensic capability.
+Capture Claude Code activity, explain risk in plain language, trace every finding back to evidence, and verify that the record was not silently rewritten.
+
+[![CI](https://github.com/adamhjouj/blackbox/actions/workflows/ci.yml/badge.svg)](https://github.com/adamhjouj/blackbox/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-f2f2f2.svg?labelColor=111)](LICENSE)
+[![Node 18–22](https://img.shields.io/badge/node-18%20%E2%80%93%2022-f2f2f2.svg?labelColor=111)](package.json)
+[![Status: public beta](https://img.shields.io/badge/status-public%20beta-d95454.svg?labelColor=111)](CHANGELOG.md)
+[![Local first](https://img.shields.io/badge/data-local--first-f2f2f2.svg?labelColor=111)](#privacy-and-data-lifecycle)
+
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Security model](#security-model) · [Contributing](CONTRIBUTING.md)
+
+</div>
 
 ---
 
-## Status
+When an AI coding agent changes authentication, reads a credential file, runs a destructive command, or sends data to an external host, ordinary chat history is not enough. You need to know **what happened, what it touched, why it matters, and whether the evidence is still trustworthy**.
 
-**Shipped — the V1 recorder plus four forensic systems (R1–R4):**
-- **Phase 0–4** — tamper-evident hash-chained store + `verify`; live-capture daemon; fail-closed secret redaction; git-forensics collector; localhost timeline UI; versioned risk engine (rulesets r1/r2) with exfil-chain / injection / tool-poisoning combos; one-command Markdown report.
-- **R1 · deep intent** — the agent's stated reasoning + model/token cost per turn (`docs/PHASE7-INTENT.md`).
-- **R2 · reconciliation** — git ground truth vs the hook stream: ghost / phantom / content-mismatch (`docs/PHASE8-RECONCILIATION.md`).
-- **R3 · custody** — Ed25519 chain-head signing + anti-deletion watermark + forensic case-file (`docs/PHASE6-CUSTODY.md`).
-- **R4 · provenance graph** — a deterministic Sugiyama causal DAG / re-traceable session trace (`docs/PHASE9-GRAPH.md`).
-- **W0 · hardening** — the ReDoS / fsmonitor / redaction audit fixes, streaming `verify`, bounded transcript reads, a schema-version guard, and PreCompact/Notification capture.
+Blackbox sits beside the agent as a passive recorder. It turns hook-visible actions into a redacted, hash-chained event record; corroborates file changes against Git; evaluates deterministic risk rules; and presents the result as a calm investigation workflow instead of a wall of logs.
 
-**Next (planned):** recording integrity (anti-forensics detection + a capture-coverage ledger), external anchoring (off-machine custody), deeper capture (environment snapshot, file history), and analytics/IR (corpus search + blast-radius containment).
+> [!IMPORTANT]
+> Blackbox `0.1.x` is a **macOS-first public beta**. It records and explains; it does not block, sandbox, roll back, or claim kernel-level visibility.
 
-Try it (from source): `npm install && npm run build && node dist/cli.js init && node dist/cli.js start` — then use Claude Code and open the UI with `node dist/cli.js ui`. Installed as a bin, the same commands read `blackbox <cmd>`.
+<p align="center">
+  <img src="docs/assets/blackbox-dashboard.png" alt="Blackbox dashboard showing one high-risk synthetic session and one clean synthetic session" width="100%" />
+  <br />
+  <sub>Real interface · fully synthetic demo data · no captured user sessions</sub>
+</p>
 
-### Repo map
+## Why Blackbox?
+
+| Ordinary agent logs | Blackbox |
+| --- | --- |
+| Optimized for replaying a conversation | Optimized for investigating an incident |
+| Mutable files with unclear completeness | Append-only SHA-256 chain with signed checkpoints |
+| Commands without causal context | Prompts → reasoning → tools → files → findings |
+| Raw output can contain secrets | Capture-time redaction; output bodies elided by default |
+| “Something changed” | Git-corroborated ghost, phantom, and content-mismatch findings |
+| Risk buried in thousands of events | Deterministic findings, blast radius, and containment actions |
+| Trust the local database | Verify locally and witness signed heads off-machine |
+
+### Built for answers, not more telemetry
+
+- **What did the agent do?** A readable prompt-by-prompt activity timeline.
+- **What was affected?** Changed files, sensitive paths, Git artifacts, and observed outbound targets.
+- **Why is this risky?** Versioned rules with evidence-linked, plain-language explanations.
+- **Can I trust the record?** Hash-chain verification, Ed25519 checkpoints, a deletion watermark, and external receipts.
+- **What should I do next?** Severity-ordered containment guidance and a shareable forensic report.
+
+## Quick start
+
+### Prerequisites
+
+- macOS for the complete lifecycle and LaunchAgent support
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) `2.1.119` or newer
+- Node.js **18, 20, or 22** — the native SQLite dependency is not supported on Node 23+
+- Git
+
+### 1. Install from source
+
+```bash
+git clone https://github.com/adamhjouj/blackbox.git
+cd blackbox
+npm ci
+npm run build
+npm link
 ```
-src/                     The tool (TypeScript → dist/)
-  daemon.ts              127.0.0.1 hook-receiver (POST /hook, /git) + read API + UI
-  store.ts, hash.ts, verify.ts, types.ts, normalize.ts   the append-only hash-chained store
-  redact.ts, redact-rules.ts   fail-closed secret redaction (+ structure-anchored context rules)
-  git-collector.ts, watch.ts, git-safe.ts   git ref-change ground truth + hardened git calls
-  mutation.ts, worktree.ts, reconcile.ts     file-change facts + R2 git reconciliation
-  risk-engine.ts, risk-rules.ts, injection.ts, explain.ts   the risk layer + plain-English explains
-  transcript.ts, provenance.ts, graph.ts     R1 intent · the session story · R4 causal DAG
-  sign.ts                R3 Ed25519 checkpoint signing + watermark
-  read-api.ts, ui-page.ts   read-time projections + the single-file localhost UI
-  init.ts, autostart.ts, cli.ts, paths.ts   install/hooks/launchd + CLI
-docs/
-  ARCHITECTURE.md        The master build plan (V1 scope, schema, storage, risk engine, roadmap)
-  PHASE0–4, PHASE5–9     What each shipped phase/system does + its honest limits
-  DAY1-FINDINGS.md       Verified hook behavior on 2.1.x (the make-or-break test, passed)
-  FORENSIC-COLLECTORS.md What we capture at each tier, how attribution works, what's deferred
-experiments/             Reproducible hook-reality test, fixtures, four-collectors demo
-README.md                This file — orientation entry point
+
+`npm link` makes the `blackbox` command available globally while keeping this beta easy to update from source.
+
+### 2. Initialize Blackbox from the project you want to record
+
+```bash
+cd ~/code/your-project
+blackbox init
 ```
 
----
+This one command:
 
-## Decisions locked (with reasoning)
+1. shows exactly what Blackbox captures and what can leave the machine;
+2. adds asynchronous Blackbox handlers to `~/.claude/settings.json` without replacing your existing hooks;
+3. creates a local signing key and authenticated Git-collector token;
+4. configures signed head receipts on `refs/blackbox/anchors` using the current repository's remote;
+5. starts the loopback-only recorder on `127.0.0.1:7842`.
 
-- **Language: TypeScript/Node.** One runtime for the localhost hook receiver + UI; matches the Claude Code ecosystem and hook examples.
-- **Store: SQLite (WAL), `better-sqlite3`.** Single local file, indexed queries for the timeline, handles concurrent async-hook writes. No JSONL hedge.
-- **Tamper-evidence → resistance: hash chain + Ed25519 signing** (R3). Each event hashes the previous (local tamper-*evidence*); `blackbox init` also generates a signing key (`~/.blackbox/signing.key`, 0600) and the daemon signs the chain head at session boundaries, plus an out-of-DB `signing.head` watermark. So `blackbox verify` catches a rewrite re-signed with a different key **and** signature deletion/rollback by a DB-only writer. **Honest limit:** it's all local — an attacker with full `~/.blackbox` write access (DB + key + watermark) can re-sign; *true* off-machine resistance is remote anchoring (`report --anchor`, a later/paid tier). Do not overclaim.
-- **Ground-truth corroboration: git-anchored reconciliation** (R2). At SessionEnd, `blackbox reconcile` cross-checks the hook stream against what git shows actually changed on disk (`ghost`/`phantom`/`content_mismatch`), with a SessionStart dirty baseline so pre-existing edits aren't blamed on the agent. **Honest scope:** corroborates *file mutations vs git only* — it does **not** observe network or process activity, and a ghost is reported *unattributed* (a shell command / human / tool), never asserted to be the agent. OS-level (network/process) visibility is a deferred, opt-in Tier-2 capability.
-- **Collector scope = Tier 1 only for V1** (see `docs/FORENSIC-COLLECTORS.md`):
-  - Claude Code hooks (HTTP + `async`) — intent + result, verified and shipped.
-  - git `reference-transaction` hook — ground-truth ref changes, verified and shipped.
-  - `lsof`/ppid network+process poller — prototyped in the four-collectors demo but **cut from the shipped product**: a ~1s poll can't attribute a sub-second exfil, so it would cry wolf exactly where the tool must be believed. R2 reconciles file mutations against git instead; network/process visibility is a deferred, opt-in Tier-2 capability.
-  - Tier 2 (Endpoint Security / `eslogger`, kernel-level, root + Full Disk Access) is **deferred** — documented, not built. Reason: robust Tier 2 = root daemon + un-automatable FDA onboarding + version-fragile parser + real attack surface, and it doesn't change what V1 tests.
-- **Attribution correction (important):** build the process tree from `(pid, pidversion)` + `parent_audit_token` (or ppid in Tier 1) — **never `responsible_audit_token`**, which live-tested as unreliable (resolves to self/Terminal on `posix_spawn` disclaim).
-- **Redaction is a fail-closed subsystem, not a line item.** Redact at capture (before first write); store output hashes not bodies by default; if redaction throws, drop the field to a hash. An under-redacted event is a breach in a *security* tool.
-- **No blocking in V1.** Hooks *can* block (exit-2 / `permissionDecision`), but we stay a recorder — blocking creates the "it broke my agent" uninstall risk we're avoiding.
+If the repository has no remote, Blackbox refuses to silently downgrade custody. For an intentionally local-only setup:
 
-### Verified facts worth not re-deriving
-- Hooks deliver `tool_use_id`, `duration_ms`, full `tool_response`, `PostToolUseFailure`, and subagent `agent_id`/`agent_type` — live-confirmed. Fire in headless `-p` mode.
-- Field drift vs docs: live payloads use `tool_response`/`error` where docs say `tool_output`/`tool_error`. **Store raw payload verbatim; normalize with a tolerant parser.**
-- `reference-transaction` fires on every ref update (commit/amend/reset/branch), with old→new SHAs. Version floor for `duration_ms`: Claude Code ≥ 2.1.119.
+```bash
+blackbox init --local-only-anchor
+```
 
----
+That mode is fully usable, but a process with write access to all of `~/.blackbox` could rewrite the database, key, watermark, and local receipts together.
 
-## Next steps — the forensic roadmap
+### 3. Use Claude Code normally
 
-Phases 0–9 / R1–R4 are built (see the `docs/PHASE*.md`). The next milestone, in priority order:
-- **Recording integrity** — anti-forensics detection (a ruleset-`r3` flag for the agent attacking the recorder: killing the daemon, editing `~/.blackbox`, disabling hooks, rewriting history) + a capture-coverage ledger (daemon-lifecycle facts + a transcript-completeness reconciliation, so silent capture loss is *visible and attributable*).
-- **External anchoring (on by default)** — signed head *receipts* to a git ref / file / URL outside `~/.blackbox`, so a store-rewriting attacker can be *proven* wrong. `blackbox init` requires one (auto-resolving the repo's git remote and auto-pushing receipts to it) and **fails loudly** if none can be found; `--local-only-anchor` is the explicit, clearly-labeled reduced-security fallback (receipts stay on this machine). The only thing that leaves the machine — and only the receipts do.
-- **Deeper capture** — a SessionStart environment/toolchain snapshot (versions, MCP inventory, hooks hash) and file history / point-in-time reconstruction from the blob store.
-- **Analytics & IR** — corpus-wide FTS search, a blast-radius containment checklist (ARCHITECTURE §11), and a fleet overview strip.
+```bash
+claude
+```
 
-Durable spool, rollback/containment (§12), and Tier-2/3 OS collectors remain deliberately deferred (see `docs/ARCHITECTURE.md` and `docs/FORENSIC-COLLECTORS.md`).
+Prompts, agent-stated reasoning, tool calls, MCP activity, file mutations, Git facts, duration, model, and token usage are recorded automatically when the corresponding source exposes them.
+
+### 4. Open the investigation UI
+
+```bash
+blackbox ui
+```
+
+Open a session from the dashboard, understand its outcome and risk on **Overview**, follow each prompt on **Activity**, inspect raw support on **Evidence**, or re-root the deterministic causal **Graph** around a finding.
+
+### 5. Confirm the installation
+
+```bash
+blackbox doctor
+blackbox verify --anchors
+```
+
+`doctor` checks the runtime, Claude Code, hooks, daemon, state directory, collector authentication, custody posture, event store, and chain integrity.
+
+## Try it without recording a real session
+
+```bash
+npm run demo
+```
+
+The demo builds an isolated store under `.blackbox-demo/`, ingests two fully synthetic sessions, starts a recorder on port `7843`, and opens the UI. It never reads or modifies `~/.blackbox`.
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph Sources["Evidence sources"]
+    CC["Claude Code hooks\nprompts · tools · MCP · lifecycle"]
+    GH["Git reference hook\nref changes"]
+    GT["Git worktree\nbaseline + end state"]
+  end
+
+  subgraph Recorder["Loopback recorder · 127.0.0.1"]
+    API["Authenticated ingest"]
+    N["Normalize + bound"]
+    R["Fail-closed redaction"]
+    H["Append + SHA-256 chain"]
+  end
+
+  subgraph Store["~/.blackbox"]
+    DB[("SQLite · WAL")]
+    B[("Content-addressed\nmutation evidence")]
+    K["Ed25519 key +\ndeletion watermark"]
+  end
+
+  subgraph Projections["Deterministic read-time projections"]
+    RE["Versioned risk engine"]
+    ST["Session story + reasoning"]
+    RC["Git reconciliation"]
+    SE["FTS search + blast radius"]
+    GR["Causal DAG"]
+  end
+
+  subgraph Surfaces["Investigation surfaces"]
+    UI["Local web UI"]
+    RP["Markdown / forensic report"]
+    CL["CLI verify · audit · file"]
+  end
+
+  EA["External signed-head receipt\nGit · file · HTTPS"]
+
+  CC --> API
+  GH --> API
+  GT --> RC
+  API --> N --> R --> H --> DB
+  H --> B
+  DB --> K --> EA
+  DB --> RE & ST & RC & SE & GR
+  RE & ST & RC & SE & GR --> UI
+  RE & ST & RC --> RP
+  DB --> CL
+
+  style RE fill:#1b1010,stroke:#d95454,color:#f2f2f2
+  style EA fill:#111,stroke:#d95454,color:#f2f2f2
+```
+
+### The custody chain
+
+```mermaid
+sequenceDiagram
+  participant C as Claude Code
+  participant D as Blackbox daemon
+  participant S as Local store
+  participant A as External anchor
+  participant I as Investigator
+
+  C->>D: asynchronous hook event
+  D->>D: normalize, bound, redact
+  D->>S: append event + previous hash
+  S->>S: advance chain head atomically
+  C->>D: session boundary
+  D->>S: sign current head with Ed25519
+  D->>A: write tiny signed receipt
+  I->>S: blackbox verify --anchors
+  S-->>I: first exact break or verified chain
+  A-->>I: independent witnessed head
+```
+
+The external receipt contains a version, sequence, head hash, signature, public-key fingerprint, and timestamp. It contains **no prompt, source code, path, command, tool output, or secret**.
+
+## Investigation model
+
+### Dashboard
+
+Search sessions, projects, prompts, and evidence from one place. Recent-session cards surface project, time, event count, severity, and flagged actions without a permanent sidebar. Routes are restorable and browser Back/Forward works.
+
+### Overview
+
+A deterministic summary answers what changed, the primary findings, integrity state, affected files/hosts, and the next containment actions above the fold. Blackbox does not invent AI-generated incident claims.
+
+### Activity
+
+Each turn retains its prompt identity and shows duration, model, token usage, tools, nested steps, outcomes, and the agent's **stated reasoning** when available. Selecting a step opens evidence without losing scroll or expansion state.
+
+### Evidence
+
+Inspect blast radius, redactions, outbound targets observed in commands/tool inputs, changed files, reconciliation, chain verification, raw redacted dossiers, and mutation history. Stored bodies can be aged out while their cryptographic commitments remain.
+
+### Graph
+
+The graph is a deterministic Sugiyama-style DAG, not an AI visualization. Re-root it around a finding, prompt, or evidence item to see the smallest useful causal neighborhood; expand directories and depth only when needed.
+
+## What Blackbox records
+
+| Signal | Examples | Storage behavior |
+| --- | --- | --- |
+| Session lifecycle | start, stop, end, compaction, notifications | Hash-chained event |
+| User intent | prompt text and prompt identifiers | Redacted, bounded, hash-chained |
+| Agent-stated intent | available reasoning summary, model, token usage | Redacted and attached to its turn |
+| Tool activity | shell, files, web fetches, tasks, MCP calls | Inputs retained after redaction; outputs hashed by default |
+| File mutations | redacted patches/bodies, hashes, diffstat | Content-addressed and independently prunable |
+| Git ground truth | refs, commits, worktree baseline/end state | Used for reconciliation |
+| Environment | toolchain versions, MCP names, manifest hashes | Arguments and environment secrets excluded |
+| Risk interpretation | flags, combinations, evidence links | Re-derivable under a versioned ruleset |
+
+Blackbox only knows what its configured sources expose. “Outbound host” means a target observed in a hook-visible command or tool input—not proof from a kernel network sensor.
+
+## Risk and reconciliation
+
+The current `r4` ruleset detects and composes evidence for:
+
+- sensitive-file reads followed by external sends;
+- prompt-injection markers followed by auth weakening, execution, exfiltration, or CI changes;
+- newly configured MCP servers handling previously read sensitive files;
+- destructive shell and Git operations;
+- changes that weaken TLS, signature checks, authorization, CORS, CSRF, SSH host keys, or authentication guards;
+- attempts to stop the recorder, rewrite its store/key, disable hooks, or redirect its home.
+
+Risk is an interpretation layer, never part of the immutable chain. You can recompute it without changing recorded evidence:
+
+```bash
+blackbox rescore --ruleset r4
+blackbox rescore --ruleset r4 --check
+```
+
+At session end, reconciliation compares hook-reported mutations with Git's observed worktree:
+
+- **Ghost mutation** — Git sees a change with no matching file hook.
+- **Phantom mutation** — a hook reports a change absent from the end state.
+- **Content mismatch** — a stored write body disagrees with the on-disk digest.
+
+These are discrepancy facts, not automatic accusations of agent behavior.
+
+## Everyday commands
+
+| Command | Purpose |
+| --- | --- |
+| `blackbox status` | Recorder state, event count, authentication, and anchor posture |
+| `blackbox doctor` | Diagnose the full installation and verify the chain |
+| `blackbox ui` | Open the local investigation interface |
+| `blackbox sessions` | List recorded sessions |
+| `blackbox search "query"` | Search prompts and redacted evidence |
+| `blackbox blast --session <id>` | Summarize affected files, targets, Git artifacts, and containment |
+| `blackbox file <path> --session <id>` | Inspect mutation history and stored evidence |
+| `blackbox verify --anchors` | Verify hashes, signatures, watermark, and configured receipts |
+| `blackbox audit --session <id>` | Show what was redacted without revealing the secret |
+| `blackbox report --session <id>` | Export a deterministic Markdown review |
+| `blackbox report --session <id> --forensic` | Export custody, verification, findings, and a self-manifest |
+| `blackbox help --all` | Show every command and option |
+
+## Security model
+
+### What Blackbox is designed to protect
+
+- **Secret exposure at rest:** known secret shapes are redacted before the first event write. If redaction throws, content is dropped to a hash.
+- **Silent row editing:** each event hashes all normalized columns and the preceding event hash.
+- **Tail deletion:** an atomically updated head record preserves expected sequence and count.
+- **Consistent local rewrites:** Ed25519 checkpoints are verified against a trusted local public key.
+- **Signature deletion:** a high-watermark outside the database requires the latest expected checkpoint to remain.
+- **Full local-state rewrites:** external signed-head receipts let an independent destination prove the old chain existed.
+- **Hostile recorded content:** the UI uses text-only DOM construction, a restrictive CSP, same-origin reads, and a loopback-only server.
+
+### Honest limits
+
+- A process controlling the database, signing key, watermark, configuration, hooks, **and every external receipt** can defeat custody.
+- Redaction is defense in depth, not a mathematical guarantee that every future secret format is recognized.
+- Hook capture can be incomplete; Blackbox records daemon downtime and reconciles transcript coverage so gaps are visible.
+- Git corroborates file state, not process or network activity.
+- The recorder is observational. It does not prevent execution, enforce policy, isolate agents, or restore files.
+- Agent “reasoning” is the agent-supplied explanation available to the transcript—not private hidden chain-of-thought.
+
+Read [SECURITY.md](SECURITY.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [docs/FORENSIC-COLLECTORS.md](docs/FORENSIC-COLLECTORS.md) before relying on Blackbox for an incident-response process.
+
+## Privacy and data lifecycle
+
+By default, local state lives in `~/.blackbox`:
+
+```text
+~/.blackbox/
+├── blackbox.db       # events, derived layers, and mutation evidence
+├── config.json       # port, collector token, and anchor configuration
+├── signing.key       # Ed25519 private key, mode 0600
+├── signing.pub       # trusted public key
+├── signing.head      # checkpoint high-watermark
+├── daemon.pid
+└── daemon.log
+```
+
+Override the location for testing or isolation with `BLACKBOX_HOME`, `BLACKBOX_DB`, or `--db`.
+
+Open **Edit name → Recorder & privacy** in the dashboard (or visit `#/settings`) for a readable local view of the recorder endpoint, database location and size, retention behavior, output-body storage, custody destination, and removal commands. The posture endpoint is same-origin and never exposes the collector token.
+
+### Retain facts, age out stored content
+
+```bash
+blackbox prune --older-than 30d
+```
+
+Pruning removes old redacted mutation bodies while retaining event facts, hashes, sizes, diffstats, tombstones, and chain verification. Because sessions share one append-only custody chain, Blackbox does not pretend that deleting one session is a harmless operation.
+
+### Erase all local Blackbox data
+
+```bash
+blackbox erase --all --yes
+```
+
+This stops the daemon and permanently removes the event store, signing keys, logs, and local receipts. Claude hooks remain installed.
+
+### Complete uninstall, including data
+
+```bash
+blackbox uninit --erase-data --yes
+```
+
+This removes only Blackbox handlers from Claude settings, preserves unrelated hooks, stops the daemon, disables its macOS LaunchAgent, and removes `~/.blackbox`. Receipts already pushed to a Git remote or written to another destination must be removed according to that destination's retention policy.
+
+## Configuration and platform support
+
+| Capability | macOS | Linux | Windows |
+| --- | :---: | :---: | :---: |
+| Recorder, UI, reports, verification | ✅ | ✅ | Experimental |
+| Claude Code HTTP hooks | ✅ | ✅ | Experimental |
+| Git reference hooks | ✅ | ✅ | Experimental |
+| Managed autostart | LaunchAgent | Manual | Manual |
+| CI coverage | Node 18/20/22 | Node 18/20/22 | Not yet |
+
+The daemon binds only to `127.0.0.1`. The `/git` collector route requires the generated token unless you explicitly start with the insecure development escape hatch `--allow-insecure-git`.
+
+## Repository map
+
+```text
+src/
+├── daemon.ts                    loopback receiver, read API, and UI serving
+├── store.ts · hash.ts           append-only SQLite chain
+├── normalize.ts · redact.ts     tolerant normalization and fail-closed redaction
+├── risk-engine.ts · rules*.ts   versioned deterministic interpretation
+├── mutation.ts · filestate.ts   content-addressed evidence and reconstruction
+├── git-collector.ts             ref-change facts
+├── worktree.ts · reconcile.ts   Git ground-truth comparison
+├── transcript.ts                prompt and agent-stated reasoning recovery
+├── provenance.ts · graph.ts     story and deterministic causal DAG
+├── sign.ts · anchor.ts          checkpoints, watermark, external receipts
+├── search.ts · blast.ts         corpus search and containment projection
+├── report.ts                    review and forensic case-file exports
+├── doctor.ts                    installation and health diagnostics
+└── ui/                          dependency-free dashboard and investigation views
+
+test/                            security, invariants, integration, and UI tests
+examples/demo-events.jsonl       fully synthetic demo capture
+docs/                            architecture, collectors, and phase decisions
+experiments/                     reproducible hook/collector research
+```
+
+The runtime remains TypeScript plus vanilla browser JavaScript. The served UI is self-contained and has no frontend framework or runtime dependency.
+
+## Development
+
+```bash
+git clone https://github.com/adamhjouj/blackbox.git
+cd blackbox
+npm ci
+npm test
+npm run demo
+```
+
+CI builds and tests Node 18, 20, and 22 on macOS and Linux. Tagged releases run the same suite, build an npm-compatible `.tgz`, generate `SHA256SUMS.txt`, and attach both to the GitHub release.
+
+Before opening a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md). The key invariants are simple but strict: redact before persistence, preserve append-only evidence, keep projections deterministic, render recorded data as hostile text, and document limitations without marketing around them.
+
+## FAQ
+
+<details>
+<summary><strong>Does Blackbox send my code or prompts anywhere?</strong></summary>
+
+No. Events, prompts, paths, code, and evidence remain in the local database. If external anchoring is enabled, only tiny signed chain-head receipts leave the machine.
+
+</details>
+
+<details>
+<summary><strong>Does it slow Claude Code down?</strong></summary>
+
+Blackbox installs asynchronous HTTP hooks so recording is kept off the agent's critical path. Extremely busy systems can still experience resource contention; coverage diagnostics make capture gaps visible rather than hiding them.
+
+</details>
+
+<details>
+<summary><strong>Is Blackbox an EDR, sandbox, or policy engine?</strong></summary>
+
+No. It is a recorder and investigation tool. It does not provide kernel telemetry, execution prevention, isolation, rollback, or policy enforcement.
+
+</details>
+
+<details>
+<summary><strong>Why require an external anchor by default?</strong></summary>
+
+A hash chain stored beside its signing key can prove accidental corruption and limited tampering, but a full-write attacker can rewrite both. A signed head witnessed elsewhere makes that rewrite provable. Local-only mode remains available as an explicit tradeoff.
+
+</details>
+
+<details>
+<summary><strong>Can I use it with agents other than Claude Code?</strong></summary>
+
+The normalized store and read APIs are agent-agnostic, but the complete capture adapter currently targets Claude Code hooks first. New collectors must preserve the same redaction and provenance invariants.
+
+</details>
+
+## Contributing and community
+
+Issues, false-positive fixtures, accessibility improvements, Linux packaging work, and new evidence adapters are welcome. Please use synthetic data in public discussions and report vulnerabilities privately.
+
+- [Contribution guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Changelog](CHANGELOG.md)
+
+## License
+
+Blackbox is released under the [MIT License](LICENSE).
+
+<div align="center">
+
+**Record locally. Investigate clearly. Verify independently.**
+
+If Blackbox helps you understand an agent incident, consider starring the repository and sharing a synthetic reproduction that makes the next investigation easier.
+
+</div>

@@ -145,17 +145,27 @@ function sessionCwd(store: Store, sessionId: string): string | null {
   return cwd;
 }
 
-/** Human-readable session name: the user's `/rename` (customTitle) if set, else
- *  the AI-generated title (aiTitle), read from the session transcript via a
- *  BOUNDED tail read (never the whole multi-MB file on the HTTP path). Cached
- *  once found (names rarely change; a daemon restart re-resolves). */
+/** Human-readable session name: the user's `/rename` (customTitle), else the
+ *  transcript's AI title, else the first captured real prompt. The prompt fallback
+ *  keeps imported/rotated-transcript sessions navigable instead of exposing a UUID.
+ *  Transcript reads are bounded; event reads omit the heavy raw column. */
 const nameCache = new Map<string, string>();
 export function sessionName(store: Store, sessionId: string): string | null {
   const cached = nameCache.get(sessionId);
   if (cached) return cached;
   const tp = store.sessionTranscriptPath(sessionId);
-  if (!tp) return null;
-  const name = sessionTitleFromTranscript(tp);
+  let name = tp ? sessionTitleFromTranscript(tp) : null;
+  if (name == null) {
+    const promptEvent = store.eventsLight(sessionId).find((event) => event.phase === 'prompt' && event.detail);
+    const prompt = promptEvent ? safeParse<{ prompt?: unknown }>(promptEvent.detail, {}).prompt : null;
+    if (typeof prompt === 'string') {
+      const oneLine = prompt.replace(/\s+/g, ' ').trim();
+      if (oneLine && !/^<(task-notification|system-reminder|command-|local-command-)/.test(oneLine)) {
+        const points = Array.from(oneLine);
+        name = points.length > 96 ? points.slice(0, 96).join('') + '…' : points.join('');
+      }
+    }
+  }
   if (name == null) return null;
   if (nameCache.size > 4096) nameCache.clear();
   nameCache.set(sessionId, name);

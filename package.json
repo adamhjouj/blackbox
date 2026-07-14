@@ -1,25 +1,49 @@
 {
   "name": "blackbox-recorder",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
   "description": "Forensic black-box recorder for AI coding agents (Claude Code first)",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adamhjouj/blackbox.git"
+  },
+  "homepage": "https://github.com/adamhjouj/blackbox#readme",
+  "bugs": {
+    "url": "https://github.com/adamhjouj/blackbox/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "claude-code",
+    "forensics",
+    "observability",
+    "security",
+    "audit-log"
+  ],
   "type": "commonjs",
   "engines": {
-    "node": ">=18"
+    "node": ">=18 <23"
   },
   "bin": {
     "blackbox": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "docs",
+    "examples",
+    "scripts/demo.mjs",
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc",
     "prepublishOnly": "npm run build",
     "start": "node dist/cli.js",
     "verify": "node dist/cli.js verify",
-    "test": "npm run build && node --test test/*.test.js"
+    "test": "npm run build && node --test test/*.test.js",
+    "demo": "npm run build && node scripts/demo.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1"

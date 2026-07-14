@@ -1,4 +1,93 @@
 export const DASHBOARD_JS = String.raw`
+function formatStorage(bytes) {
+  let value = Number(bytes || 0);
+  if (value < 1024) return value + ' B';
+  const units = ['KB','MB','GB','TB'];
+  let unit = units[0]; value /= 1024;
+  for (let i = 1; value >= 1024 && i < units.length; i++) { value /= 1024; unit = units[i]; }
+  return value.toFixed(value >= 10 ? 1 : 2) + ' ' + unit;
+}
+
+function settingsFact(label, value, mono) {
+  return h('div', { className: 'settings-fact' },
+    h('span', { textContent: label }),
+    h(mono ? 'samp' : 'strong', { textContent: value || '—' })
+  );
+}
+
+function commandRow(command, copy) {
+  const row = h('div', { className: 'privacy-command' }, h('code', { textContent: command }), h('span', { textContent: copy }));
+  return row;
+}
+
+function renderSettingsPage() {
+  const app = document.getElementById('app');
+  app.textContent = '';
+  const p = S.privacy;
+  const anchor = p && p.anchor || {};
+  const anchorState = anchor.kind === 'none'
+    ? 'Not configured'
+    : anchor.external
+      ? cap(anchor.kind) + (anchor.auto_push ? ' · automatic receipts' : ' · external receipts')
+      : 'Local-only · reduced custody';
+  const page = h('article', { className: 'settings-page' });
+  page.append(
+    h('a', { className: 'back-link', href: '#/' }, h('span', { 'aria-hidden': 'true', textContent: '←' }), 'Sessions'),
+    h('header', { className: 'settings-hero' },
+      h('div', null, h('div', { className: 'panel-label', textContent: 'Recorder controls' }), h('h1', { textContent: 'Health & privacy' }), h('p', { textContent: 'See what Blackbox stores, what can leave this computer, and how to remove local data.' })),
+      h('span', { className: 'risk-badge' + (S.offline ? ' danger' : ''), textContent: S.offline ? 'Recorder offline' : 'Recorder connected' })
+    )
+  );
+  if (!p) {
+    page.append(h('section', { className: 'panel settings-loading' }, h('div', { className: 'skeleton-line wide' }), h('div', { className: 'skeleton-line' })));
+    app.append(page); return;
+  }
+  const recorder = h('section', { className: 'panel settings-panel' },
+    h('div', { className: 'panel-label', textContent: 'Recorder' }),
+    h('h2', { textContent: 'Local service' }),
+    settingsFact('Endpoint', p.bind, true),
+    settingsFact('Recorded events', String(S.health && S.health.count || 0), false),
+    settingsFact('Stored data', formatStorage(p.storage_bytes), false),
+    settingsFact('Retention', p.retention === 'manual' ? 'Manual · nothing expires silently' : String(p.retention), false)
+  );
+  const storage = h('section', { className: 'panel settings-panel' },
+    h('div', { className: 'panel-label', textContent: 'Local storage' }),
+    h('h2', { textContent: 'Evidence stays here' }),
+    settingsFact('Database', p.db, true),
+    settingsFact('State directory', p.data_dir, true),
+    settingsFact('Tool output bodies', p.capture_output_bodies ? 'Stored after redaction' : 'Elided to hashes by default', false)
+  );
+  const custody = h('section', { className: 'panel settings-panel' },
+    h('div', { className: 'panel-label', textContent: 'Custody' }),
+    h('h2', { textContent: anchorState }),
+    settingsFact('Destination', anchor.destination || 'None', true),
+    h('p', { className: 'settings-copy', textContent: anchor.external
+      ? 'Only signed chain-head receipts can leave this machine. They contain no prompts, paths, code, commands, or tool output.'
+      : 'No independent off-machine witness is active. A full-write attacker could replace the local database, key, watermark, and receipts together.' })
+  );
+  const captured = h('section', { className: 'panel settings-panel' },
+    h('div', { className: 'panel-label', textContent: 'Captured locally' }),
+    h('h2', { textContent: 'Reviewable agent activity' }),
+    h('ul', { className: 'privacy-list' },
+      h('li', { textContent: 'Prompts and agent-stated reasoning, when available' }),
+      h('li', { textContent: 'Tool and MCP inputs, file mutations, paths, and Git facts' }),
+      h('li', { textContent: 'Model, token, duration, redaction, and risk metadata' })
+    )
+  );
+  const controls = h('section', { className: 'panel settings-panel settings-wide' },
+    h('div', { className: 'panel-label', textContent: 'Data controls' }),
+    h('h2', { textContent: 'Nothing is deleted silently' }),
+    h('p', { className: 'settings-copy', textContent: 'Run these commands in Terminal. Session facts share one append-only chain, so content can be aged out independently while complete deletion is intentionally store-wide.' }),
+    h('div', { className: 'privacy-commands' },
+      commandRow('blackbox prune --older-than 30d', 'Age out old mutation bodies; retain hashes and facts'),
+      commandRow('blackbox erase --all --yes', 'Delete the complete local store, keys, logs, and local receipts'),
+      commandRow('blackbox uninit --erase-data --yes', 'Remove hooks, stop recording, and delete all local data')
+    )
+  );
+  page.append(h('div', { className: 'settings-grid' }, recorder, storage, custody, captured, controls));
+  app.append(page);
+}
+
 function renderDashboard() {
   const app = document.getElementById('app');
   app.textContent = '';
@@ -104,11 +193,17 @@ function sessionCard(card) {
   const state = danger ? cap(card.verdict) + ' risk' : (fmtRel(card.ended) === 'Live now' ? 'Live now' : 'Recorded');
   const stateEl = h('span', { className: 'card-state' + (danger ? ' danger' : ''), textContent: state });
   const flagged = Number(card.flagged || 0);
+  const findings = Array.isArray(card.combos) ? card.combos.length : 0;
+  const reviewCount = flagged
+    ? flagged + ' flagged'
+    : findings
+      ? findings + ' finding' + (findings === 1 ? '' : 's')
+      : 'no flags';
   link.append(
     h('div', { className: 'card-top' }, h('span', { className: 'card-project', textContent: basename(card.cwd) }), stateEl),
     h('h3', { textContent: title }),
     h('div', { className: 'card-footer' },
-      h('div', { className: 'card-stats' }, h('strong', { textContent: fmtRel(card.ended) }), String(card.events || 0) + ' events' + (flagged ? ' · ' + flagged + ' flagged' : ' · no flags')),
+      h('div', { className: 'card-stats' }, h('strong', { textContent: fmtRel(card.ended) }), String(card.events || 0) + ' events · ' + reviewCount),
       h('span', { className: 'card-arrow', 'aria-hidden': 'true', textContent: '↗' })
     )
   );

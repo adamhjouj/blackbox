@@ -111,3 +111,18 @@ test('adding a prompt event does not change earlier events\' hashes', () => {
     store.cleanup();
   }
 });
+
+test('session navigation falls back to the first captured prompt when no transcript title exists', () => {
+  const store = tempStore();
+  try {
+    const captured = normalizeAndCapture(
+      { hook_event_name: 'UserPromptSubmit', session_id: 'prompt-title-session', prompt_id: 'P1', prompt: 'Make the dashboard keyboard accessible', cwd: '/repo' },
+      AT,
+    );
+    store.append(captured.event, captured.blob);
+    const { sessionName } = require('../dist/read-api.js');
+    assert.equal(sessionName(store, 'prompt-title-session'), 'Make the dashboard keyboard accessible');
+  } finally {
+    store.cleanup();
+  }
+});

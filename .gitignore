@@ -10,3 +10,9 @@ dist/
 # os / editor
 .DS_Store
 *.log
+*.tgz
+
+# generated previews and local review artifacts may contain recorded session data
+claude-design-export/
+blackbox-ponytail-audit.md
+.blackbox-demo/
