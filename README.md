@@ -8,7 +8,6 @@
 
 Capture Claude Code activity, explain risk in plain language, trace every finding back to evidence, and verify that the record was not silently rewritten.
 
-[![CI](https://github.com/adamhjouj/blackbox/actions/workflows/ci.yml/badge.svg)](https://github.com/adamhjouj/blackbox/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-f2f2f2.svg?labelColor=111)](LICENSE)
 [![Node 18–22](https://img.shields.io/badge/node-18%20%E2%80%93%2022-f2f2f2.svg?labelColor=111)](package.json)
 [![Status: public beta](https://img.shields.io/badge/status-public%20beta-d95454.svg?labelColor=111)](CHANGELOG.md)
