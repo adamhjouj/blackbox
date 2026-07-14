@@ -43,24 +43,30 @@ function renderGraphPanel() {
 
   const focused = h('button', {
     className: 'scope-button' + (!S.graphWhole ? ' active' : ''), type: 'button',
-    textContent: 'Focused trace', 'aria-pressed': String(!S.graphWhole),
+    textContent: 'Focused', 'aria-pressed': String(!S.graphWhole),
     onclick: function() { setGraphScope(false); }
   });
   const whole = h('button', {
     className: 'scope-button' + (S.graphWhole ? ' active' : ''), type: 'button',
-    textContent: 'Whole session', 'aria-pressed': String(S.graphWhole),
+    textContent: 'Entire session', 'aria-pressed': String(S.graphWhole),
     onclick: function() { setGraphScope(true); }
   });
 
   const controls = h('div', { className: 'graph-controls' },
-    graphControlField('Trace root', root),
-    graphControlField('Distance', depth),
-    graphControlField('Highlight', filter),
+    graphControlField('Start from', root),
     h('div', { className: 'graph-control-field graph-scope-field' },
-      h('span', { className: 'control-label', textContent: 'Scope' }),
-      h('div', { className: 'scope-switch', role: 'group', 'aria-label': 'Graph scope' }, focused, whole)
+      h('span', { className: 'control-label', textContent: 'View' }),
+      h('div', { className: 'scope-switch', role: 'group', 'aria-label': 'Graph view' }, focused, whole)
     ),
-    h('div', { className: 'graph-search-field' }, search, h('span', { id: 'graphMatchCount', className: 'graph-match-count' }))
+    h('div', { className: 'graph-search-field' }, search, h('span', { id: 'graphMatchCount', className: 'graph-match-count' })),
+    h('details', { className: 'graph-options' },
+      h('summary', { textContent: 'Options' }),
+      h('div', { className: 'graph-options-grid' },
+        graphControlField('Distance', depth),
+        graphControlField('Highlight', filter),
+        h('button', { className: 'quiet-button', type: 'button', textContent: 'Reset graph', onclick: resetGraph })
+      )
+    )
   );
 
   const canvasBar = h('div', { className: 'graph-canvas-bar' },
@@ -70,11 +76,10 @@ function renderGraphPanel() {
     ),
     h('div', { className: 'graph-canvas-actions' },
       S.graphExpand.length ? h('button', { className: 'quiet-button', type: 'button', textContent: 'Collapse file groups', onclick: collapseGraphGroups }) : null,
-      h('button', { className: 'icon-button', type: 'button', textContent: '−', 'aria-label': 'Zoom out', onclick: function() { if (graphCanvas) graphCanvas.zoom(0.82); } }),
+      h('button', { className: 'icon-button', type: 'button', textContent: '−', 'aria-label': 'Zoom out', onclick: function() { if (graphCanvas) graphCanvas.zoom(0.9); } }),
       h('button', { className: 'secondary-button', type: 'button', textContent: 'Fit', onclick: function() { if (graphCanvas) graphCanvas.fit(); } }),
-      h('button', { className: 'icon-button', type: 'button', textContent: '+', 'aria-label': 'Zoom in', onclick: function() { if (graphCanvas) graphCanvas.zoom(1.22); } }),
-      h('button', { className: 'quiet-button graph-canvas-fullscreen', type: 'button', textContent: 'Full screen', onclick: toggleGraphFullscreen }),
-      h('button', { className: 'quiet-button', type: 'button', textContent: 'Reset', onclick: resetGraph })
+      h('button', { className: 'icon-button', type: 'button', textContent: '+', 'aria-label': 'Zoom in', onclick: function() { if (graphCanvas) graphCanvas.zoom(1.1); } }),
+      h('button', { className: 'quiet-button graph-canvas-fullscreen', type: 'button', textContent: 'Full screen', onclick: toggleGraphFullscreen })
     )
   );
 
@@ -82,7 +87,7 @@ function renderGraphPanel() {
   const canvas = h('div', { className: 'graph-canvas' },
     canvasBar,
     stage,
-    h('div', { className: 'graph-help', textContent: 'Drag empty space to pan · scroll to zoom · select a node for details · double-click to refocus' }),
+    h('div', { className: 'graph-help' }, h('strong', { textContent: 'Read left → right:' }), ' prompt → action → file, commit, or finding. Click once for details · drag to pan · scroll to zoom.'),
     graphLegend()
   );
   const inspector = h('aside', { id: 'graphInspector', className: 'graph-inspector', 'aria-label': 'Selected graph node' });
@@ -114,9 +119,8 @@ function graphRootSelect(trace) {
   const roots = trace && trace.roots || [];
   const selected = S.graphRoot || trace && trace.root || '';
   const findings = roots.filter(function(item) { return item.kind === 'finding'; });
-  const allTurns = roots.filter(function(item) { return item.kind === 'prompt'; });
-  const turns = allTurns;
-  const listed = findings.concat(turns).some(function(item) { return item.id === selected; });
+  const prompts = roots.filter(function(item) { return item.kind === 'prompt'; });
+  const listed = findings.concat(prompts).some(function(item) { return item.id === selected; });
   if (selected && !listed) {
     const selectedNode = trace && trace.nodes && trace.nodes.find(function(node) { return node.id === selected; });
     select.append(h('option', { value: selected, textContent: 'Selected · ' + (selectedNode ? selectedNode.label : selected) }));
@@ -126,9 +130,9 @@ function graphRootSelect(trace) {
     findings.forEach(function(item) { group.append(h('option', { value: item.id, textContent: 'Review · ' + item.label })); });
     select.append(group);
   }
-  if (turns.length) {
-    const group = h('optgroup', { label: 'Turns' });
-    turns.forEach(function(item) { group.append(h('option', { value: item.id, textContent: clampText(item.label, 72) })); });
+  if (prompts.length) {
+    const group = h('optgroup', { label: 'Prompts' });
+    prompts.forEach(function(item) { group.append(h('option', { value: item.id, textContent: clampText(item.label, 72) })); });
     select.append(group);
   }
   if (!roots.length) select.append(h('option', { value: '', textContent: trace ? 'No trace roots' : 'Loading roots…' }));
@@ -299,12 +303,16 @@ function openGraphNodeInActivity(node) {
   }, 80);
 }
 
-function selectGraphNode(id, center) {
+function selectGraphNode(id, center, revealDetails) {
   if (!S.graph || !S.graph.nodes.some(function(node) { return node.id === id; })) return;
   S.graphSelected = id;
   renderGraphInspector(S.graph);
   updateGraphEmphasis();
   if (center && graphCanvas) graphCanvas.center(id);
+  if (revealDetails && window.matchMedia('(max-width: 900px)').matches) {
+    const inspector = document.getElementById('graphInspector');
+    if (inspector) inspector.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
 }
 
 function selectFirstGraphMatch() {
@@ -330,18 +338,10 @@ function graphMatchingNodes(nodes) {
 function updateGraphEmphasis() {
   if (!S.graph) return;
   const matchIds = new Set(graphMatchingNodes(S.graph.nodes).map(function(node) { return node.id; }));
-  const connected = new Set();
-  if (S.graphSelected) {
-    connected.add(S.graphSelected);
-    S.graph.edges.forEach(function(edge) {
-      if (edge.from === S.graphSelected) connected.add(edge.to);
-      if (edge.to === S.graphSelected) connected.add(edge.from);
-    });
-  }
   const filtering = S.graphFilter !== 'all' || !!S.graphSearch.trim();
   document.querySelectorAll('.graph-node').forEach(function(element) {
     const id = element.getAttribute('data-node-id');
-    const dim = id !== S.graphSelected && (filtering && !matchIds.has(id) || connected.size > 0 && !connected.has(id));
+    const dim = id !== S.graphSelected && filtering && !matchIds.has(id);
     element.classList.toggle('dimmed', dim);
     element.classList.toggle('selected', id === S.graphSelected);
   });
@@ -350,7 +350,15 @@ function updateGraphEmphasis() {
     const to = element.getAttribute('data-to');
     const incident = !S.graphSelected || from === S.graphSelected || to === S.graphSelected;
     const matches = !filtering || matchIds.has(from) && matchIds.has(to);
-    element.classList.toggle('dimmed', !incident || !matches);
+    element.classList.toggle('dimmed', !matches);
+    element.classList.toggle('active', !!S.graphSelected && incident);
+  });
+  document.querySelectorAll('.graph-edge-label').forEach(function(element) {
+    const from = element.getAttribute('data-from');
+    const to = element.getAttribute('data-to');
+    const incident = !S.graphSelected || from === S.graphSelected || to === S.graphSelected;
+    const matches = !filtering || matchIds.has(from) && matchIds.has(to);
+    element.classList.toggle('dimmed', !matches);
     element.classList.toggle('active', !!S.graphSelected && incident);
   });
   const counter = document.getElementById('graphMatchCount');
@@ -365,9 +373,8 @@ function renderGraphInspector(trace) {
   if (!selected) {
     inspector.append(
       h('div', { className: 'inspector-empty' },
-        h('div', { className: 'inspector-symbol', textContent: '↳' }),
-        h('h3', { textContent: 'Select an evidence node' }),
-        h('p', { textContent: 'The graph keeps the time direction from left to right. Select anything to see what led to it, what followed it, and which raw record supports it.' })
+        h('h3', { textContent: 'Select a node' }),
+        h('p', { textContent: 'One click shows what came before it, what came after it, and the underlying record.' })
       ),
       graphRelationGuide()
     );
@@ -379,31 +386,26 @@ function renderGraphInspector(trace) {
   const byId = {};
   trace.nodes.forEach(function(node) { byId[node.id] = node; });
   const top = h('div', { className: 'inspector-top' },
-    h('div', { className: 'inspector-kicker' },
-      h('span', { className: 'kind-label', textContent: graphKindLabel(selected.kind) }),
-      selected.id === trace.root ? h('span', { className: 'root-label', textContent: 'Trace root' }) : null,
-      selected.risk ? h('span', { className: 'risk-label', textContent: 'Needs review' }) : null
-    ),
     h('h3', { textContent: selected.label }),
     selected.sub ? h('p', { textContent: selected.sub }) : null
   );
   const facts = h('dl', { className: 'inspector-facts' });
   addKv(facts, 'Type', graphKindLabel(selected.kind));
-  addKv(facts, 'Sequence', selected.seq);
-  addKv(facts, 'Layer', Number(selected.layer) + 1);
+  addKv(facts, 'Event', selected.seq);
   addKv(facts, 'Connections', incoming.length + outgoing.length);
+  if (selected.risk) addKv(facts, 'Status', 'Needs review');
 
   const actions = h('div', { className: 'inspector-actions' });
   if (!S.graphWhole && selected.id === trace.root) {
-    actions.append(h('span', { className: 'inspector-action-note', textContent: 'This is the current trace root.' }));
+    actions.append(h('span', { className: 'inspector-action-note', textContent: 'Current focus' }));
   } else {
-    actions.append(h('button', { className: 'secondary-button', type: 'button', textContent: 'Trace from here', onclick: function() { setGraphRoot(selected.id); } }));
+    actions.append(h('button', { className: 'secondary-button', type: 'button', textContent: 'Focus here', onclick: function() { setGraphRoot(selected.id); } }));
   }
   if (selected.kind === 'dir') actions.append(h('button', { className: 'secondary-button', type: 'button', textContent: 'Expand files', onclick: function() { toggleGraphDirectory(selected.id); } }));
   if (selected.seq != null) {
     actions.append(
       h('button', { className: 'quiet-button', type: 'button', textContent: 'Open evidence', onclick: function() { openEvidence(selected.seq); } }),
-      h('button', { className: 'quiet-button', type: 'button', textContent: 'Show in Turns', onclick: function() { openGraphNodeInActivity(selected); } })
+      h('button', { className: 'quiet-button', type: 'button', textContent: 'Show in Prompts', onclick: function() { openGraphNodeInActivity(selected); } })
     );
   }
   inspector.append(top, facts, actions);
@@ -488,8 +490,9 @@ function drawGraph(trace) {
   const world = document.createElementNS(ns, 'g');
   world.setAttribute('class', 'graph-world');
   const edgeLayer = document.createElementNS(ns, 'g');
+  const edgeLabelLayer = document.createElementNS(ns, 'g');
   const nodeLayer = document.createElementNS(ns, 'g');
-  world.append(edgeLayer, nodeLayer);
+  world.append(edgeLayer, edgeLabelLayer, nodeLayer);
   svg.append(world);
   stage.append(svg);
 
@@ -509,6 +512,16 @@ function drawGraph(trace) {
     title.textContent = from.label + ' ' + graphRelationLabel(edge.rel) + ' ' + to.label;
     path.append(title);
     edgeLayer.append(path);
+    const labelPoint = graphEdgeLabelPoint(edge, from, to);
+    const relation = document.createElementNS(ns, 'text');
+    relation.setAttribute('class', 'graph-edge-label' + (danger ? ' danger' : ''));
+    relation.setAttribute('x', String(labelPoint.x));
+    relation.setAttribute('y', String(labelPoint.y - 5));
+    relation.setAttribute('text-anchor', 'middle');
+    relation.setAttribute('data-from', edge.from);
+    relation.setAttribute('data-to', edge.to);
+    relation.textContent = graphRelationLabel(edge.rel);
+    edgeLabelLayer.append(relation);
   });
 
   trace.nodes.forEach(function(node) {
@@ -551,8 +564,7 @@ function drawGraph(trace) {
       expand.textContent = '+';
       group.append(expand);
     }
-    group.addEventListener('click', function(event) { event.stopPropagation(); selectGraphNode(node.id, false); });
-    group.addEventListener('dblclick', function(event) { event.preventDefault(); event.stopPropagation(); setGraphRoot(node.id); });
+    group.addEventListener('click', function(event) { event.stopPropagation(); selectGraphNode(node.id, false, true); });
     group.addEventListener('keydown', function(event) {
       if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectGraphNode(node.id, true); }
     });
@@ -588,17 +600,31 @@ function graphEdgePath(edge, from, to) {
   return d;
 }
 
+function graphEdgeLabelPoint(edge, from, to) {
+  const start = { x: from.x + from.w, y: from.y + from.h / 2 };
+  const end = { x: to.x, y: to.y + to.h / 2 };
+  const mids = edge.points && edge.points.length > 2 ? edge.points.slice(1, -1) : [];
+  const points = [start].concat(mids, [end]);
+  const index = Math.max(0, Math.floor((points.length - 1) / 2));
+  const a = points[index], b = points[index + 1] || end;
+  return { x: graphRound((a.x + b.x) / 2), y: graphRound((a.y + b.y) / 2) };
+}
+
 function graphRound(value) { return Math.round(Number(value) * 10) / 10; }
 
 function mountGraphCanvas(stage, svg, world, trace) {
   const listeners = [];
+  let resizeTimer = null;
   function on(target, event, handler, options) { target.addEventListener(event, handler, options); listeners.push([target, event, handler, options]); }
-  let x = S.graphViewport && Number(S.graphViewport.x) || 0;
-  let y = S.graphViewport && Number(S.graphViewport.y) || 0;
-  let zoom = S.graphViewport && Number(S.graphViewport.zoom) || 1;
+  const stageWidth = stage.clientWidth || 900;
+  const saved = S.graphViewport;
+  const restoreSaved = !!saved && Number(saved.width) > 0 && Math.abs(Number(saved.width) - stageWidth) < 80;
+  let x = restoreSaved ? Number(saved.x) || 0 : 0;
+  let y = restoreSaved ? Number(saved.y) || 0 : 0;
+  let zoom = restoreSaved ? Number(saved.zoom) || 1 : 1;
   function apply() {
     world.setAttribute('transform', 'translate(' + graphRound(x) + ' ' + graphRound(y) + ') scale(' + graphRound(zoom) + ')');
-    S.graphViewport = { x: x, y: y, zoom: zoom };
+    S.graphViewport = { x: x, y: y, zoom: zoom, width: stage.clientWidth || stageWidth, height: stage.clientHeight || 620 };
   }
   function fit() {
     const width = stage.clientWidth || 900;
@@ -633,7 +659,9 @@ function mountGraphCanvas(stage, svg, world, trace) {
   on(svg, 'wheel', function(event) {
     event.preventDefault();
     const bounds = svg.getBoundingClientRect();
-    zoomBy(event.deltaY < 0 ? 1.12 : 0.89, event.clientX - bounds.left, event.clientY - bounds.top);
+    const pixels = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaMode === 2 ? event.deltaY * 120 : event.deltaY;
+    const limited = Math.max(-60, Math.min(60, pixels));
+    zoomBy(Math.exp(-limited * 0.0008), event.clientX - bounds.left, event.clientY - bounds.top);
   }, { passive: false });
   let panning = false, startX = 0, startY = 0, originX = 0, originY = 0;
   on(svg, 'pointerdown', function(event) {
@@ -654,12 +682,32 @@ function mountGraphCanvas(stage, svg, world, trace) {
   }
   on(svg, 'pointerup', stopPan);
   on(svg, 'pointercancel', stopPan);
-  if (S.graphViewport) apply(); else setTimeout(fit, 0);
+  let lastStageWidth = stage.clientWidth || stageWidth;
+  on(window, 'resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+      const nextWidth = stage.clientWidth || lastStageWidth;
+      if (Math.abs(nextWidth - lastStageWidth) < 80) return;
+      lastStageWidth = nextWidth;
+      if (nextWidth < 600 && (S.graphSelected || trace.root)) {
+        zoom = 0.72;
+        center(S.graphSelected || trace.root);
+      } else fit();
+    }, 120);
+  });
+  if (restoreSaved) apply();
+  else setTimeout(function() {
+    if (stage.clientWidth < 600 && (S.graphSelected || trace.root)) {
+      zoom = 0.72;
+      center(S.graphSelected || trace.root);
+    } else fit();
+  }, 0);
   return {
     fit: fit,
     zoom: function(factor) { zoomBy(factor); },
     center: center,
     destroy: function() {
+      clearTimeout(resizeTimer);
       listeners.forEach(function(item) { item[0].removeEventListener(item[1], item[2], item[3]); });
       listeners.length = 0;
     }

@@ -94,7 +94,7 @@ function turnDisplayTitle(turn, index) {
   if (step) return oneLine(step.summary);
   const commit = turn && turn.commits && turn.commits[0];
   if (commit) return 'Commit ' + oneLine(commit.subject || commit.sha || commit.ref || 'recorded');
-  return 'Session activity ' + (Number(index || 0) + 1);
+  return 'Prompt ' + (Number(index || 0) + 1) + ' · title not captured';
 }
 
 function turnSourceLabel(turn) {
@@ -135,6 +135,28 @@ function setRoute(hash) {
   location.hash = hash;
 }
 
+function setWindowScroll(top) {
+  const root = document.documentElement;
+  const previous = root.style.scrollBehavior;
+  root.style.scrollBehavior = 'auto';
+  window.scrollTo(0, Math.max(0, Number(top) || 0));
+  requestAnimationFrame(function() { root.style.scrollBehavior = previous; });
+}
+
+function renderPreservingScroll(render, anchorId) {
+  const before = anchorId ? document.getElementById(anchorId) : null;
+  const beforeTop = before ? before.getBoundingClientRect().top : null;
+  const scrollTop = window.scrollY;
+  render();
+  requestAnimationFrame(function() {
+    const after = anchorId ? document.getElementById(anchorId) : null;
+    const target = beforeTop != null && after
+      ? window.scrollY + after.getBoundingClientRect().top - beforeTop
+      : scrollTop;
+    setWindowScroll(target);
+  });
+}
+
 function routeChanged() {
   const previous = S.route;
   const next = parseRoute();
@@ -142,14 +164,15 @@ function routeChanged() {
   const changedView = previous.page !== next.page || previous.tab !== next.tab || previous.id !== next.id;
   const changedEvidence = previous.eventSeq !== next.eventSeq;
   S.route = next;
-  document.querySelector('.nav-home').classList.toggle('active', next.page === 'home');
+  const homeLink = document.querySelector('.nav-home');
+  if (homeLink) homeLink.classList.toggle('active', next.page === 'home');
   document.getElementById('app').classList.toggle('graph-shell', next.tab === 'graph');
   closeProfile();
   if (next.tab !== 'graph') destroyGraphCanvas();
   if (next.page === 'home') {
     closeDrawerNodes(); S.selectedSeq = null;
     renderDashboard();
-    if (changedView) window.scrollTo(0, 0);
+    if (changedView) setWindowScroll(0);
     return;
   }
   if (!changedView && changedEvidence) {
@@ -168,7 +191,7 @@ function routeChanged() {
     S.evidenceQuery = ''; S.evidenceFileLimit = 40;
   }
   renderSessionPage();
-  if (changedView) window.scrollTo(0, 0);
+  if (changedView) setWindowScroll(0);
   if (next.tab === 'activity' && S.pendingPromptId && S.story) setTimeout(revealPendingTurn, 0);
   loadSessionData(next.id, changedSession);
   if (next.eventSeq != null && S.story) openEvidence(next.eventSeq, true);
@@ -178,12 +201,16 @@ function updateChrome() {
   const connection = document.getElementById('connection');
   const label = document.getElementById('connectionLabel');
   const alert = document.getElementById('connectionAlert');
-  connection.classList.toggle('offline', S.offline);
-  label.textContent = S.offline ? 'Offline' : (Date.now() < S.recordingUntil ? 'Recording' : 'Connected');
-  document.getElementById('eventCount').textContent = S.health ? String(S.health.count || 0) : '—';
-  alert.hidden = !S.offline;
-  alert.textContent = S.offline ? 'Blackbox is not responding. The last loaded session data is still available.' : '';
-  document.getElementById('profileInitial').textContent = (S.displayName || '?').charAt(0).toUpperCase();
+  if (connection) connection.classList.toggle('offline', S.offline);
+  if (label) label.textContent = S.offline ? 'Offline' : (Date.now() < S.recordingUntil ? 'Recording' : 'Connected');
+  const eventCount = document.getElementById('eventCount');
+  if (eventCount) eventCount.textContent = S.health ? String(S.health.count || 0) : '—';
+  if (alert) {
+    alert.hidden = !S.offline;
+    alert.textContent = S.offline ? 'Blackbox is not responding. The last loaded session data is still available.' : '';
+  }
+  const initial = document.getElementById('profileInitial');
+  if (initial) initial.textContent = (S.displayName || '?').charAt(0).toUpperCase();
 }
 
 async function loadProfile() {
@@ -215,7 +242,7 @@ function openProfile() {
   setTimeout(function() { input.focus(); input.select(); }, 0);
 }
 
-function closeProfile() { document.getElementById('profilePopover').hidden = true; }
+function closeProfile() { const pop = document.getElementById('profilePopover'); if (pop) pop.hidden = true; }
 
 function showToast(message) {
   const toast = document.getElementById('toast');
@@ -239,8 +266,8 @@ async function refreshBase() {
     const fp = JSON.stringify(cards);
     if (fp !== S.cardsFp) {
       S.cardsFp = fp; S.cards = cards;
-      if (S.route.page === 'home') renderDashboard();
-      else renderSessionPage();
+      if (S.route.page === 'home') renderPreservingScroll(renderDashboard);
+      else renderPreservingScroll(renderSessionPage);
     }
   }
 }
@@ -253,15 +280,13 @@ async function loadSessionData(id, initial) {
     const data = await Promise.all([
       api('/api/session/' + encodeURIComponent(id) + '/story'),
       api('/api/session/' + encodeURIComponent(id) + '/blast').catch(function() { return null; }),
-      S.verify || api('/api/verify').catch(function() { return null; })
+      api('/api/verify').catch(function() { return null; }) // re-fetch per open: badge must reflect current integrity, not a frozen read (server caches on head_seq)
     ]);
     if (S.route.id !== id) return;
     const fp = JSON.stringify([data[0], data[1], data[2]]);
     if (fp !== S.sessionFp) {
-      const y = window.scrollY;
       S.story = data[0]; S.blast = data[1]; S.verify = data[2]; S.sessionFp = fp;
-      renderSessionPage();
-      requestAnimationFrame(function() { window.scrollTo(0, y); });
+      renderPreservingScroll(renderSessionPage);
       if (S.pendingPromptId) setTimeout(revealPendingTurn, 0);
       if (S.pendingSeq != null) { const seq = S.pendingSeq; S.pendingSeq = null; openEvidence(seq); }
       else if (S.route.eventSeq != null) openEvidence(S.route.eventSeq, true);
@@ -290,15 +315,10 @@ function goHomeSearch() {
 `;
 
 export const BOOT_JS = String.raw`
-document.getElementById('globalSearch').addEventListener('click', goHomeSearch);
-document.getElementById('profileButton').addEventListener('click', function(event) {
-  event.stopPropagation();
-  const pop = document.getElementById('profilePopover');
-  if (pop.hidden) openProfile(); else closeProfile();
-});
 document.addEventListener('click', function(event) {
   const pop = document.getElementById('profilePopover');
-  if (!pop.hidden && !pop.contains(event.target) && !document.getElementById('profileButton').contains(event.target)) closeProfile();
+  const button = document.getElementById('profileButton');
+  if (pop && !pop.hidden && !pop.contains(event.target) && (!button || !button.contains(event.target))) closeProfile();
 });
 document.addEventListener('keydown', function(event) {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); goHomeSearch(); }

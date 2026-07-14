@@ -22,7 +22,7 @@ function sessionHeader(card) {
   if (card && card.cwd) facts.append(h('span', { className: 'session-project', textContent: basename(card.cwd), title: card.cwd }));
   if (card && card.started && card.ended) facts.append(h('span', { textContent: fmtSpan(card.started, card.ended) }));
   if (story) facts.append(
-    h('span', null, h('strong', { textContent: story.counts.turns }), ' turns'),
+    h('span', null, h('strong', { textContent: story.counts.turns }), ' prompts'),
     h('span', null, h('strong', { textContent: story.counts.steps }), ' actions')
   );
   const details = h('details', { className: 'session-details' },
@@ -43,7 +43,7 @@ function sessionTabs() {
   const nav = h('nav', { className: 'tabs', 'aria-label': 'Session views' });
   [
     { route: 'overview', label: 'Overview' },
-    { route: 'activity', label: 'Turns' },
+    { route: 'activity', label: 'Prompts' },
     { route: 'evidence', label: 'Evidence' },
     { route: 'graph', label: 'Graph' }
   ].forEach(function(item) {
@@ -82,7 +82,7 @@ function renderOverview() {
     h('div', { className: 'panel-label', textContent: 'Outcome' }),
     h('p', { className: 'summary-copy', textContent: deterministicSummary(story, card) }),
     h('div', { className: 'overview-actions' },
-      h('a', { className: 'secondary-button', href: sessionHref(S.route.id, 'activity'), textContent: 'Review turns' }),
+      h('a', { className: 'secondary-button', href: sessionHref(S.route.id, 'activity'), textContent: 'Review prompts' }),
       h('a', { className: 'quiet-button', href: sessionHref(S.route.id, 'evidence'), textContent: 'Open evidence' })
     )
   );
@@ -162,19 +162,19 @@ function overviewFindings(card, story) {
 function turnFlagged(turn) { return Number(turn.flagged || 0) > 0 || Number(turn.max_score || 0) > 0 || Object.keys(turn.flags || {}).length > 0; }
 
 function renderActivityView() {
-  const wrap = h('section', { className: 'activity-view', 'aria-label': 'Session turns' });
+  const wrap = h('section', { className: 'activity-view', 'aria-label': 'Session prompts' });
   const tools = new Set();
   S.story.turns.forEach(function(turn) { (turn.steps || []).forEach(function(step) { if (step.tool) tools.add(step.tool); }); });
-  const search = h('input', { className: 'text-field', type: 'search', value: S.activityQuery, placeholder: 'Search prompts, explanations, tools, or paths…', autocomplete: 'off', 'aria-label': 'Search session turns' });
-  const flagged = h('button', { className: S.flaggedOnly ? 'danger-button' : 'secondary-button', type: 'button', textContent: S.flaggedOnly ? 'Flagged only' : 'All turns', 'aria-pressed': String(S.flaggedOnly) });
-  const select = h('select', { className: 'select-field', 'aria-label': 'Filter turns by tool' }, h('option', { value: '', textContent: 'All tools' }));
+  const search = h('input', { className: 'text-field', type: 'search', value: S.activityQuery, placeholder: 'Search prompts, explanations, tools, or paths…', autocomplete: 'off', 'aria-label': 'Search session prompts' });
+  const flagged = h('button', { className: S.flaggedOnly ? 'danger-button' : 'secondary-button', type: 'button', textContent: S.flaggedOnly ? 'Flagged only' : 'All prompts', 'aria-pressed': String(S.flaggedOnly) });
+  const select = h('select', { className: 'select-field', 'aria-label': 'Filter prompts by tool' }, h('option', { value: '', textContent: 'All tools' }));
   Array.from(tools).sort().forEach(function(tool) { select.append(h('option', { value: tool, textContent: tool })); });
   select.value = S.toolFilter;
-  const next = h('button', { className: 'quiet-button', type: 'button', textContent: 'Next flag ↓', title: 'Next flagged turn (N)', onclick: jumpNextFlagged });
+  const next = h('button', { className: 'quiet-button', type: 'button', textContent: 'Next flag ↓', title: 'Next flagged prompt (N)', onclick: jumpNextFlagged });
   wrap.append(h('div', { className: 'toolbar activity-toolbar' }, flagged, search, select, next, h('span', { id: 'activityCount', className: 'toolbar-count' })), h('div', { id: 'activityList', className: 'activity-list' }));
-  search.addEventListener('input', function() { S.activityQuery = search.value; S.activityCursor = -1; renderActivityList(); });
-  flagged.addEventListener('click', function() { S.flaggedOnly = !S.flaggedOnly; S.activityCursor = -1; renderSessionPage(); });
-  select.addEventListener('change', function() { S.toolFilter = select.value; S.activityCursor = -1; renderActivityList(); });
+  search.addEventListener('input', function() { S.activityQuery = search.value; S.activityCursor = -1; renderPreservingScroll(renderActivityList); });
+  flagged.addEventListener('click', function() { S.flaggedOnly = !S.flaggedOnly; S.activityCursor = -1; renderPreservingScroll(renderSessionPage); });
+  select.addEventListener('change', function() { S.toolFilter = select.value; S.activityCursor = -1; renderPreservingScroll(renderActivityList); });
   setTimeout(renderActivityList, 0);
   return wrap;
 }
@@ -201,7 +201,7 @@ function renderActivityList() {
   const turns = activityTurns();
   const count = document.getElementById('activityCount');
   if (count) count.textContent = turns.length + ' of ' + S.story.turns.length;
-  if (!turns.length) { host.append(h('div', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '⌕' }), h('h2', { textContent: 'No matching turns' }), h('p', { textContent: 'Clear a filter or search for another prompt, tool, or path.' }))); return; }
+  if (!turns.length) { host.append(h('div', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '⌕' }), h('h2', { textContent: 'No matching prompts' }), h('p', { textContent: 'Clear a filter or search for another prompt, tool, or path.' }))); return; }
   turns.forEach(function(turn) { host.append(turnCard(turn, S.story.turns.indexOf(turn))); });
 }
 
@@ -217,7 +217,7 @@ function turnCard(turn, index) {
   if ((turn.files_changed || []).length) badges.push((turn.files_changed || []).length + ' file' + ((turn.files_changed || []).length === 1 ? '' : 's'));
   if ((turn.commits || []).length) badges.push((turn.commits || []).length + ' commit' + ((turn.commits || []).length === 1 ? '' : 's'));
   const card = h('article', { className: 'turn-card' + (flagged ? ' flagged' : ''), id: 'turn-' + (index + 1), 'data-turn-index': String(index) });
-  const head = h('button', { className: 'turn-head', type: 'button', 'aria-expanded': String(open), onclick: function() { if (open) S.expanded.delete(key); else S.expanded.add(key); renderActivityList(); } },
+  const head = h('button', { className: 'turn-head', type: 'button', 'aria-expanded': String(open), onclick: function() { if (open) S.expanded.delete(key); else S.expanded.add(key); renderPreservingScroll(renderActivityList, 'turn-' + (index + 1)); } },
     h('span', { className: 'turn-index', textContent: (open ? '⌄ ' : '› ') + String(index + 1).padStart(2, '0') }),
     h('span', { className: 'turn-title-stack' }, h('span', { className: 'turn-gist', textContent: title, title: title }), h('span', { className: 'turn-badges', textContent: badges.join(' · ') || turnSourceLabel(turn) })),
     h('span', { className: 'turn-meta', textContent: meta + (flagged ? ' · flagged' : '') })
@@ -232,18 +232,18 @@ function turnBody(turn, index) {
   body.append(h('div', { className: 'turn-actions' }, h('button', { className: 'quiet-button', type: 'button', textContent: 'Trace in Graph →', onclick: function() { openTurnInGraph(turn, index); } })));
   body.append(h('section', { className: 'turn-section prompt-block' },
     h('div', { className: 'turn-section-head' }, h('span', { textContent: 'User prompt' }), h('span', { textContent: turnSourceLabel(turn) })),
-    turn.prompt ? redactedTextBlock(turn.prompt, 'prompt-text') : h('p', { className: 'unavailable-copy', textContent: turn.title_source === 'subagent_action' || turn.title_source === 'subagent_activity' ? 'The host did not emit a user prompt for this subagent turn.' : 'The user prompt was not captured. The title above is derived from recorded activity.' })
+    turn.prompt ? redactedTextBlock(turn.prompt, 'prompt-text') : h('p', { className: 'unavailable-copy', textContent: turn.title_source === 'subagent_action' || turn.title_source === 'subagent_activity' ? 'The host did not emit a user prompt for this subagent activity.' : 'The user prompt was not captured. The title above is derived from recorded activity.' })
   ));
 
   const reasonKey = (turn.prompt_id || 'turn-' + index) + ':reasoning';
   const reasonOpen = S.expanded.has(reasonKey);
   const reason = h('section', { className: 'turn-section reasoning-section' });
-  const reasonToggle = h('button', { className: 'disclosure-button', type: 'button', 'aria-expanded': String(reasonOpen), onclick: function() { if (reasonOpen) S.expanded.delete(reasonKey); else S.expanded.add(reasonKey); renderActivityList(); } },
+  const reasonToggle = h('button', { className: 'disclosure-button', type: 'button', 'aria-expanded': String(reasonOpen), onclick: function() { if (reasonOpen) S.expanded.delete(reasonKey); else S.expanded.add(reasonKey); renderPreservingScroll(renderActivityList, 'turn-' + (index + 1)); } },
     h('span', { textContent: (reasonOpen ? '⌄ ' : '› ') + 'Agent response / reasoning digest' }),
     h('span', { textContent: turn.reasoning ? 'Captured' : 'Not captured' })
   );
   reason.append(reasonToggle);
-  if (reasonOpen) reason.append(turn.reasoning ? redactedTextBlock(turn.reasoning, 'reasoning') : h('p', { className: 'unavailable-copy', textContent: 'No assistant explanation was captured for this turn.' }));
+  if (reasonOpen) reason.append(turn.reasoning ? redactedTextBlock(turn.reasoning, 'reasoning') : h('p', { className: 'unavailable-copy', textContent: 'No assistant explanation was captured for this prompt.' }));
   body.append(reason);
 
   if ((turn.files_changed || []).length || (turn.commits || []).length) {
@@ -304,7 +304,7 @@ function turnCommitRow(commit) {
 
 function jumpNextFlagged() {
   const candidates = activityTurns().filter(turnFlagged);
-  if (!candidates.length) { showToast('No flagged turns in this view'); return; }
+  if (!candidates.length) { showToast('No flagged prompts in this view'); return; }
   S.activityCursor = (S.activityCursor + 1) % candidates.length;
   const turn = candidates[S.activityCursor];
   const index = S.story.turns.indexOf(turn);

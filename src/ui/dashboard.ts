@@ -3,7 +3,12 @@ function renderDashboard() {
   const app = document.getElementById('app');
   app.textContent = '';
   const hero = h('section', { className: 'hero', 'aria-labelledby': 'welcomeTitle' });
-  hero.append(h('h1', { id: 'welcomeTitle' }, 'Welcome back, ', h('span', { textContent: S.displayName + '.' })), h('p', { className: 'dashboard-status', textContent: dashboardIntro() }));
+  const profileButton = h('button', { id: 'profileButton', className: 'edit-name-button', type: 'button', textContent: 'Edit name', 'aria-label': 'Edit display name', onclick: function(event) {
+    event.stopPropagation();
+    const pop = document.getElementById('profilePopover');
+    if (pop.hidden) openProfile(); else closeProfile();
+  } });
+  hero.append(h('div', { className: 'hero-title-row' }, h('h1', { id: 'welcomeTitle' }, 'Welcome back, ', h('span', { textContent: S.displayName + '.' })), profileButton), h('p', { className: 'dashboard-status', textContent: dashboardIntro() }));
   const searchWrap = h('div', { className: 'search-wrap' });
   const input = h('input', {
     id: 'homeSearch', className: 'home-search', type: 'search', value: S.query,
@@ -22,21 +27,8 @@ function renderDashboard() {
   searchWrap.append(h('span', { className: 'search-icon', 'aria-hidden': 'true', textContent: '⌕' }), input);
   if (S.query) searchWrap.append(h('button', { className: 'search-clear', type: 'button', 'aria-label': 'Clear search', textContent: '×', onclick: function() { S.query = ''; S.deepHits = []; S.searching = false; renderDashboard(); setTimeout(function() { document.getElementById('homeSearch').focus(); }, 0); } }));
   hero.append(searchWrap);
-  if (S.fleet && S.fleet.sessions) hero.append(dashboardFleet());
   app.append(hero, h('div', { id: 'homeResults' }));
   renderHomeResults();
-}
-
-function dashboardFleet() {
-  const fleet = S.fleet || {};
-  const verdicts = fleet.verdicts || {};
-  return h('div', { className: 'fleet-strip', 'aria-label': 'Recorder overview' },
-    h('span', null, h('strong', { textContent: fleet.sessions || 0 }), ' sessions'),
-    h('span', { className: fleet.flagged ? 'danger-text' : '' }, h('strong', { textContent: fleet.flagged || 0 }), ' need review'),
-    h('span', { className: fleet.anti_forensics ? 'danger-text' : '' }, h('strong', { textContent: fleet.anti_forensics || 0 }), ' tamper'),
-    h('span', null, h('strong', { textContent: (fleet.hosts || []).length }), ' hosts'),
-    verdicts.high ? h('span', { className: 'danger-text' }, h('strong', { textContent: verdicts.high }), ' high risk') : null
-  );
 }
 
 function dashboardIntro() {
@@ -147,7 +139,7 @@ function renderSearchResults(host, sessions) {
           S.pendingPromptId = hit.prompt_id || null;
           S.pendingSeq = hit.kind === 'prompt' || hit.kind === 'reasoning' ? null : (hit.seq == null ? null : hit.seq);
           setRoute(sessionHref(hit.session_id, 'activity'));
-        } }, h('span', null, h('span', { className: 'result-title snippet-title' }), h('span', { className: 'result-sub', textContent: hit.prompt_id ? 'Open matching turn' : 'Open recorded event' })), h('span', { className: 'result-kind', textContent: hit.kind || 'evidence' }));
+        } }, h('span', null, h('span', { className: 'result-title snippet-title' }), h('span', { className: 'result-sub', textContent: hit.prompt_id ? 'Open matching prompt' : 'Open recorded event' })), h('span', { className: 'result-kind', textContent: hit.kind || 'evidence' }));
         renderSnippet(link.querySelector('.snippet-title'), hit.snippet || hit.summary || hit.target || 'Recorded evidence');
         evidence.append(link);
       });

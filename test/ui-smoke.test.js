@@ -26,8 +26,7 @@ test('renderPage emits a complete, self-contained HTML document', () => {
   assert.match(html, /^<!doctype html>/i);
   assert.match(html, /<main id="main-content"/);
   assert.match(html, /<div id="app" class="app-shell">/);
-  assert.match(html, /id="globalSearch"/);
-  assert.match(html, /id="profileButton"/);
+  assert.doesNotMatch(html, /class="topbar"/);
   assert.match(html, /<\/html>\s*$/);
 });
 
@@ -59,25 +58,30 @@ test('the graph is a first-class investigation workspace', () => {
   for (const needle of [
     "{ route: 'overview', label: 'Overview' }",
     "{ route: 'graph', label: 'Graph' }",
-    'Focused trace',
-    'Whole session',
-    'Trace from here',
+    'Focused',
+    'Entire session',
+    'Focus here',
     'Open evidence',
-    'Show in Turns',
+    'Show in Prompts',
     'toggleGraphDirectory',
     "expand=' + encodeURIComponent",
     'mountGraphCanvas',
     'graphArrowMarker',
+    'graphEdgeLabelPoint',
     'selectFirstGraphMatch'
   ]) assert.ok(js.indexOf(needle) >= 0, 'graph workspace should include ' + needle);
+  assert.equal(js.indexOf("addEventListener('dblclick'"), -1, 'graph nodes should open details with one click');
+  assert.ok(js.indexOf('Math.exp(-limited * 0.0008)') >= 0, 'wheel zoom should use a restrained continuous scale');
   assert.ok(html.indexOf('.graph-layout') >= 0);
   assert.ok(html.indexOf('.graph-inspector') >= 0);
   assert.ok(html.indexOf('.graph-node.selected') >= 0);
 });
 
-test('turns keep prompt identity, explanations, outcomes, and fast navigation', () => {
+test('prompts keep their identity, explanations, outcomes, and fast navigation', () => {
   const js = clientJs(renderPage());
   for (const needle of [
+    "{ route: 'activity', label: 'Prompts' }",
+    'All prompts',
     'turnDisplayTitle',
     'User prompt',
     'Recovered prompt',
@@ -88,7 +92,15 @@ test('turns keep prompt identity, explanations, outcomes, and fast navigation', 
     'Next flag ↓',
     'jumpNextFlagged',
     'navigateVisibleTurn'
-  ]) assert.ok(js.indexOf(needle) >= 0, 'turn investigation should include ' + needle);
+  ]) assert.ok(js.indexOf(needle) >= 0, 'prompt investigation should include ' + needle);
+  assert.equal(js.indexOf('Show in Turns'), -1);
+});
+
+test('live refresh and prompt expansion preserve scroll position', () => {
+  const js = clientJs(renderPage());
+  for (const needle of ['setWindowScroll', 'renderPreservingScroll', "renderPreservingScroll(renderActivityList, 'turn-'", 'renderPreservingScroll(renderSessionPage)']) {
+    assert.ok(js.indexOf(needle) >= 0, 'scroll stability should include ' + needle);
+  }
 });
 
 test('the evidence drawer retains the complete forensic dossier and routable context', () => {
