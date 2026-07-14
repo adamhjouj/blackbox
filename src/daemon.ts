@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import {
@@ -69,6 +69,31 @@ function localDisplayName(): string {
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1));
   return words.join(' ') || 'there';
+}
+
+function privacyStatus(opts: DaemonOptions): Record<string, unknown> {
+  const anchor = loadAnchorConfig();
+  let bytes = 0;
+  for (const path of [opts.db, opts.db + '-wal', opts.db + '-shm']) {
+    try { if (existsSync(path)) bytes += statSync(path).size; } catch { /* best effort */ }
+  }
+  const target = anchor.target;
+  return {
+    data_dir: blackboxDir(),
+    db: opts.db,
+    storage_bytes: bytes,
+    capture_output_bodies: opts.captureOutput === true,
+    bind: `127.0.0.1:${opts.port ?? DEFAULT_PORT}`,
+    anchor: target
+      ? {
+          kind: target.kind,
+          destination: target.kind === 'git' ? target.repo : target.kind === 'file' ? target.path : target.url,
+          external: !anchor.localOnly,
+          auto_push: anchor.push,
+        }
+      : { kind: 'none', destination: null, external: false, auto_push: false },
+    retention: 'manual',
+  };
 }
 
 /**
@@ -455,6 +480,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           // suggestion in localStorage; no profile value enters the forensic DB.
           if (path === '/api/profile') {
             sendJson(res, 200, { display_name: localDisplayName() });
+            return;
+          }
+          if (path === '/api/privacy') {
+            sendJson(res, 200, privacyStatus(opts));
             return;
           }
           // R3: chain integrity + signature status for the forensic badge. Read-only

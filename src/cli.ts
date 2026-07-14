@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import { resolve as resolvePath, sep } from 'node:path';
 import { ANCHOR_REF, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAnchor, readReceipts, receiptFromSignature, setAnchorLocalOnly, setAnchorTarget, type AnchorTarget } from './anchor';
 import { disableAutostart, enableAutostart } from './autostart';
 import { DEFAULT_PORT, startDaemon } from './daemon';
+import { staticDoctorChecks, type DoctorCheck } from './doctor';
 import { canonical } from './hash';
 import { blastRadius } from './blast';
 import { fileHistory, reconstructAt } from './filestate';
@@ -17,7 +19,7 @@ import { ensureKeypair, loadPublicKey, loadWatermark, signHead } from './sign';
 import { backfill, computeSession, rescoreSession } from './risk-engine';
 import { isKnownRuleset, KNOWN_RULESETS, RULESET_VERSION, rulesFingerprint, type RulesetVersion } from './risk-rules';
 import { unwatchGlobal, unwatchRepo, watchGlobal, watchRepo } from './watch';
-import { configPath, ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
+import { blackboxDir, configPath, ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
 import { Store } from './store';
 import { verify } from './verify';
 
@@ -44,6 +46,9 @@ interface Args {
   rebuild?: boolean;
   allowInsecureGit?: boolean;
   localOnlyAnchor?: boolean;
+  all?: boolean;
+  eraseData?: boolean;
+  yes?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -73,7 +78,10 @@ function parseArgs(argv: string[]): Args {
       out.useAnchors = true;
       const nx = argv[i + 1];
       if (nx && !nx.startsWith('-')) out.anchorTarget = argv[++i]; // optional explicit target
-    } else if (a === '-h' || a === '--help') out._.push('help');
+    } else if (a === '--all') out.all = true;
+    else if (a === '--erase-data') out.eraseData = true;
+    else if (a === '--yes' || a === '-y') out.yes = true;
+    else if (a === '-h' || a === '--help') out._.push('help');
     else out._.push(a as string);
   }
   return out;
@@ -154,31 +162,57 @@ async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> 
   return false;
 }
 
-const HELP = `blackbox — forensic recorder for AI coding agents (Phase 0)
+const HELP = `blackbox — forensic recorder for AI coding agents
 
-Usage:
-  blackbox init                  Install hooks, start the daemon, and begin recording (one command; alias: setup)
+  blackbox init        Install hooks, start the daemon, and begin recording
+  blackbox status      Show whether it's recording (+ security posture)
+  blackbox doctor      Diagnose setup, runtime, hooks, custody, and data-store health
+  blackbox ui          Open the timeline UI (http://127.0.0.1:7842)
+  blackbox report      Export a shareable session report (--forensic for a case-file)
+  blackbox stop        Stop the daemon
+  blackbox uninit      Remove blackbox hooks
+
+Run \`blackbox help --all\` for forensic & advanced commands.
+`;
+
+const HELP_ALL = `blackbox — forensic recorder for AI coding agents
+
+Setup & lifecycle:
+  blackbox init                  Install hooks, start the daemon, and begin recording (alias: setup)
   blackbox uninit                Remove blackbox hooks from ~/.claude/settings.json
-  blackbox watch [repo]          Install git forensics hooks in a repo (--global for all repos)
-  blackbox unwatch [repo]        Remove git forensics hooks (--global to disable global)
+                                 Add --erase-data --yes to also delete all local Blackbox data
   blackbox start                 Start the localhost hook-receiver daemon (background)
   blackbox stop                  Stop the daemon
-  blackbox status                Show daemon status
+  blackbox status                Show daemon status + security posture
+  blackbox doctor                Diagnose runtime, hooks, daemon, custody, and chain health
   blackbox ui                    Open the timeline UI in your browser (http://127.0.0.1:7842)
   blackbox autostart             Keep the daemon running across reboots (macOS LaunchAgent; --off to disable)
+  blackbox watch [repo]          Install git forensics hooks in a repo (--global for all repos)
+  blackbox unwatch [repo]        Remove git forensics hooks (--global to disable global)
+
+Recording & reports:
   blackbox ingest <file.jsonl>   Normalize raw hook payloads into the chained store
-  blackbox verify                Verify the hash chain; report the first break
-  blackbox rescore               Recompute the risk layer (--session, --ruleset, --check, --prune <v>)
-  blackbox prune                 Age out mutation content (--older-than 30d); keeps events, hashes, and verify
-  blackbox reconcile             Cross-check hooks vs git ground truth (--session, --check for details)
   blackbox report                Export a shareable Markdown session report (--session, --ruleset, --out <file>)
                                  Add --forensic for an evidentiary case-file (custody + signature + manifest)
+
+Chain & custody:
+  blackbox verify                Verify the hash chain; report the first break
+  blackbox head                  Print the current head anchor (seq, count, hash)
   blackbox anchor --to <target>  Set the external anchor (file:<path> | git:<repo> | https://<url>) and emit a
                                  receipt now; also: anchor verify | anchor push
-  blackbox head                  Print the current head anchor (seq, count, hash)
+  blackbox reconcile             Cross-check hooks vs git ground truth (--session, --check for details)
+  blackbox rescore               Recompute the risk layer (--session, --ruleset, --check, --prune <v>)
+  blackbox prune                 Age out mutation content (--older-than 30d); keeps events, hashes, and verify
+  blackbox erase --all --yes     Permanently delete the entire local Blackbox data directory
+
+Inspect (or just use \`blackbox ui\`):
   blackbox list                  List recorded events (--session <id> to filter)
-  blackbox audit                 Show what was redacted (type + path, never the secret)
   blackbox sessions              Summarize recorded sessions
+  blackbox audit                 Show what was redacted (type + path, never the secret)
+  blackbox file <path>           Show a file's mutation history (--session, --at <seq>, --rebuild)
+  blackbox search <query>        Full-text search recorded events
+  blackbox blast                 Blast-radius + containment checklist for a session (--session)
+  blackbox reindex               Rebuild the full-text search index
 
 Options:
   --db <path>          Store path (default: $BLACKBOX_DB or ~/.blackbox/blackbox.db)
@@ -187,10 +221,11 @@ Options:
   --capture-output     Store tool output bodies (still redacted) instead of eliding to a hash
   --allow-insecure-git start: accept unauthenticated /git writes (INSECURE opt-out of the token requirement)
   --local-only-anchor  init: accept local-only custody instead of an off-machine anchor (reduced security)
+  --erase-data --yes   uninit: also permanently remove ~/.blackbox after removing hooks
   --session <id>       Filter to one session (list/audit/report)
   --out <file>         Write the report to a file instead of stdout (report)
   --older-than <dur>   Retention cutoff for prune (e.g. 30d, 12h; default 30d)
-  -h, --help           Show this help
+  -h, --help           Show this help (--all for every command)
 
 Exit codes:
   0  success / chain intact
@@ -481,6 +516,12 @@ async function cmdInit(args: Args): Promise<number> {
   const warn = versionWarning();
   if (warn) console.error(`warning: ${warn}`);
 
+  console.log('Blackbox privacy notice:');
+  console.log('  • Records prompts, agent-stated reasoning, tool actions, paths, and redacted evidence locally.');
+  console.log(`  • Local data lives under ${blackboxDir()} unless BLACKBOX_HOME/BLACKBOX_DB overrides it.`);
+  console.log('  • Only signed chain-head receipts leave the machine when external anchoring is enabled.');
+  console.log("  • Use 'blackbox prune' to age out stored file content or 'blackbox uninit --erase-data --yes' to remove everything.\n");
+
   // Decide the custody posture FIRST (pure) — init is all-or-nothing; we never
   // silently set up recording with no off-machine anchor. Fail loudly here if none
   // resolves, before touching hooks/config, so re-running with a fix is clean.
@@ -528,9 +569,46 @@ async function cmdInit(args: Args): Promise<number> {
   return 0;
 }
 
-function cmdUninit(_args: Args): number {
+async function cmdUninit(args: Args): Promise<number> {
+  if (args.eraseData && !args.yes) {
+    console.error('refusing to erase data without --yes; this permanently deletes the event store, keys, logs, and local receipts');
+    return 2;
+  }
   const { settingsPath, removed } = uninit();
   console.log(`removed ${removed} blackbox hook(s) from ${settingsPath}`);
+  if (args.eraseData) {
+    await cmdStop(args);
+    eraseLocalData(args);
+  }
+  return 0;
+}
+
+function eraseLocalData(args: Args): void {
+  const home = resolvePath(blackboxDir());
+  const db = resolvePath(resolveDb(args.db));
+  const dbInsideHome = db === home || db.startsWith(home + sep);
+  if (process.platform === 'darwin' && !process.env.BLACKBOX_HOME) disableAutostart();
+  rmSync(home, { recursive: true, force: true });
+  // A custom BLACKBOX_DB/--db may live outside BLACKBOX_HOME. Remove its WAL
+  // companions as well so "erase all" does not leave forensic data behind.
+  if (!dbInsideHome) {
+    rmSync(db, { force: true });
+    rmSync(db + '-wal', { force: true });
+    rmSync(db + '-shm', { force: true });
+  }
+  console.log(`permanently erased ${home}${dbInsideHome ? '' : ` and ${db}`}`);
+}
+
+async function cmdErase(args: Args): Promise<number> {
+  if (!args.all || !args.yes) {
+    console.error('usage: blackbox erase --all --yes');
+    console.error('This permanently deletes the event store, signing keys, logs, and local anchor receipts.');
+    console.error('It does not remove Claude hooks; use `blackbox uninit --erase-data --yes` for a complete uninstall.');
+    return 2;
+  }
+  await cmdStop(args);
+  eraseLocalData(args);
+  console.log('Claude hooks remain installed; run `blackbox uninit` to remove them.');
   return 0;
 }
 
@@ -687,6 +765,47 @@ async function cmdStatus(_args: Args): Promise<number> {
     `  external anchor: ${acfg.target ? anchorLabel(acfg.target) + (acfg.push ? ' + auto-push' : '') : acfg.localOnly ? 'local-only (reduced security)' : 'NONE (reduced security)'}`,
   );
   return 0;
+}
+
+async function cmdDoctor(args: Args): Promise<number> {
+  const db = resolveDb(args.db);
+  const checks: DoctorCheck[] = staticDoctorChecks(db);
+  const p = readPid();
+  if (!p || !isAlive(p.pid)) {
+    checks.push({ name: 'Recorder daemon', status: 'fail', detail: 'not running; run blackbox start' });
+  } else {
+    const health = await getHealth(p.port);
+    checks.push(
+      health?.ok && health.pid === p.pid
+        ? { name: 'Recorder daemon', status: 'pass', detail: `pid ${p.pid}, port ${p.port}, ${health.count} events` }
+        : { name: 'Recorder daemon', status: 'fail', detail: `pid ${p.pid} is not responding correctly on port ${p.port}` },
+    );
+  }
+
+  if (existsSync(db)) {
+    try {
+      const store = new Store(db);
+      const result = verify(store, { trustedPublicKey: loadPublicKey(), watermark: loadWatermark() });
+      store.close();
+      checks.push(
+        result.ok
+          ? { name: 'Chain integrity', status: 'pass', detail: `${result.count} events verified` }
+          : { name: 'Chain integrity', status: 'fail', detail: `${result.break?.reason ?? 'verification failed'} at seq ${result.break?.seq ?? 'unknown'}` },
+      );
+    } catch (err) {
+      checks.push({ name: 'Chain integrity', status: 'fail', detail: (err as Error).message });
+    }
+  }
+
+  console.log('Blackbox doctor\n');
+  for (const item of checks) {
+    const mark = item.status === 'pass' ? '✓' : item.status === 'warn' ? '!' : '✗';
+    console.log(`${mark} ${item.name.padEnd(20)} ${item.detail}`);
+  }
+  const failures = checks.filter((item) => item.status === 'fail').length;
+  const warnings = checks.filter((item) => item.status === 'warn').length;
+  console.log(`\n${failures ? `${failures} failure(s)` : 'No failures'}${warnings ? `, ${warnings} warning(s)` : ''}.`);
+  return failures ? 1 : 0;
 }
 
 async function cmdUi(args: Args): Promise<number> {
@@ -1007,6 +1126,8 @@ async function main(): Promise<number> {
       return cmdInit(args);
     case 'uninit':
       return cmdUninit(args);
+    case 'erase':
+      return cmdErase(args);
     case 'autostart':
       return cmdAutostart(args);
     case 'watch':
@@ -1019,6 +1140,8 @@ async function main(): Promise<number> {
       return cmdStop(args);
     case 'status':
       return cmdStatus(args);
+    case 'doctor':
+      return cmdDoctor(args);
     case 'ui':
       return cmdUi(args);
     case 'ingest':
@@ -1053,7 +1176,7 @@ async function main(): Promise<number> {
       return cmdSessions(args);
     case undefined:
     case 'help':
-      console.log(HELP);
+      console.log(args.all ? HELP_ALL : HELP);
       return cmd ? 0 : 1;
     default:
       console.error(`unknown command: ${cmd}\n`);

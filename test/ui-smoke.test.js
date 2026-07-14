@@ -47,7 +47,7 @@ test('CLIENT_JS honours the template-literal safety convention', () => {
 
 test('the emitted page carries the dashboard, routing, and evidence controls', () => {
   const js = clientJs(renderPage());
-  for (const needle of ['parseRoute', 'renderDashboard', 'renderSessionPage', 'renderOverview', 'renderActivityView', 'renderEvidenceView', 'renderGraphView', 'renderGraphPanel', 'openEvidence']) {
+  for (const needle of ['parseRoute', 'renderDashboard', 'renderSettingsPage', "parts[0] === 'settings'", '/api/privacy', 'renderSessionPage', 'renderOverview', 'renderActivityView', 'renderEvidenceView', 'renderGraphView', 'renderGraphPanel', 'openEvidence']) {
     assert.ok(js.indexOf(needle) >= 0, 'CLIENT_JS should reference ' + needle);
   }
 });
@@ -134,7 +134,7 @@ test('the viewer keeps hostile data on safe DOM rendering paths', () => {
 
 test('the viewer ships responsive dashboard and session layouts', () => {
   const html = renderPage();
-  for (const needle of ['session-shelf', 'session-card', 'overview-grid', 'evidence-drawer', '@media (max-width: 767px)']) {
+  for (const needle of ['session-shelf', 'session-card', 'overview-grid', 'evidence-drawer', 'Health & privacy', 'blackbox erase --all --yes', '.settings-grid', '@media (max-width: 767px)']) {
     assert.ok(html.indexOf(needle) >= 0, 'page should include ' + needle);
   }
   assert.match(html, /Welcome back/);

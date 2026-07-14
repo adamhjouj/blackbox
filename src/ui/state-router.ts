@@ -1,7 +1,7 @@
 export const CORE_JS = String.raw`
 'use strict';
 const S = {
-  cards: [], cardsFp: '', fleet: null, health: null, profile: null, displayName: 'there',
+  cards: [], cardsFp: '', fleet: null, health: null, profile: null, privacy: null, displayName: 'there',
   route: { page: 'home', id: null, tab: null, eventSeq: null }, currentId: null,
   story: null, blast: null, verify: null, sessionFp: '', loadingSession: false,
   query: '', deepHits: [], searching: false, searchTimer: null, showAll: false, dashboardSort: 'recent',
@@ -124,6 +124,7 @@ function parseRoute() {
     const eventSeq = parts[3] === 'event' && /^\d+$/.test(parts[4] || '') ? Number(parts[4]) : null;
     return { page: 'session', id: id, tab: tab, eventSeq: eventSeq };
   }
+  if (parts[0] === 'settings') return { page: 'settings', id: null, tab: null, eventSeq: null };
   return { page: 'home', id: null, tab: null, eventSeq: null };
 }
 
@@ -175,6 +176,13 @@ function routeChanged() {
     if (changedView) setWindowScroll(0);
     return;
   }
+  if (next.page === 'settings') {
+    closeDrawerNodes(); S.selectedSeq = null;
+    renderSettingsPage();
+    if (changedView) setWindowScroll(0);
+    loadPrivacy();
+    return;
+  }
   if (!changedView && changedEvidence) {
     if (next.eventSeq != null) openEvidence(next.eventSeq, true);
     else { S.selectedSeq = null; closeDrawerNodes(); }
@@ -222,6 +230,15 @@ async function loadProfile() {
   if (S.route.page === 'home') renderDashboard();
 }
 
+async function loadPrivacy() {
+  try {
+    S.privacy = await api('/api/privacy');
+    S.offline = false;
+  } catch (_) { S.offline = true; }
+  updateChrome();
+  if (S.route.page === 'settings') renderSettingsPage();
+}
+
 function openProfile() {
   const pop = document.getElementById('profilePopover');
   pop.textContent = '';
@@ -237,7 +254,8 @@ function openProfile() {
     try { localStorage.setItem('blackbox.displayName', value); } catch (_) {}
     updateChrome(); closeProfile(); if (S.route.page === 'home') renderDashboard(); showToast('Display name saved');
   }});
-  pop.append(title, copy, label, h('div', { className: 'popover-actions' }, cancel, save));
+  const privacy = h('button', { className: 'quiet-button profile-settings-link', type: 'button', textContent: 'Recorder & privacy →', onclick: function() { closeProfile(); setRoute('#/settings'); } });
+  pop.append(title, copy, label, h('div', { className: 'popover-actions' }, cancel, save), privacy);
   pop.hidden = false;
   setTimeout(function() { input.focus(); input.select(); }, 0);
 }
@@ -267,7 +285,8 @@ async function refreshBase() {
     if (fp !== S.cardsFp) {
       S.cardsFp = fp; S.cards = cards;
       if (S.route.page === 'home') renderPreservingScroll(renderDashboard);
-      else renderPreservingScroll(renderSessionPage);
+      else if (S.route.page === 'session') renderPreservingScroll(renderSessionPage);
+      else if (S.route.page === 'settings') renderPreservingScroll(renderSettingsPage);
     }
   }
 }
@@ -304,6 +323,7 @@ function schedulePoll() {
       await loadSessionData(S.route.id, false);
       if (S.route.tab === 'graph') await loadGraph(false);
     }
+    if (S.route.page === 'settings') await loadPrivacy();
     schedulePoll();
   }, 3000);
 }
