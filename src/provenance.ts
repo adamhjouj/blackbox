@@ -224,8 +224,20 @@ const titleText = (value: string, max = 180): string => {
   return points.length > max ? points.slice(0, max).join('') + '…' : points.join('');
 };
 
+// The harness feeds wrapper blocks (task notifications, system reminders, slash-command
+// I/O) back as "user prompts", so they get captured/recovered exactly like real prompts.
+// Titling a turn with that raw XML is unreadable, so we detect it and let the ladder fall
+// through to what the turn actually did, labelling the block itself only as a last resort.
+const INJECTED_BLOCK = /^<(task-notification|system-reminder|command-(?:name|message|args|stdout)|local-command-[a-z-]+)\b/;
+function injectedLabel(prompt: string): string {
+  const tag = /^<([a-z-]+)/.exec(oneLine(prompt));
+  if (tag && tag[1] === 'task-notification') return 'Background task update';
+  if (tag && tag[1] === 'system-reminder') return 'System reminder';
+  return 'Local command';
+}
+
 function titleTurn(turn: Turn, recoveredPrompt: boolean): void {
-  if (turn.prompt) {
+  if (turn.prompt && !INJECTED_BLOCK.test(oneLine(turn.prompt))) {
     turn.display_title = titleText(turn.prompt);
     turn.title_source = recoveredPrompt ? 'recovered_prompt' : 'captured_prompt';
     return;
@@ -247,6 +259,11 @@ function titleTurn(turn: Turn, recoveredPrompt: boolean): void {
   if (commit) {
     turn.display_title = titleText('Commit · ' + (commit.subject || commit.sha || commit.ref || 'recorded change'));
     turn.title_source = 'commit';
+    return;
+  }
+  if (turn.prompt) {
+    turn.display_title = injectedLabel(turn.prompt);
+    turn.title_source = 'recorded_action';
   }
 }
 

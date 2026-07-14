@@ -92,6 +92,18 @@ test('sessions recorded before prompt capture still split into turns by prompt_i
   assert.ok(s.turns.every((t) => t.display_title.startsWith('Prompt unavailable ·')));
 });
 
+test('a harness-injected block captured as a prompt never becomes the turn title', () => {
+  const actions = [
+    act({ seq: 1, phase: 'prompt', hook_event: 'UserPromptSubmit', type: 'session', tool: null, prompt_id: 'P1' }),
+    act({ seq: 2, post_seq: 3, summary: 'edited a.ts', target: '/repo/a.ts', prompt_id: 'P1' }),
+  ];
+  const s = story(actions, { 1: { prompt: '<task-notification> <task-id>abc</task-id> done </task-notification>' }, 3: mut(1, 1) });
+  const t = s.turns[0];
+  assert.ok(!t.display_title.startsWith('<'), 'title must not be the raw injected-block XML');
+  assert.equal(t.display_title, 'Prompt unavailable · edited a.ts'); // fell through to the real work
+  assert.notEqual(t.title_source, 'captured_prompt');
+});
+
 test('recovered prompt/reasoning fill gaps, while persisted prompt remains authoritative', () => {
   const actions = [
     act({ seq: 1, phase: 'prompt', hook_event: 'UserPromptSubmit', type: 'session', tool: null, prompt_id: 'P1' }),
