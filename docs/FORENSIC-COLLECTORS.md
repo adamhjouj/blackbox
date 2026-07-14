@@ -19,7 +19,7 @@ The mental model: **hooks record what the agent *said* it did; every OS-level co
 
 **Honest Tier-1 limits — state these in the README, they build trust:**
 - **Not in the request path.** We catch the *consequence*, never block the *cause*. Prompt injection is detected after the fact.
-- **No packet contents.** We record "connected to `162.159.140.220:443`", not the bytes (TLS anyway). Phrase as *"an outbound transfer-shaped command ran to X,"* never "data was exfiltrated."
+- **No packet contents.** We record "connected to `203.0.113.220:443`", not the bytes (TLS anyway). Phrase as *"an outbound transfer-shaped command ran to X,"* never "data was exfiltrated."
 - **Network polling is lossy.** A connection shorter than the poll interval can be missed. The hook still has the full command string (incl. URL) regardless — the poller only adds the confirmed *resolved IP*. Label polled flows best-effort.
 - **Hooks are agent-self-reported.** A process that detaches and re-parents to `launchd` breaks the ppid tree; a write via a subprocess yields only a command string. Closing that gap is exactly what Tier 2 (kernel-level) does — deferred.
 

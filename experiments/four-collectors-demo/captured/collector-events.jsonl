@@ -31,4 +31,4 @@
 {"collector":"process","ts":"2026-07-10T23:19:00.940Z","event":"exec_observed","pid":1359,"ppid":1355,"command":"(bash)"}
 {"collector":"process","ts":"2026-07-10T23:19:03.962Z","event":"exec_observed","pid":1414,"ppid":220,"command":"/bin/zsh -c source /Users/user/.claude/shell-snapshots/snapshot-zsh-1783725535523-ckv79u.sh 2>/dev/null || true && export VERCEL_PLUGIN_BOOTSTRAP_HINTS=\"greenfield\"\\012export VERCEL_PLUGIN_SETUP_MODE=\"1\"\\012: && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && eval 'curl -s -o /dev/n"}
 {"collector":"process","ts":"2026-07-10T23:19:03.963Z","event":"exec_observed","pid":1417,"ppid":1414,"command":"curl -s -o /dev/null -w %{http_code} https://speed.cloudflare.com/__down?bytes=3000000"}
-{"collector":"network","ts":"2026-07-10T23:19:04.018Z","event":"connection","pid":1417,"command":"curl","endpoint":"192.0.2.10:63997->162.159.140.220:443 (ESTABLISHED)","state":"ESTABLISHED"}
+{"collector":"network","ts":"2026-07-10T23:19:04.018Z","event":"connection","pid":1417,"command":"curl","endpoint":"192.0.2.10:63997->203.0.113.220:443 (ESTABLISHED)","state":"ESTABLISHED"}
