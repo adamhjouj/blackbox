@@ -13,7 +13,8 @@
  * This is the ONLY part of blackbox that can send bytes off the machine, and only
  * to an explicitly-configured `https:` target — off unless the user sets one.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { GIT_SAFE_FLAGS } from './git-safe';
 import { hashString } from './hash';
@@ -70,6 +71,8 @@ function git(repo: string, args: string[], input?: string): string {
   }).trim();
 }
 
+const execFileP = promisify(execFile);
+
 /** Append the receipt to the git receipt chain on ANCHOR_REF (a parentless-rooted
  *  chain of one-file commits). Local-secondary by default — a custom ref doesn't
  *  ride `git push`; `blackbox anchor push` pushes it explicitly. */
@@ -106,7 +109,7 @@ export async function emitReceipt(target: AnchorTarget, receipt: AnchorReceipt, 
       // the local ref — surface it as a warning, keep the local emit successful.
       if (opts.push) {
         try {
-          pushGitAnchor(target.repo);
+          await pushGitAnchor(target.repo);
         } catch (err) {
           return { ok: true, warn: `git anchor push failed: ${(err as Error).message}` };
         }
@@ -171,9 +174,17 @@ export function setAnchorLocalOnly(on: boolean, cfgPath: string = configPath()):
 }
 
 /** Push the git receipt ref to the repo's default remote — the one explicit step
- *  that takes a local-secondary git anchor off-machine (custom refs don't auto-push). */
-export function pushGitAnchor(repo: string): void {
-  git(repo, ['push', 'origin', `${ANCHOR_REF}:${ANCHOR_REF}`]);
+ *  that takes a local-secondary git anchor off-machine (custom refs don't auto-push).
+ *  Async + hard-bounded: `git push` is a network op, and running it via the sync
+ *  `git()` helper on the daemon's single event loop froze every hook behind a slow or
+ *  hung remote. `execFile` yields the loop while git runs; `timeout` SIGKILLs a wedged
+ *  push instead of blocking forever.
+ *  ponytail: 15s cap — raise if a legit remote is genuinely slower than that. */
+export async function pushGitAnchor(repo: string): Promise<void> {
+  await execFileP('git', ['-C', repo, ...GIT_SAFE_FLAGS, 'push', 'origin', `${ANCHOR_REF}:${ANCHOR_REF}`], {
+    timeout: 15_000,
+    killSignal: 'SIGKILL',
+  });
 }
 
 /** Best-effort: the top-level of the git repo containing `cwd`, or null if `cwd`

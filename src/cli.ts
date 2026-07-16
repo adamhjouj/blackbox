@@ -372,7 +372,7 @@ async function cmdAnchor(args: Args): Promise<number> {
       return 2;
     }
     try {
-      pushGitAnchor(target.repo);
+      await pushGitAnchor(target.repo);
       console.log(`pushed ${ANCHOR_REF} to origin`);
       return 0;
     } catch (err) {
