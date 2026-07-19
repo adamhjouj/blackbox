@@ -3,12 +3,11 @@ function renderSessionPage() {
   const app = document.getElementById('app');
   app.textContent = '';
   const card = cardFor(S.route.id);
-  const page = h('article', { className: 'session-page' + (S.route.tab === 'graph' ? ' graph-page' : '') });
-  page.append(h('a', { className: 'back-link', href: '#/' }, h('span', { 'aria-hidden': 'true', textContent: '←' }), 'Sessions'));
+  const page = h('article', { className: 'session-page' });
+  page.append(h('a', { className: 'back-link', href: '#/' }, h('span', { 'aria-hidden': 'true', textContent: '←' }), 'Dashboard'));
   page.append(sessionHeader(card), sessionTabs());
   if (!S.story) page.append(sessionLoading());
   else if (S.route.tab === 'activity') page.append(renderActivityView());
-  else if (S.route.tab === 'evidence') page.append(renderEvidenceView());
   else if (S.route.tab === 'graph') page.append(renderGraphView());
   else page.append(renderOverview());
   app.append(page);
@@ -19,22 +18,18 @@ function sessionHeader(card) {
   const title = sessionTitle(card, story);
   const verdict = card && card.verdict || story && story.verdict || 'none';
   const facts = h('div', { className: 'session-facts' });
-  if (card && card.cwd) facts.append(h('span', { className: 'session-project', textContent: basename(card.cwd), title: card.cwd }));
   if (card && card.started && card.ended) facts.append(h('span', { textContent: fmtSpan(card.started, card.ended) }));
   if (story) facts.append(
-    h('span', null, h('strong', { textContent: story.counts.turns }), ' prompts'),
-    h('span', null, h('strong', { textContent: story.counts.steps }), ' actions')
+    h('span', null, h('strong', { textContent: fmtInt(story.counts.turns) }), ' prompt' + (story.counts.turns === 1 ? '' : 's')),
+    h('span', null, h('strong', { textContent: fmtInt(story.counts.steps) }), ' action' + (story.counts.steps === 1 ? '' : 's'))
   );
-  const details = h('details', { className: 'session-details' },
-    h('summary', { textContent: 'Details' }),
-    h('div', { className: 'session-detail-pop' },
-      h('div', null, h('span', { textContent: 'Session ID' }), h('samp', { textContent: S.route.id })),
-      story ? h('div', null, h('span', { textContent: 'Outcomes' }), h('samp', { textContent: story.counts.files + ' files · ' + story.counts.commits + ' commits' })) : null
-    )
-  );
-  facts.append(details);
+  if (card) facts.append(h('span', null, h('strong', { textContent: fmtInt(card.events) }), ' event' + (card.events === 1 ? '' : 's')));
+  facts.append(h('span', { className: 'session-id-inline', textContent: S.route.id }));
   return h('header', { className: 'session-hero' },
-    h('div', { className: 'session-heading' }, h('h1', { textContent: title }), facts),
+    h('div', { style: 'min-width:0' },
+      h('div', { className: 'session-crumb', textContent: basename(card && card.cwd || story && story.cwd) + ' /' }),
+      h('h1', { textContent: title }),
+      facts),
     h('div', { className: 'risk-badge' + (isDanger(verdict) ? ' danger' : ''), textContent: isDanger(verdict) ? cap(verdict) + ' risk' : 'No elevated risk' })
   );
 }
@@ -43,8 +38,7 @@ function sessionTabs() {
   const nav = h('nav', { className: 'tabs', 'aria-label': 'Session views' });
   [
     { route: 'overview', label: 'Overview' },
-    { route: 'activity', label: 'Prompts' },
-    { route: 'evidence', label: 'Evidence' },
+    { route: 'activity', label: S.story ? 'Activity · ' + S.story.counts.turns : 'Activity' },
     { route: 'graph', label: 'Graph' }
   ].forEach(function(item) {
     nav.append(h('a', { className: 'tab' + (S.route.tab === item.route ? ' active' : ''), href: sessionHref(S.route.id, item.route), textContent: item.label, 'aria-current': S.route.tab === item.route ? 'page' : null }));
@@ -53,9 +47,9 @@ function sessionTabs() {
 }
 
 function sessionLoading() {
-  const grid = h('div', { className: 'overview-grid', 'aria-busy': 'true' });
-  grid.append(h('div', { className: 'skeleton-card' }), h('div', { className: 'skeleton-card' }));
-  return grid;
+  const stack = h('div', { className: 'ov-stack', 'aria-busy': 'true' });
+  stack.append(h('div', { className: 'skeleton-card' }), h('div', { className: 'skeleton-card' }));
+  return stack;
 }
 
 function renderSessionError() {
@@ -75,185 +69,331 @@ function deterministicSummary(story, card) {
   return text;
 }
 
+function numLabel(num, text) {
+  return h('div', { className: 'mlabel' }, h('span', { className: 'num', textContent: num + ' · ' }), text);
+}
+
+/* ── overview: 01 what happened → 04 can you trust this record ────────────── */
+
 function renderOverview() {
   const story = S.story, card = cardFor(S.route.id);
-  const grid = h('div', { className: 'overview-grid' });
-  const summary = h('section', { className: 'panel overview-outcome' },
-    h('div', { className: 'panel-label', textContent: 'Outcome' }),
-    h('p', { className: 'summary-copy', textContent: deterministicSummary(story, card) }),
-    h('div', { className: 'overview-actions' },
-      h('a', { className: 'secondary-button', href: sessionHref(S.route.id, 'activity'), textContent: 'Review prompts' }),
-      h('a', { className: 'quiet-button', href: sessionHref(S.route.id, 'evidence'), textContent: 'Open evidence' })
-    )
-  );
   const radius = S.blast || {};
-  const reach = h('section', { className: 'panel compact-panel' }, h('div', { className: 'panel-label', textContent: 'Blast radius' }));
-  reach.append(
-    compactFact(story.counts.files, 'changed files'),
-    compactFact((radius.secrets || []).length, 'sensitive paths'),
-    compactFact((radius.hosts || []).length, 'external hosts'),
-    compactFact(story.counts.commits, 'git artifacts')
-  );
-  grid.append(summary, reach);
+  const stack = h('div', { className: 'ov-stack' });
 
+  // 01 · WHAT HAPPENED — the outcome sentence and the blast-radius strip.
+  const hero = h('section', { className: 'panel' });
+  hero.append(h('div', { className: 'ov-hero-top' },
+    h('div', { style: 'min-width:0' },
+      numLabel('01', 'What happened'),
+      h('p', { className: 'ov-outcome', textContent: deterministicSummary(story, card) })),
+    h('div', { className: 'ov-cta' },
+      h('a', { className: 'secondary-button', href: sessionHref(S.route.id, 'activity'), textContent: 'Review activity', style: 'display:inline-flex;align-items:center' }),
+      h('a', { className: 'quiet-button', href: sessionHref(S.route.id, 'graph'), textContent: 'Open graph', style: 'display:inline-flex;align-items:center' }))
+  ));
+  const strip = h('div', { className: 'blast-strip' });
+  [
+    { v: story.counts.files, k: 'changed files' },
+    { v: (radius.secrets || []).length, k: 'sensitive paths' },
+    { v: (radius.hosts || []).length, k: 'external hosts' },
+    { v: story.counts.commits, k: 'git artifacts' }
+  ].forEach(function(cell) {
+    strip.append(h('div', { className: 'blast-cell' },
+      h('span', { className: 'blast-v' + (Number(cell.v) ? '' : ' zero'), textContent: String(cell.v || 0) }),
+      h('span', { className: 'blast-k', textContent: cell.k })));
+  });
+  hero.append(strip);
+  stack.append(hero);
+
+  const cols = h('div', { className: 'ov-cols' });
+
+  // 02 · WHAT NEEDS ATTENTION — findings derived from the captured facts.
   const findings = overviewFindings(card, story);
-  const findingPanel = h('section', { className: 'panel' }, h('div', { className: 'panel-label', textContent: 'Findings' }));
+  const findPanel = h('section', { className: 'panel panel-pad' });
+  findPanel.append(h('div', { className: 'head-row' }, numLabel('02', 'What needs attention'),
+    h('span', { className: 'note', textContent: findings.length ? findings.length + ' derived from captured facts' : '' })));
   if (findings.length) {
-    const list = h('div', { className: 'finding-list' });
-    findings.forEach(function(item) {
-      const row = h('button', { className: 'finding-row finding-button', type: 'button', onclick: item.open },
-        h('span', { className: 'severity-mark' + (item.danger ? ' danger' : '') }),
-        h('span', null, h('span', { className: 'row-title', textContent: item.title }), h('span', { className: 'row-sub', textContent: item.sub })),
-        item.count ? h('span', { className: 'row-count', textContent: String(item.count) }) : h('span', { className: 'row-count', textContent: 'Open →' })
+    const list = h('div', { className: 'find-list' });
+    findings.forEach(function(item, index) {
+      list.append(h('button', { className: 'find-row', type: 'button', onclick: item.open },
+        h('span', { className: 'find-num', textContent: pad2(index + 1) }),
+        h('span', { className: 'find-dot', 'aria-hidden': 'true' }),
+        h('span', { style: 'min-width:0' },
+          h('span', { className: 'find-title', textContent: item.title }),
+          h('span', { className: 'find-sub', textContent: item.sub })),
+        h('span', { className: 'find-count', textContent: item.count ? item.count + ' action' + (item.count === 1 ? '' : 's') : 'Open →' })));
+    });
+    findPanel.append(list);
+  } else findPanel.append(h('p', { className: 'summary-copy small', style: 'margin-top:8px', textContent: 'No elevated-risk finding was derived from the captured facts.' }));
+
+  // 03 · HOW TO RESPOND — the containment checklist, checkable and persistent.
+  const checklist = radius.checklist || [];
+  const reviewed = reviewedMap(S.route.id);
+  const done = checklist.filter(function(item) { return reviewed[String(item.order)]; }).length;
+  const respondPanel = h('section', { className: 'panel panel-pad' });
+  respondPanel.append(h('div', { className: 'head-row' }, numLabel('03', 'How to respond'),
+    h('span', { className: 'note end', textContent: checklist.length ? done + ' of ' + checklist.length + ' reviewed' : '' })));
+  if (checklist.length) {
+    const bar = h('div', { className: 'progress' }, h('i'));
+    bar.firstChild.style.width = Math.round((done / checklist.length) * 100) + '%';
+    respondPanel.append(bar);
+    const list = h('div', { className: 'chk-list' });
+    checklist.forEach(function(item) {
+      const key = String(item.order);
+      const isDone = !!reviewed[key];
+      const row = h('div', { className: 'chk-row' + (isDone ? ' done' : '') });
+      row.append(
+        h('button', { className: 'chk-box', type: 'button', 'aria-label': 'Mark step reviewed', 'aria-pressed': String(isDone), textContent: isDone ? '✓' : '', onclick: function() {
+          setReviewed(S.route.id, key, !isDone);
+          renderPreservingScroll(renderSessionPage);
+        } }),
+        h('button', { className: 'chk-body', type: 'button', onclick: function() { if (item.seqs && item.seqs.length) openEvidence(item.seqs[0]); } },
+          h('span', { style: 'min-width:0' },
+            h('span', { className: 'chk-title', textContent: item.action }),
+            h('span', { className: 'chk-sub', textContent: cap(item.severity || 'review') + ' · ' + ((item.seqs || []).length || 0) + ' evidence link' + ((item.seqs || []).length === 1 ? '' : 's') })),
+          h('span', { className: 'chk-view', textContent: 'View →' }))
       );
       list.append(row);
     });
-    findingPanel.append(list);
-  } else findingPanel.append(h('p', { className: 'summary-copy small', textContent: 'No elevated-risk finding was derived from the captured facts.' }));
+    respondPanel.append(list);
+  } else respondPanel.append(h('p', { className: 'summary-copy small', style: 'margin-top:8px', textContent: 'No containment step is suggested by the captured facts.' }));
+  cols.append(findPanel, respondPanel);
+  stack.append(cols);
 
-  const actionPanel = h('section', { className: 'panel' }, h('div', { className: 'panel-label', textContent: 'Containment' }));
-  const checklist = radius.checklist || [];
-  if (checklist.length) {
-    const list = h('div', { className: 'action-list' });
-    checklist.forEach(function(item, index) {
-      list.append(h('button', { className: 'action-row action-button', type: 'button', onclick: function() { if (item.seqs && item.seqs.length) openEvidence(item.seqs[0]); } },
-        h('span', { className: 'row-count', textContent: String(index + 1).padStart(2, '0') }),
-        h('span', null, h('span', { className: 'row-title', textContent: item.action }), h('span', { className: 'row-sub', textContent: cap(item.severity || 'review') + ' · ' + ((item.seqs || []).length || 0) + ' evidence link' + ((item.seqs || []).length === 1 ? '' : 's') })),
-        h('span', { className: 'row-count', textContent: 'View →' })
-      ));
+  // 04 · CAN YOU TRUST THIS RECORD — one slim integrity strip.
+  const verify = S.verify;
+  const recon = story.reconciliation;
+  const completeness = recon && recon.coverage && recon.coverage.completeness;
+  const trust = h('section', { className: 'panel' });
+  const stripRow = h('div', { className: 'trust-strip' });
+  stripRow.append(numLabel('04', 'Can you trust this record'));
+  [
+    { v: verify ? (verify.ok ? 'Verified' : 'Failed') : 'Unknown', k: 'hash chain', bad: verify && !verify.ok },
+    { v: verify && verify.signed ? 'Signed' : 'Unsigned', k: 'checkpoint', bad: false },
+    { v: verify && verify.head_seq != null ? fmtInt(verify.head_seq) : '—', k: 'chain head', bad: false },
+    { v: String(recon && recon.finding_count || 0), k: 'git discrepancies', bad: recon && recon.finding_count > 0 }
+  ].forEach(function(pair) {
+    stripRow.append(h('span', { className: 'trust-pair' },
+      h('span', { className: 'trust-v' + (pair.bad ? ' bad' : ''), textContent: pair.v }),
+      h('span', { className: 'trust-k', textContent: pair.k })));
+  });
+  if (completeness) {
+    const pct = Math.round(Number(completeness.coverage_ratio || 0) * 100);
+    const wrap = h('span', { className: 'capture-wrap' },
+      h('span', { className: 'capture-label', textContent: 'capture ' + pct + '%' }),
+      h('span', { className: 'capture-bar' }, h('i')));
+    wrap.querySelector('i').style.width = pct + '%';
+    stripRow.append(wrap);
+  }
+  const notes = [];
+  if (verify && verify.latest_sig_seq != null) notes.push('Latest signature at sequence ' + verify.latest_sig_seq + (verify.latest_sig_ts ? ' · ' + verify.latest_sig_ts : ''));
+  if (verify && !verify.ok && verify.break_reason) notes.push('Verification failed: ' + verify.break_reason);
+  if (recon) notes.push(recon.corroborated
+    ? (recon.finding_count ? recon.finding_count + ' git discrepanc' + (recon.finding_count === 1 ? 'y requires' : 'ies require') + ' review' : 'Git ground truth corroborates the recorded mutations')
+    : 'Git reconciliation unavailable — uncorroborated: ' + String(recon.coverage && recon.coverage.reason || 'no baseline'));
+  else notes.push('No git reconciliation was recorded');
+  if (completeness) notes.push(completeness.recorded + ' of ' + completeness.transcript_tool_uses + ' tool calls recorded');
+  stripRow.append(h('span', { className: 'trust-note', textContent: notes.join(' · ') + '.' }));
+  trust.append(stripRow);
+  if (recon && (recon.findings || []).length) {
+    const details = h('details', { className: 'trust-findings' }, h('summary', { textContent: 'Show all reconciliation findings' }));
+    const list = h('div', { className: 'find-list' });
+    (recon.findings || []).forEach(function(finding, index) {
+      list.append(h('button', { className: 'find-row', type: 'button', onclick: function() { if (finding.seq != null) openEvidence(finding.seq); } },
+        h('span', { className: 'find-num', textContent: pad2(index + 1) }),
+        h('span', { className: 'find-dot', 'aria-hidden': 'true' }),
+        h('span', { style: 'min-width:0' },
+          h('span', { className: 'find-title', textContent: finding.path }),
+          h('span', { className: 'find-sub', textContent: finding.note })),
+        h('span', { className: 'find-count', textContent: String(finding.type || 'finding').replace(/_/g, ' ') })));
     });
-    actionPanel.append(list);
-  } else actionPanel.append(h('p', { className: 'summary-copy small', textContent: 'No containment action is suggested by the captured facts.' }));
-  grid.append(findingPanel, actionPanel);
-
-  const coverage = story.reconciliation;
-  const verified = S.verify && S.verify.ok;
-  const integrityTitle = verified ? 'Hash chain verified' : S.verify ? 'Hash chain verification failed' : 'Verification unavailable';
-  const coverageText = coverage ? (coverage.corroborated ? (coverage.finding_count ? coverage.finding_count + ' git discrepanc' + (coverage.finding_count === 1 ? 'y' : 'ies') + ' require review.' : 'Git ground truth corroborates the recorded mutations.') : 'Git corroboration unavailable: ' + String(coverage.coverage && coverage.coverage.reason || 'no baseline') + '.') : 'No git reconciliation was recorded.';
-  grid.append(h('section', { className: 'panel wide integrity-brief' },
-    h('div', null, h('div', { className: 'panel-label', textContent: 'Integrity' }), h('div', { className: 'row-title' + (!verified ? ' danger-text' : ''), textContent: integrityTitle }), h('div', { className: 'row-sub', textContent: coverageText + (S.verify && S.verify.break_reason ? ' Reason: ' + S.verify.break_reason + '.' : '') })),
-    h('a', { className: 'quiet-button', href: sessionHref(S.route.id, 'evidence'), textContent: 'Inspect record →' })
-  ));
-  return grid;
+    details.append(list);
+    trust.append(details);
+  }
+  stack.append(trust);
+  return stack;
 }
-
-function compactFact(value, label) { return h('div', { className: 'compact-fact' }, h('strong', { textContent: String(value || 0) }), h('span', { textContent: label })); }
-function metric(value, label, danger) { return h('div', { className: 'metric' }, h('strong', { textContent: String(value == null ? 0 : value), className: danger ? 'danger-text' : '' }), h('span', { textContent: label })); }
 
 function overviewFindings(card, story) {
   const out = [];
   (card && card.combos || []).forEach(function(combo, index) {
     out.push({
-      danger: combo.severity === 'high' || combo.severity === 'medium',
       title: String(combo.id || 'Risk chain').replace(/-/g, ' '),
       sub: 'Events ' + String(combo.antecedent_seq || '—') + ' → ' + String(combo.consequent_seq || '—') + (combo.note ? ' · ' + clampText(combo.note, 130) : ''),
       count: null,
-      open: function() { S.graphRoot = 'F:' + index; S.graphWhole = false; setRoute(sessionHref(S.route.id, 'graph')); }
+      open: function() { S.graphSelected = 'F:' + index; S.graphPendingCenter = true; setRoute(sessionHref(S.route.id, 'graph')); }
     });
   });
   const flags = card && card.flags || {};
-  Object.keys(flags).sort(function(a,b) { return flags[b] - flags[a]; }).forEach(function(key) {
-    out.push({ danger: true, title: key.replace(/-/g, ' '), sub: 'Flagged actions in this session', count: flags[key], open: function() { S.flaggedOnly = true; setRoute(sessionHref(S.route.id, 'activity')); } });
+  Object.keys(flags).sort(function(a, b) { return flags[b] - flags[a]; }).forEach(function(key) {
+    out.push({ title: key.replace(/-/g, ' '), sub: 'Flagged actions in this session', count: flags[key], open: function() { S.actFilter = 'flagged'; setRoute(sessionHref(S.route.id, 'activity')); } });
   });
-  if (!out.length && story.reconciliation && story.reconciliation.finding_count) out.push({ danger: true, title: 'Git discrepancies', sub: 'Recorded mutations differ from repository state', count: story.reconciliation.finding_count, open: function() { setRoute(sessionHref(S.route.id, 'evidence')); } });
+  if (!out.length && story.reconciliation && story.reconciliation.finding_count) {
+    const first = (story.reconciliation.findings || [])[0];
+    out.push({ title: 'Git discrepancies', sub: 'Recorded mutations differ from repository state', count: story.reconciliation.finding_count, open: function() { if (first && first.seq != null) openEvidence(first.seq); } });
+  }
   return out;
 }
 
 function turnFlagged(turn) { return Number(turn.flagged || 0) > 0 || Number(turn.max_score || 0) > 0 || Object.keys(turn.flags || {}).length > 0; }
 
-function renderActivityView() {
-  const wrap = h('section', { className: 'activity-view', 'aria-label': 'Session prompts' });
-  const tools = new Set();
-  S.story.turns.forEach(function(turn) { (turn.steps || []).forEach(function(step) { if (step.tool) tools.add(step.tool); }); });
-  const search = h('input', { className: 'text-field', type: 'search', value: S.activityQuery, placeholder: 'Search prompts, explanations, tools, or paths…', autocomplete: 'off', 'aria-label': 'Search session prompts' });
-  const flagged = h('button', { className: S.flaggedOnly ? 'danger-button' : 'secondary-button', type: 'button', textContent: S.flaggedOnly ? 'Flagged only' : 'All prompts', 'aria-pressed': String(S.flaggedOnly) });
-  const select = h('select', { className: 'select-field', 'aria-label': 'Filter prompts by tool' }, h('option', { value: '', textContent: 'All tools' }));
-  Array.from(tools).sort().forEach(function(tool) { select.append(h('option', { value: tool, textContent: tool })); });
-  select.value = S.toolFilter;
-  const next = h('button', { className: 'quiet-button', type: 'button', textContent: 'Next flag ↓', title: 'Next flagged prompt (N)', onclick: jumpNextFlagged });
-  wrap.append(h('div', { className: 'toolbar activity-toolbar' }, flagged, search, select, next, h('span', { id: 'activityCount', className: 'toolbar-count' })), h('div', { id: 'activityList', className: 'activity-list' }));
-  search.addEventListener('input', function() { S.activityQuery = search.value; S.activityCursor = -1; renderPreservingScroll(renderActivityList); });
-  flagged.addEventListener('click', function() { S.flaggedOnly = !S.flaggedOnly; S.activityCursor = -1; renderPreservingScroll(renderSessionPage); });
-  select.addEventListener('change', function() { S.toolFilter = select.value; S.activityCursor = -1; renderPreservingScroll(renderActivityList); });
-  setTimeout(renderActivityList, 0);
-  return wrap;
+/* ── activity: prompts with their evidence inlined + the sticky rail ──────── */
+
+function hostsByTurn() {
+  const map = new Map();
+  ((S.blast && S.blast.hosts) || []).forEach(function(host) {
+    const index = turnIndexForSeq(host.seq);
+    if (index < 0) return;
+    const list = map.get(index) || [];
+    list.push(host); map.set(index, list);
+  });
+  return map;
+}
+
+function turnEvidenceRows(turn, index, hostMap) {
+  const rows = [];
+  (turn.steps || []).forEach(function(step) {
+    const danger = step.success === 0 || Number(step.score || 0) > 0 || (step.signals || []).length > 0;
+    if (!danger) return;
+    const signals = (step.signals || []).map(function(signal) { return String(signal).replace(/-/g, ' '); });
+    rows.push({
+      kind: 'RECORD',
+      label: (step.tool || step.type || 'event') + ' · ' + oneLine(step.summary || step.target || 'recorded action'),
+      sub: 'seq ' + (step.post_seq || step.seq) + (signals.length ? ' · ' + signals.join(' · ') : step.success === 0 ? ' · failed' : ''),
+      seq: step.post_seq || step.seq, danger: true
+    });
+  });
+  (turn.files_changed || []).forEach(function(file) {
+    rows.push({
+      kind: 'FILE',
+      label: basename(file.path),
+      sub: (file.status === 'skipped' ? (file.skip_reason || 'not stored') : '+' + Number(file.insertions || 0) + ' −' + Number(file.deletions || 0)) + ' · ' + file.path,
+      seq: file.seq, danger: false
+    });
+  });
+  (turn.commits || []).forEach(function(commit) {
+    rows.push({
+      kind: 'GIT',
+      label: commit.subject || commit.kind || 'Git change',
+      sub: [commit.ref, String(commit.sha || '').slice(0, 10)].filter(Boolean).join(' · ') || 'recorded git artifact',
+      seq: commit.seq, danger: !!commit.force
+    });
+  });
+  (hostMap.get(index) || []).forEach(function(host) {
+    rows.push({
+      kind: 'HOST',
+      label: host.host,
+      sub: 'outbound' + (host.via ? ' via ' + host.via : '') + ' · seq ' + host.seq,
+      seq: host.seq, danger: true
+    });
+  });
+  return rows;
 }
 
 function activityTurns() {
-  const q = S.activityQuery.trim().toLowerCase();
+  const hostMap = hostsByTurn();
   return S.story.turns.filter(function(turn, index) {
-    if (S.flaggedOnly && !turnFlagged(turn)) return false;
-    if (S.toolFilter && !(turn.steps || []).some(function(step) { return step.tool === S.toolFilter; })) return false;
-    if (!q) return true;
-    const text = [turnDisplayTitle(turn, index), turn.prompt, turn.reasoning]
-      .concat((turn.files_changed || []).map(function(file) { return file.path; }))
-      .concat((turn.commits || []).map(function(commit) { return [commit.subject, commit.sha, commit.ref].join(' '); }))
-      .concat((turn.steps || []).map(function(step) { return [step.tool, step.target, step.summary, (step.signals || []).join(' '), step.agent_type].join(' '); }))
-      .join(' ').toLowerCase();
-    return text.indexOf(q) >= 0;
+    if (S.actFilter === 'flagged') return turnFlagged(turn);
+    if (S.actFilter === 'evidence') return turnEvidenceRows(turn, index, hostMap).length > 0;
+    return true;
   });
+}
+
+function renderActivityView() {
+  const layout = h('div', { className: 'act-layout', 'aria-label': 'Session activity' });
+  const hostMap = hostsByTurn();
+  const flaggedCount = S.story.turns.filter(turnFlagged).length;
+  let evidenceCount = 0;
+  S.story.turns.forEach(function(turn, index) { if (turnEvidenceRows(turn, index, hostMap).length) evidenceCount++; });
+  const seg = h('div', { className: 'seg', role: 'group', 'aria-label': 'Filter activity' },
+    h('button', { className: S.actFilter === 'all' ? 'active' : '', type: 'button', textContent: 'All', onclick: function() { S.actFilter = 'all'; S.activityCursor = -1; renderPreservingScroll(renderSessionPage); } }),
+    h('button', { className: S.actFilter === 'flagged' ? 'active' : '', type: 'button', textContent: 'Flagged · ' + flaggedCount, onclick: function() { S.actFilter = 'flagged'; S.activityCursor = -1; renderPreservingScroll(renderSessionPage); } }),
+    h('button', { className: S.actFilter === 'evidence' ? 'active' : '', type: 'button', textContent: 'Has evidence · ' + evidenceCount, onclick: function() { S.actFilter = 'evidence'; S.activityCursor = -1; renderPreservingScroll(renderSessionPage); } })
+  );
+  const left = h('div', { style: 'min-width:0' },
+    h('div', { className: 'act-toolbar' }, seg, h('span', { id: 'activityCount', className: 'act-count' })),
+    h('div', { id: 'activityList', className: 'activity-list' }));
+  layout.append(left, renderActivityRail());
+  setTimeout(renderActivityList, 0);
+  return layout;
 }
 
 function renderActivityList() {
   const host = document.getElementById('activityList');
-  if (!host) return;
+  if (!host || !S.story) return;
   host.textContent = '';
+  const hostMap = hostsByTurn();
   const turns = activityTurns();
   const count = document.getElementById('activityCount');
   if (count) count.textContent = turns.length + ' of ' + S.story.turns.length;
-  if (!turns.length) { host.append(h('div', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '⌕' }), h('h2', { textContent: 'No matching prompts' }), h('p', { textContent: 'Clear a filter or search for another prompt, tool, or path.' }))); return; }
-  turns.forEach(function(turn) { host.append(turnCard(turn, S.story.turns.indexOf(turn))); });
+  if (!turns.length) {
+    host.append(h('div', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '⌕' }), h('h2', { textContent: 'Nothing matches this filter' }), h('p', { textContent: 'Switch back to All to see every recorded prompt.' })));
+    return;
+  }
+  turns.forEach(function(turn) { host.append(turnCard(turn, S.story.turns.indexOf(turn), hostMap)); });
 }
 
-function turnCard(turn, index) {
+function turnCard(turn, index, hostMap) {
   const key = turn.prompt_id || 'turn-' + index;
   const open = S.expanded.has(key);
   const flagged = turnFlagged(turn);
-  const model = turn.turn_meta && turn.turn_meta.model || '';
-  const meta = [(turn.steps || []).length + ' action' + ((turn.steps || []).length === 1 ? '' : 's'), fmtSpan(turn.started_at, turn.ended_at), model, tokenCount(turn)].filter(Boolean).join(' · ');
+  const role = turnRole(turn);
+  const evidence = turnEvidenceRows(turn, index, hostMap);
+  const meta = [
+    (turn.steps || []).length ? (turn.steps || []).length + ' actions' : '',
+    fmtSpan(turn.started_at, turn.ended_at),
+    tokenCount(turn),
+    evidence.length ? evidence.length + ' evidence' : '',
+    flagged ? 'flagged' : ''
+  ].filter(Boolean).join(' · ');
   const title = turnDisplayTitle(turn, index);
-  const badges = [];
-  if (turn.reasoning) badges.push('Explanation');
-  if ((turn.files_changed || []).length) badges.push((turn.files_changed || []).length + ' file' + ((turn.files_changed || []).length === 1 ? '' : 's'));
-  if ((turn.commits || []).length) badges.push((turn.commits || []).length + ' commit' + ((turn.commits || []).length === 1 ? '' : 's'));
   const card = h('article', { className: 'turn-card' + (flagged ? ' flagged' : ''), id: 'turn-' + (index + 1), 'data-turn-index': String(index) });
-  const head = h('button', { className: 'turn-head', type: 'button', 'aria-expanded': String(open), onclick: function() { if (open) S.expanded.delete(key); else S.expanded.add(key); renderPreservingScroll(renderActivityList, 'turn-' + (index + 1)); } },
-    h('span', { className: 'turn-index', textContent: (open ? '⌄ ' : '› ') + String(index + 1).padStart(2, '0') }),
-    h('span', { className: 'turn-title-stack' }, h('span', { className: 'turn-gist', textContent: title, title: title }), h('span', { className: 'turn-badges', textContent: badges.join(' · ') || turnSourceLabel(turn) })),
-    h('span', { className: 'turn-meta', textContent: meta + (flagged ? ' · flagged' : '') })
-  );
-  card.append(head);
-  if (open) card.append(turnBody(turn, index));
+  card.append(h('button', { className: 'turn-head', type: 'button', 'aria-expanded': String(open), onclick: function() {
+    if (open) S.expanded.delete(key); else S.expanded.add(key);
+    renderPreservingScroll(renderActivityList, 'turn-' + (index + 1));
+  } },
+    h('span', { className: 'turn-index', textContent: pad2(index + 1) }),
+    h('span', { className: 'turn-glyph' + (role === 'user' ? ' user' : ''), 'aria-hidden': 'true', textContent: role === 'user' ? '▸' : role === 'agent' ? '⬡' : '⌘' }),
+    h('span', { className: 'turn-gist' + (role === 'user' ? ' user' : ''), textContent: title, title: title }),
+    h('span', { className: 'turn-meta', textContent: meta })
+  ));
+  if (open) card.append(turnBody(turn, index, evidence));
   return card;
 }
 
-function turnBody(turn, index) {
+function turnBody(turn, index, evidence) {
   const body = h('div', { className: 'turn-body' });
-  body.append(h('div', { className: 'turn-actions' }, h('button', { className: 'quiet-button', type: 'button', textContent: 'Trace in Graph →', onclick: function() { openTurnInGraph(turn, index); } })));
-  body.append(h('section', { className: 'turn-section prompt-block' },
-    h('div', { className: 'turn-section-head' }, h('span', { textContent: 'User prompt' }), h('span', { textContent: turnSourceLabel(turn) })),
-    turn.prompt ? redactedTextBlock(turn.prompt, 'prompt-text') : h('p', { className: 'unavailable-copy', textContent: turn.title_source === 'subagent_action' || turn.title_source === 'subagent_activity' ? 'The host did not emit a user prompt for this subagent activity.' : 'The user prompt was not captured. The title above is derived from recorded activity.' })
-  ));
+  if (turn.prompt) body.append(redactedTextBlock(turn.prompt, 'turn-text'));
+  else body.append(h('p', { className: 'unavailable-copy', textContent: turn.title_source === 'subagent_action' || turn.title_source === 'subagent_activity' ? 'The host did not emit a user prompt for this subagent activity.' : 'The user prompt was not captured. The title above is derived from recorded activity.' }));
+  const model = turn.turn_meta && turn.turn_meta.model || '';
+  const chips = [
+    turnRole(turn) === 'user' ? 'User prompt' : turnRole(turn) === 'agent' ? 'Agent response' : turnSourceLabel(turn),
+    (turn.steps || []).length + ' action' + ((turn.steps || []).length === 1 ? '' : 's'),
+    fmtSpan(turn.started_at, turn.ended_at),
+    model,
+    tokenCount(turn)
+  ].filter(Boolean);
+  body.append(h('div', { className: 'turn-chips' }, chips.map(function(chip) { return h('span', { textContent: chip }); })));
 
-  const reasonKey = (turn.prompt_id || 'turn-' + index) + ':reasoning';
-  const reasonOpen = S.expanded.has(reasonKey);
-  const reason = h('section', { className: 'turn-section reasoning-section' });
-  const reasonToggle = h('button', { className: 'disclosure-button', type: 'button', 'aria-expanded': String(reasonOpen), onclick: function() { if (reasonOpen) S.expanded.delete(reasonKey); else S.expanded.add(reasonKey); renderPreservingScroll(renderActivityList, 'turn-' + (index + 1)); } },
-    h('span', { textContent: (reasonOpen ? '⌄ ' : '› ') + 'Agent response / reasoning digest' }),
-    h('span', { textContent: turn.reasoning ? 'Captured' : 'Not captured' })
-  );
-  reason.append(reasonToggle);
-  if (reasonOpen) reason.append(turn.reasoning ? redactedTextBlock(turn.reasoning, 'reasoning') : h('p', { className: 'unavailable-copy', textContent: 'No assistant explanation was captured for this prompt.' }));
-  body.append(reason);
-
-  if ((turn.files_changed || []).length || (turn.commits || []).length) {
-    const outcomes = h('section', { className: 'turn-section' }, h('div', { className: 'turn-section-head' }, h('span', { textContent: 'Outcomes' })));
-    if ((turn.files_changed || []).length) outcomes.append(h('div', { className: 'outcome-list' }, (turn.files_changed || []).map(turnFileRow)));
-    if ((turn.commits || []).length) outcomes.append(h('div', { className: 'outcome-list commit-list' }, (turn.commits || []).map(turnCommitRow)));
-    body.append(outcomes);
+  if (evidence.length) {
+    body.append(h('div', { className: 'mlabel turn-ev-head', textContent: 'Evidence from this turn' }));
+    const list = h('div', { className: 'ev-list' });
+    evidence.slice(0, 12).forEach(function(item) {
+      list.append(h('button', { className: 'ev-row' + (item.danger ? ' danger' : ''), type: 'button', onclick: function() { if (item.seq != null) openEvidence(item.seq); } },
+        h('span', { className: 'ev-kind', textContent: item.kind }),
+        h('span', { style: 'min-width:0' },
+          h('span', { className: 'ev-label', textContent: item.label }),
+          h('span', { className: 'ev-sub', textContent: item.sub })),
+        h('span', { className: 'ev-act', textContent: 'Open →' })));
+    });
+    if (evidence.length > 12) list.append(h('div', { className: 'rail-more', textContent: '+' + (evidence.length - 12) + ' more in the full action log' }));
+    body.append(list);
   }
 
-  const steps = h('section', { className: 'turn-section' }, h('div', { className: 'turn-section-head' }, h('span', { textContent: (turn.steps || []).length + ' recorded action' + ((turn.steps || []).length === 1 ? '' : 's') })));
+  const reason = h('details', { className: 'turn-more' }, h('summary', null, 'Agent reasoning digest', h('span', { className: 'rail-more', style: 'padding:0', textContent: turn.reasoning ? '' : ' · not captured' })));
+  reason.append(turn.reasoning ? redactedTextBlock(turn.reasoning, 'reasoning') : h('p', { className: 'unavailable-copy', textContent: 'No assistant explanation was captured for this prompt.' }));
+  body.append(reason);
+
+  const steps = h('details', { className: 'turn-more' }, h('summary', { textContent: 'Full action log · ' + (turn.steps || []).length }));
   const stepList = h('div', { className: 'step-list' });
   (turn.steps || []).forEach(function(step) {
     const failed = step.success === 0;
@@ -269,8 +409,61 @@ function turnBody(turn, index) {
       h('span', { className: 'step-duration', textContent: fmtDur(step.duration_ms) || 'View →' })
     ));
   });
-  steps.append(stepList); body.append(steps);
+  steps.append(stepList);
+  body.append(steps);
+
+  body.append(h('div', { style: 'margin-top:12px' }, h('button', { className: 'quiet-button', type: 'button', textContent: 'Trace in Graph →', onclick: function() { openTurnInGraph(turn, index); } })));
   return body;
+}
+
+function renderActivityRail() {
+  const rail = h('aside', { className: 'rail', 'aria-label': 'Session evidence rail' });
+  const hosts = (S.blast && S.blast.hosts) || [];
+  const files = (S.story && S.story.files_changed) || [];
+  if (!hosts.length && !files.length) {
+    rail.append(h('div', { className: 'rail-panel' },
+      h('div', { className: 'mlabel rail-head', textContent: 'Evidence' }),
+      h('p', { className: 'rail-note', textContent: 'No risk-bearing evidence recorded in this session.' })));
+    return rail;
+  }
+  if (hosts.length) {
+    const panel = h('div', { className: 'rail-panel' }, h('div', { className: 'mlabel rail-head', textContent: 'Outbound hosts · ' + hosts.length }));
+    hosts.slice(0, 10).forEach(function(host) {
+      const index = turnIndexForSeq(host.seq);
+      panel.append(h('button', { className: 'rail-row', type: 'button', onclick: function() { jumpToTurn(index, host.seq); } },
+        h('span', { className: 'rail-host', textContent: host.host }),
+        h('span', { className: 'rail-turn', textContent: index >= 0 ? 'turn ' + (index + 1) + ' →' : 'open →' })));
+    });
+    if (hosts.length > 10) panel.append(h('div', { className: 'rail-more', textContent: '+' + (hosts.length - 10) + ' more' }));
+    rail.append(panel);
+  }
+  if (files.length) {
+    const panel = h('div', { className: 'rail-panel' }, h('div', { className: 'mlabel rail-head', textContent: 'Changed files · ' + files.length }));
+    files.slice(0, 10).forEach(function(file) {
+      const index = turnIndexForSeq(file.seq);
+      panel.append(h('button', { className: 'rail-row', type: 'button', title: file.path, onclick: function() { jumpToTurn(index, file.seq); } },
+        h('span', { style: 'min-width:0' },
+          h('span', { className: 'rail-file', textContent: basename(file.path) }),
+          h('span', { className: 'rail-diff', textContent: '+' + Number(file.insertions || 0) + ' −' + Number(file.deletions || 0) })),
+        h('span', { className: 'rail-turn', textContent: index >= 0 ? 'turn ' + (index + 1) + ' →' : 'open →' })));
+    });
+    if (files.length > 10) panel.append(h('div', { className: 'rail-more', textContent: '+' + (files.length - 10) + ' more' }));
+    rail.append(panel);
+  }
+  return rail;
+}
+
+// Jump to (and expand) the turn that owns an event; falls back to the drawer.
+function jumpToTurn(index, seq) {
+  if (index < 0) { if (seq != null) openEvidence(seq); return; }
+  const turn = S.story.turns[index];
+  S.expanded.add(turn.prompt_id || 'turn-' + index);
+  if (S.actFilter !== 'all' && activityTurns().indexOf(turn) < 0) S.actFilter = 'all';
+  renderPreservingScroll(renderSessionPage);
+  setTimeout(function() {
+    const node = document.getElementById('turn-' + (index + 1));
+    if (node) node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, 60);
 }
 
 function redactedTextBlock(value, className) {
@@ -285,21 +478,6 @@ function redactedTextBlock(value, className) {
   }
   if (cursor < text.length) pre.append(document.createTextNode(text.slice(cursor)));
   return pre;
-}
-
-function turnFileRow(file) {
-  const status = file.status === 'skipped' ? (file.skip_reason || 'not stored') : '+' + Number(file.insertions || 0) + ' −' + Number(file.deletions || 0);
-  return h('button', { className: 'outcome-row', type: 'button', title: file.path, onclick: function() { openEvidence(file.seq); } },
-    h('span', null, h('span', { className: 'outcome-title', textContent: basename(file.path) }), h('span', { className: 'outcome-sub', textContent: file.path })),
-    h('span', { className: 'outcome-stat' + (file.status === 'skipped' ? ' danger-text' : ''), textContent: status })
-  );
-}
-
-function turnCommitRow(commit) {
-  return h('button', { className: 'outcome-row', type: 'button', title: commit.ref || '', onclick: function() { openEvidence(commit.seq); } },
-    h('span', null, h('span', { className: 'outcome-title', textContent: commit.subject || commit.kind || 'Git change' }), h('span', { className: 'outcome-sub', textContent: commit.ref || commit.sha || 'Recorded git artifact' })),
-    h('span', { className: 'outcome-stat', textContent: '+' + Number(commit.insertions || 0) + ' −' + Number(commit.deletions || 0) })
-  );
 }
 
 function jumpNextFlagged() {

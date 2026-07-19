@@ -4,13 +4,11 @@ const S = {
   cards: [], cardsFp: '', fleet: null, health: null, profile: null, privacy: null, displayName: 'there',
   route: { page: 'home', id: null, tab: null, eventSeq: null }, currentId: null,
   story: null, blast: null, verify: null, sessionFp: '', loadingSession: false,
-  query: '', deepHits: [], searching: false, searchTimer: null, showAll: false, dashboardSort: 'recent',
-  expanded: new Set(), activityQuery: '', flaggedOnly: false, toolFilter: '', activityCursor: -1,
-  evidenceQuery: '', evidenceFileLimit: 40,
-  selectedSeq: null, pendingSeq: null, pendingPromptId: null, graph: null, graphRoot: null,
-  graphDepth: '2', graphWhole: false, graphExpand: [], graphSelected: null,
-  graphSearch: '', graphFilter: 'all', graphFp: '', graphRequest: 0,
-  graphViewport: null, graphPendingSeq: null, graphPendingCenter: false,
+  query: '', deepHits: [], searching: false, searchTimer: null, dashboardSort: 'recent',
+  expanded: new Set(), actFilter: 'all', activityCursor: -1,
+  selectedSeq: null, pendingSeq: null, pendingPromptId: null,
+  graph: null, graphWhole: true, graphExpand: [], graphSelected: null,
+  graphFp: '', graphRequest: 0, graphViewport: null, graphPendingSeq: null, graphPendingCenter: false,
   graphLoading: false, pollTimer: null, offline: false, lastHead: null, recordingUntil: 0
 };
 
@@ -52,6 +50,8 @@ function oneLine(value) { return String(value || '').replace(/\s+/g, ' ').trim()
 function cap(value) { const s = String(value || ''); return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
 function clampText(value, n) { const s = oneLine(value); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 function isDanger(value) { return value === 'high' || value === 'medium'; }
+function fmtInt(value) { return Number(value || 0).toLocaleString('en-US'); }
+function pad2(value) { return String(value).padStart(2, '0'); }
 
 function fmtRel(ts) {
   if (!ts) return 'Unknown time';
@@ -76,7 +76,7 @@ function fmtSpan(a, b) {
   const seconds = Math.max(0, Math.round((Date.parse(b) - Date.parse(a)) / 1000));
   if (seconds < 60) return seconds + 's';
   if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
-  return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm';
+  return Math.floor(seconds / 3600) + 'h ' + pad2(Math.floor((seconds % 3600) / 60)) + 'm';
 }
 
 function tokenCount(turn) {
@@ -108,11 +108,45 @@ function turnSourceLabel(turn) {
   return turn && turn.prompt ? 'Captured prompt' : 'Activity title';
 }
 
+// user | agent | system — drives the turn glyph and text weight in Activity.
+function turnRole(turn) {
+  const source = turn && turn.title_source;
+  if (source === 'captured_prompt' || source === 'recovered_prompt' || source === 'transcript_prompt') return 'user';
+  if (source === 'assistant_explanation') return 'agent';
+  return 'system';
+}
+
 function sessionTitle(card, story) {
   return card && card.name || story && story.name || (card && shortId(card.session_id)) || 'Untitled session';
 }
 
 function cardFor(id) { return S.cards.find(function(card) { return card.session_id === id; }) || null; }
+
+// Which turn does an event seq belong to? Scans steps, file outcomes, and commits.
+function turnIndexForSeq(seq) {
+  if (!S.story || seq == null) return -1;
+  const n = Number(seq);
+  let found = -1;
+  S.story.turns.some(function(turn, index) {
+    const match = (turn.steps || []).some(function(step) { return Number(step.seq) === n || Number(step.post_seq) === n; }) ||
+      (turn.files_changed || []).some(function(file) { return Number(file.seq) === n; }) ||
+      (turn.commits || []).some(function(commit) { return Number(commit.seq) === n; });
+    if (match) found = index;
+    return match;
+  });
+  return found;
+}
+
+// Containment checklist review-state. Local-only, like the display name: the
+// reviewer's progress never enters the forensic record.
+function reviewedMap(sessionId) {
+  try { return JSON.parse(localStorage.getItem('blackbox.reviewed.' + sessionId) || '{}') || {}; } catch (_) { return {}; }
+}
+function setReviewed(sessionId, key, done) {
+  const map = reviewedMap(sessionId);
+  if (done) map[key] = 1; else delete map[key];
+  try { localStorage.setItem('blackbox.reviewed.' + sessionId, JSON.stringify(map)); } catch (_) {}
+}
 
 function parseRoute() {
   const raw = (location.hash || '#/').replace(/^#\/?/, '');
@@ -120,7 +154,9 @@ function parseRoute() {
   if (parts[0] === 'session' && parts[1]) {
     let id = parts[1];
     try { id = decodeURIComponent(id); } catch (_) {}
-    const tab = ['overview','activity','evidence','graph'].includes(parts[2]) ? parts[2] : 'overview';
+    // 'evidence' stays parseable so pre-merge links keep resolving (into Activity).
+    let tab = ['overview','activity','evidence','graph'].includes(parts[2]) ? parts[2] : 'overview';
+    if (tab === 'evidence') tab = 'activity';
     const eventSeq = parts[3] === 'event' && /^\d+$/.test(parts[4] || '') ? Number(parts[4]) : null;
     return { page: 'session', id: id, tab: tab, eventSeq: eventSeq };
   }
@@ -165,9 +201,7 @@ function routeChanged() {
   const changedView = previous.page !== next.page || previous.tab !== next.tab || previous.id !== next.id;
   const changedEvidence = previous.eventSeq !== next.eventSeq;
   S.route = next;
-  const homeLink = document.querySelector('.nav-home');
-  if (homeLink) homeLink.classList.toggle('active', next.page === 'home');
-  document.getElementById('app').classList.toggle('graph-shell', next.tab === 'graph');
+  sidebarActive();
   closeProfile();
   if (next.tab !== 'graph') destroyGraphCanvas();
   if (next.page === 'home') {
@@ -191,12 +225,11 @@ function routeChanged() {
   if (changedSession) {
     closeDrawerNodes(); S.selectedSeq = null;
     S.currentId = next.id;
-    S.story = null; S.blast = null; S.sessionFp = ''; S.graph = null; S.graphRoot = null;
-    S.graphWhole = false; S.graphExpand = []; S.graphSelected = null; S.graphSearch = '';
-    S.graphFilter = 'all'; S.graphFp = ''; S.graphViewport = null;
+    S.story = null; S.blast = null; S.sessionFp = ''; S.graph = null;
+    S.graphWhole = true; S.graphExpand = []; S.graphSelected = null;
+    S.graphFp = ''; S.graphViewport = null;
     S.graphPendingSeq = null; S.graphPendingCenter = false;
-    S.expanded.clear(); S.activityQuery = ''; S.flaggedOnly = false; S.toolFilter = ''; S.activityCursor = -1;
-    S.evidenceQuery = ''; S.evidenceFileLimit = 40;
+    S.expanded.clear(); S.actFilter = 'all'; S.activityCursor = -1;
   }
   renderSessionPage();
   if (changedView) setWindowScroll(0);
@@ -205,20 +238,72 @@ function routeChanged() {
   if (next.eventSeq != null && S.story) openEvidence(next.eventSeq, true);
 }
 
+/* ── the console rail ─────────────────────────────────────────────────────── */
+
+function sidebarActive() {
+  const dash = document.getElementById('navDash');
+  if (dash) dash.classList.toggle('active', S.route.page === 'home' && !S.query.trim());
+  document.querySelectorAll('.sb-item, .sb-recent').forEach(function(item) {
+    item.classList.toggle('active', S.route.page === 'session' && item.getAttribute('data-id') === S.route.id);
+  });
+}
+
+function sidebarSessionButton(card, review) {
+  const title = sessionTitle(card, null);
+  const button = h('button', { className: review ? 'sb-item' : 'sb-recent', type: 'button', title: title, onclick: function() { setRoute(sessionHref(card.session_id, 'overview')); } });
+  button.setAttribute('data-id', card.session_id);
+  if (review) button.append(
+    h('span', { className: 'sb-bar', 'aria-hidden': 'true' }),
+    h('span', null,
+      h('span', { className: 'sb-item-title', textContent: title }),
+      h('span', { className: 'sb-item-sub', textContent: basename(card.cwd) })),
+    h('span', { className: 'sb-flag', textContent: Number(card.flagged || 0) + '⚑' })
+  );
+  else button.append(
+    h('span', { className: 'sb-recent-title', textContent: title }),
+    h('span', { className: 'sb-rel', textContent: fmtRel(card.ended) })
+  );
+  return button;
+}
+
+function renderSidebarLists() {
+  const reviewHost = document.getElementById('sbReview');
+  const recentHost = document.getElementById('sbRecent');
+  if (!reviewHost || !recentHost) return;
+  reviewHost.textContent = ''; recentHost.textContent = '';
+  const byEnded = S.cards.slice().sort(function(a, b) { return Date.parse(b.ended || 0) - Date.parse(a.ended || 0); });
+  const review = byEnded.filter(function(card) { return isDanger(card.verdict); });
+  const rest = byEnded.filter(function(card) { return !isDanger(card.verdict); });
+  if (review.length) {
+    reviewHost.append(h('div', { className: 'sb-group-head' },
+      h('span', { className: 'mlabel', textContent: 'Needs review' }),
+      h('span', { className: 'sb-count', textContent: String(review.length) })));
+    const list = h('div', { className: 'sb-list' });
+    review.slice(0, 8).forEach(function(card) { list.append(sidebarSessionButton(card, true)); });
+    reviewHost.append(list);
+  }
+  if (rest.length) {
+    recentHost.append(h('div', { className: 'sb-group-head' }, h('span', { className: 'mlabel', textContent: 'Recent' })));
+    const list = h('div', { className: 'sb-list' });
+    rest.slice(0, 7).forEach(function(card) { list.append(sidebarSessionButton(card, false)); });
+    recentHost.append(list);
+  }
+  sidebarActive();
+}
+
 function updateChrome() {
-  const connection = document.getElementById('connection');
+  const dot = document.getElementById('connection');
   const label = document.getElementById('connectionLabel');
   const alert = document.getElementById('connectionAlert');
-  if (connection) connection.classList.toggle('offline', S.offline);
-  if (label) label.textContent = S.offline ? 'Offline' : (Date.now() < S.recordingUntil ? 'Recording' : 'Connected');
+  const recording = !S.offline && Date.now() < S.recordingUntil;
+  if (dot) { dot.classList.toggle('offline', S.offline); dot.classList.toggle('live', recording); }
+  if (label) label.textContent = S.offline ? 'Offline' : (recording ? 'Recording' : 'Connected');
   const eventCount = document.getElementById('eventCount');
-  if (eventCount) eventCount.textContent = S.health ? String(S.health.count || 0) : '—';
+  if (eventCount) eventCount.textContent = S.health ? fmtInt(S.health.count || 0) : '—';
   if (alert) {
     alert.hidden = !S.offline;
     alert.textContent = S.offline ? 'Blackbox is not responding. The last loaded session data is still available.' : '';
   }
-  const initial = document.getElementById('profileInitial');
-  if (initial) initial.textContent = (S.displayName || '?').charAt(0).toUpperCase();
 }
 
 async function loadProfile() {
@@ -284,6 +369,7 @@ async function refreshBase() {
     const fp = JSON.stringify(cards);
     if (fp !== S.cardsFp) {
       S.cardsFp = fp; S.cards = cards;
+      renderSidebarLists();
       if (S.route.page === 'home') renderPreservingScroll(renderDashboard);
       else if (S.route.page === 'session') renderPreservingScroll(renderSessionPage);
       else if (S.route.page === 'settings') renderPreservingScroll(renderSettingsPage);
@@ -328,9 +414,28 @@ function schedulePoll() {
   }, 3000);
 }
 
+function onSearchInput(value) {
+  S.query = value;
+  if (S.route.page !== 'home') { setRoute('#/'); } else { renderDashboard(); }
+  clearTimeout(S.searchTimer);
+  if (S.query.trim().length >= 2) {
+    S.searching = true;
+    S.searchTimer = setTimeout(runDeepSearch, 260);
+  } else { S.deepHits = []; S.searching = false; }
+  sidebarActive();
+}
+
+function clearSearch() {
+  S.query = ''; S.deepHits = []; S.searching = false;
+  const input = document.getElementById('sbSearch');
+  if (input) input.value = '';
+  if (S.route.page === 'home') renderDashboard();
+  sidebarActive();
+}
+
 function goHomeSearch() {
-  if (S.route.page !== 'home') setRoute('#/');
-  setTimeout(function() { const input = document.getElementById('homeSearch'); if (input) input.focus(); }, 30);
+  const input = document.getElementById('sbSearch');
+  if (input) { input.focus(); input.select(); }
 }
 `;
 
@@ -342,7 +447,11 @@ document.addEventListener('click', function(event) {
 });
 document.addEventListener('keydown', function(event) {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); goHomeSearch(); }
-  if (event.key === 'Escape') { if (S.selectedSeq != null) closeDrawer(); else closeProfile(); }
+  if (event.key === 'Escape') {
+    if (S.selectedSeq != null) closeDrawer();
+    else if (S.query) clearSearch();
+    else closeProfile();
+  }
   if (S.route.page === 'session' && S.route.tab === 'activity' && !event.metaKey && !event.ctrlKey && !event.altKey) {
     const tag = document.activeElement && document.activeElement.tagName;
     if (tag !== 'INPUT' && tag !== 'SELECT' && tag !== 'TEXTAREA') {
@@ -352,6 +461,10 @@ document.addEventListener('keydown', function(event) {
     }
   }
 });
+(function() {
+  const input = document.getElementById('sbSearch');
+  if (input) input.addEventListener('input', function() { onSearchInput(input.value); });
+})();
 window.addEventListener('hashchange', routeChanged);
 if (!location.hash) history.replaceState(null, '', '#/');
 S.route = parseRoute();

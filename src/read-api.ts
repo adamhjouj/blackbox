@@ -58,6 +58,7 @@ export interface SessionCard {
   flagged: number;
   cwd: string | null;
   name: string | null; // human-readable session name (user /rename, else AI title)
+  density: number[]; // event-count histogram over the session span (UI sparkline)
 }
 
 export const isPre = (e: BlackboxEvent): boolean => e.hook_event === 'PreToolUse';
@@ -188,6 +189,7 @@ export function sessionCards(store: Store): SessionCard[] {
       if (!prev || rulesetNum(r.ruleset_version) >= rulesetNum(prev.ruleset_version)) risk.set(r.session_id, r);
     }
   }
+  const densities = store.sessionDensity(18);
   const cards: SessionCard[] = store
     .sessions()
     // Drop sessions with zero chat activity — ones that recorded only lifecycle
@@ -200,8 +202,9 @@ export function sessionCards(store: Store): SessionCard[] {
     // First non-null cwd in the session — the UI shows the project a session ran in.
     const cwd = sessionCwd(store, s.session_id);
     const name = sessionName(store, s.session_id);
+    const density = densities.get(s.session_id) ?? [];
     if (!r) {
-      return { ...s, verdict: 'unscored', score: 0, ruleset_version: RULESET_VERSION, combos: [], flags: {}, annotations: {}, flagged: 0, cwd, name };
+      return { ...s, verdict: 'unscored', score: 0, ruleset_version: RULESET_VERSION, combos: [], flags: {}, annotations: {}, flagged: 0, cwd, name, density };
     }
     // Split the persisted rule_counts: RISK_FLAGS drive the "N flagged" badge;
     // ANNOTATION_FLAGS stay as muted context (a truthful count, not 345).
@@ -224,6 +227,7 @@ export function sessionCards(store: Store): SessionCard[] {
       flagged,
       cwd,
       name,
+      density,
     };
   });
   cards.sort((a, b) => (VERDICT_RANK[a.verdict] ?? 5) - (VERDICT_RANK[b.verdict] ?? 5) || (a.ended < b.ended ? 1 : -1));

@@ -770,6 +770,25 @@ export class Store {
       .all() as SessionSummary[];
   }
 
+  /**
+   * Event-count histogram per session over its own [started, ended] span — powers
+   * the dashboard density sparklines. One full-table scan; callers cache on head.
+   */
+  sessionDensity(buckets: number): Map<string, number[]> {
+    const spans = new Map<string, { a: number; span: number; hist: number[] }>();
+    for (const s of this.sessions()) {
+      const a = Date.parse(s.started);
+      spans.set(s.session_id, { a, span: Math.max(1, Date.parse(s.ended) - a), hist: new Array<number>(buckets).fill(0) });
+    }
+    for (const r of this.db.prepare('SELECT session_id, ts FROM events').iterate() as IterableIterator<{ session_id: string; ts: string }>) {
+      const s = spans.get(r.session_id);
+      if (!s) continue;
+      const i = Math.min(buckets - 1, Math.max(0, Math.floor(((Date.parse(r.ts) - s.a) / s.span) * buckets)));
+      s.hist[i]! += 1;
+    }
+    return new Map([...spans].map(([id, s]) => [id, s.hist]));
+  }
+
   close(): void {
     this.db.close();
   }

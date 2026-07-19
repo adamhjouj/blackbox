@@ -16,8 +16,7 @@ function settingsFact(label, value, mono) {
 }
 
 function commandRow(command, copy) {
-  const row = h('div', { className: 'privacy-command' }, h('code', { textContent: command }), h('span', { textContent: copy }));
-  return row;
+  return h('div', { className: 'privacy-command' }, h('code', { textContent: command }), h('span', { textContent: copy }));
 }
 
 function renderSettingsPage() {
@@ -32,14 +31,14 @@ function renderSettingsPage() {
       : 'Local-only · reduced custody';
   const page = h('article', { className: 'settings-page' });
   page.append(
-    h('a', { className: 'back-link', href: '#/' }, h('span', { 'aria-hidden': 'true', textContent: '←' }), 'Sessions'),
+    h('a', { className: 'back-link', href: '#/' }, h('span', { 'aria-hidden': 'true', textContent: '←' }), 'Dashboard'),
     h('header', { className: 'settings-hero' },
       h('div', null, h('div', { className: 'panel-label', textContent: 'Recorder controls' }), h('h1', { textContent: 'Health & privacy' }), h('p', { textContent: 'See what Blackbox stores, what can leave this computer, and how to remove local data.' })),
       h('span', { className: 'risk-badge' + (S.offline ? ' danger' : ''), textContent: S.offline ? 'Recorder offline' : 'Recorder connected' })
     )
   );
   if (!p) {
-    page.append(h('section', { className: 'panel settings-loading' }, h('div', { className: 'skeleton-line wide' }), h('div', { className: 'skeleton-line' })));
+    page.append(h('section', { className: 'panel settings-loading' }));
     app.append(page); return;
   }
   const recorder = h('section', { className: 'panel settings-panel' },
@@ -88,45 +87,142 @@ function renderSettingsPage() {
   app.append(page);
 }
 
+/* ── dashboard ────────────────────────────────────────────────────────────── */
+
+function verdictChip(card) {
+  const verdict = String(card.verdict || 'none');
+  const danger = isDanger(verdict);
+  const label = danger ? verdict : verdict === 'low' ? 'low' : 'clear';
+  return h('span', { className: 'chip-verdict' + (danger ? ' danger' : ''), textContent: label });
+}
+
+function sparkline(card) {
+  const density = card.density || [];
+  if (!density.length) return h('span', { className: 'spark', 'aria-hidden': 'true' });
+  const max = Math.max.apply(null, density.concat([1]));
+  const spark = h('span', { className: 'spark', 'aria-hidden': 'true' });
+  const flagged = Number(card.flagged || 0) > 0;
+  density.forEach(function(value, index) {
+    const bar = h('i', { className: flagged && index >= density.length - 3 ? 'hot' : '' });
+    bar.style.height = (4 + Math.round((value / max) * 22)) + 'px';
+    spark.append(bar);
+  });
+  return spark;
+}
+
+function sectionHead(num, title, note, tools) {
+  const head = h('div', { className: 'sec-head' },
+    h('span', { className: 'sec-num', textContent: num }),
+    h('h2', { textContent: title }),
+    note ? h('span', { className: 'sec-note', textContent: note }) : null
+  );
+  if (tools) { tools.classList.add('sec-tools'); head.append(tools); }
+  return head;
+}
+
+function reviewRow(card) {
+  const title = sessionTitle(card, null);
+  return h('button', { className: 'review-row', type: 'button', onclick: function() { setRoute(sessionHref(card.session_id, 'overview')); } },
+    h('span', { className: 'review-bar', 'aria-hidden': 'true' }),
+    h('span', { style: 'min-width:0' },
+      h('span', { className: 'review-title', textContent: title }),
+      h('span', { className: 'review-sub', textContent: basename(card.cwd) + ' · ' + (fmtSpan(card.started, card.ended) || '—') })),
+    sparkline(card),
+    h('span', { className: 'review-nums' },
+      h('span', { className: 'ev', textContent: fmtInt(card.events) + ' events' }),
+      h('span', { className: 'fl', textContent: fmtInt(card.flagged) + ' flagged' })),
+    h('span', { className: 'review-rel', textContent: fmtRel(card.ended) }),
+    h('span', { className: 'review-arrow', 'aria-hidden': 'true', textContent: '→' })
+  );
+}
+
+function allSessionsTable() {
+  const sorted = S.cards.slice();
+  if (S.dashboardSort === 'risk') sorted.sort(function(a, b) { return Number(b.score || 0) - Number(a.score || 0) || Number(b.flagged || 0) - Number(a.flagged || 0) || Date.parse(b.ended || 0) - Date.parse(a.ended || 0); });
+  else sorted.sort(function(a, b) { return Date.parse(b.ended || 0) - Date.parse(a.ended || 0); });
+  const table = h('div', { className: 'table-card' });
+  table.append(h('div', { className: 'thead' },
+    h('span', { textContent: 'Session' }),
+    h('span', { className: 'h-proj', textContent: 'Project' }),
+    h('span', { className: 'r h-ev', textContent: 'Events' }),
+    h('span', { className: 'r', textContent: 'Flags' }),
+    h('span', { className: 'r', textContent: 'Risk' }),
+    h('span', { className: 'r h-last', textContent: 'Last' })
+  ));
+  sorted.forEach(function(card) {
+    table.append(h('button', { className: 'trow', type: 'button', onclick: function() { setRoute(sessionHref(card.session_id, 'overview')); } },
+      h('span', { className: 't-title', textContent: sessionTitle(card, null) }),
+      h('span', { className: 't-proj', textContent: basename(card.cwd) }),
+      h('span', { className: 'r t-num ev-col', textContent: fmtInt(card.events) }),
+      h('span', { className: 'r t-num' + (Number(card.flagged || 0) ? ' red' : ' dim'), textContent: Number(card.flagged || 0) ? fmtInt(card.flagged) : '—' }),
+      verdictChip(card),
+      h('span', { className: 'r t-last', textContent: fmtRel(card.ended) })
+    ));
+  });
+  return table;
+}
+
 function renderDashboard() {
   const app = document.getElementById('app');
+  if (S.route.page !== 'home') return;
   app.textContent = '';
-  const hero = h('section', { className: 'hero', 'aria-labelledby': 'welcomeTitle' });
+  const q = S.query.trim();
+  if (q) { renderSearchView(app, q); return; }
+
+  const hero = h('section', { className: 'dash-hero', 'aria-labelledby': 'welcomeTitle' });
   const profileButton = h('button', { id: 'profileButton', className: 'edit-name-button', type: 'button', textContent: 'Edit name', 'aria-label': 'Edit display name', onclick: function(event) {
     event.stopPropagation();
     const pop = document.getElementById('profilePopover');
     if (pop.hidden) openProfile(); else closeProfile();
   } });
-  hero.append(h('div', { className: 'hero-title-row' }, h('h1', { id: 'welcomeTitle' }, 'Welcome back, ', h('span', { textContent: S.displayName + '.' })), profileButton), h('p', { className: 'dashboard-status', textContent: dashboardIntro() }));
-  const searchWrap = h('div', { className: 'search-wrap' });
-  const input = h('input', {
-    id: 'homeSearch', className: 'home-search', type: 'search', value: S.query,
-    placeholder: 'Search sessions, projects, prompts, or evidence…', autocomplete: 'off', spellcheck: 'false',
-    'aria-label': 'Search sessions and evidence'
+  hero.append(h('div', { className: 'dash-title-row' }, h('h1', { id: 'welcomeTitle' }, 'Welcome back, ', h('span', { textContent: S.displayName + '.' })), profileButton));
+  app.append(hero);
+
+  if (!S.cardsFp) {
+    const grid = h('div', { className: 'stat-grid', 'aria-busy': 'true' });
+    for (let i = 0; i < 4; i++) grid.append(h('div', { className: 'skeleton-card', style: 'height:84px' }));
+    app.append(grid);
+    return;
+  }
+  if (!S.cards.length) {
+    app.append(h('section', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '□' }), h('h2', { textContent: 'No sessions recorded yet' }), h('p', { textContent: 'Start a coding session with the Blackbox hooks enabled. It will appear here automatically.' })));
+    return;
+  }
+
+  const review = S.cards.filter(function(card) { return isDanger(card.verdict); })
+    .sort(function(a, b) { return Date.parse(b.ended || 0) - Date.parse(a.ended || 0); });
+  const projects = new Set(S.cards.map(function(card) { return basename(card.cwd); })).size;
+  const tiles = h('div', { className: 'stat-grid' });
+  [
+    { v: fmtInt(S.cards.length), k: 'Sessions recorded', red: false },
+    { v: fmtInt(review.length), k: 'Need review', red: review.length > 0 },
+    { v: fmtInt(projects), k: 'Projects observed', red: false },
+    { v: S.health ? fmtInt(S.health.count || 0) : '—', k: 'Events recorded', red: false }
+  ].forEach(function(tile) {
+    tiles.append(h('div', { className: 'stat-tile' },
+      h('div', { className: 'stat-v' + (tile.red ? ' red' : ''), textContent: tile.v }),
+      h('div', { className: 'stat-k', textContent: tile.k })));
   });
-  input.addEventListener('input', function() {
-    S.query = input.value;
-    renderHomeResults();
-    clearTimeout(S.searchTimer);
-    if (S.query.trim().length >= 2) {
-      S.searching = true;
-      S.searchTimer = setTimeout(runDeepSearch, 260);
-    } else { S.deepHits = []; S.searching = false; }
-  });
-  searchWrap.append(h('span', { className: 'search-icon', 'aria-hidden': 'true', textContent: '⌕' }), input);
-  if (S.query) searchWrap.append(h('button', { className: 'search-clear', type: 'button', 'aria-label': 'Clear search', textContent: '×', onclick: function() { S.query = ''; S.deepHits = []; S.searching = false; renderDashboard(); setTimeout(function() { document.getElementById('homeSearch').focus(); }, 0); } }));
-  hero.append(searchWrap);
-  app.append(hero, h('div', { id: 'homeResults' }));
-  renderHomeResults();
+  app.append(tiles);
+
+  app.append(sectionHead('01', 'Needs review', review.length ? review.length + ' session' + (review.length === 1 ? '' : 's') + ' with elevated risk' : 'no elevated risk'));
+  if (review.length) {
+    const list = h('div', { className: 'review-list' });
+    review.forEach(function(card) { list.append(reviewRow(card)); });
+    app.append(list);
+  } else {
+    app.append(h('div', { className: 'review-list' }, h('div', { className: 'rail-note', style: 'padding:16px 20px', textContent: 'No recorded session carries an elevated-risk verdict right now.' })));
+  }
+
+  const sort = h('div', { className: 'seg', 'aria-label': 'Sort sessions' },
+    h('button', { className: S.dashboardSort === 'recent' ? 'active' : '', type: 'button', textContent: 'Recent', onclick: function() { S.dashboardSort = 'recent'; renderDashboard(); } }),
+    h('button', { className: S.dashboardSort === 'risk' ? 'active' : '', type: 'button', textContent: 'Risk', onclick: function() { S.dashboardSort = 'risk'; renderDashboard(); } })
+  );
+  app.append(sectionHead('02', 'All sessions', null, sort));
+  app.append(allSessionsTable());
 }
 
-function dashboardIntro() {
-  const count = S.cards.length;
-  if (S.offline) return 'Recorder offline · showing the last loaded sessions';
-  if (!count) return 'Blackbox is ready. Your recorded coding sessions will appear here automatically.';
-  const risky = S.cards.filter(function(card) { return isDanger(card.verdict); }).length;
-  return count + ' recorded session' + (count === 1 ? '' : 's') + (risky ? ' · ' + risky + ' need review' : ' · no elevated risk');
-}
+/* ── global search ────────────────────────────────────────────────────────── */
 
 function localMatches() {
   const q = S.query.trim().toLowerCase();
@@ -146,103 +242,56 @@ function localMatches() {
   }).filter(function(item) { return item.rank > 0; }).sort(function(a, b) { return b.rank - a.rank || Date.parse(b.card.ended || 0) - Date.parse(a.card.ended || 0); }).map(function(item) { return item.card; });
 }
 
-function renderHomeResults() {
-  const host = document.getElementById('homeResults');
-  if (!host) return;
-  host.textContent = '';
-  const q = S.query.trim();
-  if (q) { renderSearchResults(host, localMatches()); return; }
-  if (!S.cardsFp) { renderDashboardSkeleton(host); return; }
-  if (!S.cards.length) { host.append(dashboardEmpty()); return; }
-
-  const block = h('section', { className: 'section-block', 'aria-labelledby': 'recentTitle' });
-  const actions = h('div', { className: 'section-actions' });
-  const left = h('button', { className: 'icon-button', type: 'button', 'aria-label': 'Scroll sessions left', textContent: '←' });
-  const right = h('button', { className: 'icon-button', type: 'button', 'aria-label': 'Scroll sessions right', textContent: '→' });
-  const view = h('button', { className: 'quiet-button', type: 'button', textContent: S.showAll ? 'Show shelf' : 'View all', onclick: function() { S.showAll = !S.showAll; renderHomeResults(); } });
-  if (S.showAll) actions.append(h('div', { className: 'sort-switch', 'aria-label': 'Sort sessions' },
-    h('button', { className: S.dashboardSort === 'recent' ? 'active' : '', type: 'button', textContent: 'Recent', onclick: function() { S.dashboardSort = 'recent'; renderHomeResults(); } }),
-    h('button', { className: S.dashboardSort === 'risk' ? 'active' : '', type: 'button', textContent: 'Risk', onclick: function() { S.dashboardSort = 'risk'; renderHomeResults(); } })
-  ));
-  actions.append(left, right, view);
-  block.append(h('div', { className: 'section-head' }, h('h2', { id: 'recentTitle', textContent: S.showAll ? 'All sessions' : 'Recent sessions' }), actions));
-  const recent = S.cards.slice().sort(function(a, b) { return Date.parse(b.ended || 0) - Date.parse(a.ended || 0); });
-  const risk = S.cards.slice().sort(function(a, b) { return Number(b.score || 0) - Number(a.score || 0) || Date.parse(b.ended || 0) - Date.parse(a.ended || 0); });
-  const cards = S.showAll ? (S.dashboardSort === 'risk' ? risk : recent) : recent.slice(0, 12);
-  const list = h('div', { id: 'sessionShelf', className: S.showAll ? 'session-grid' : 'session-shelf' });
-  cards.forEach(function(card) { list.append(sessionCard(card)); });
-  block.append(list); host.append(block);
-  left.disabled = S.showAll; right.disabled = S.showAll;
-  left.addEventListener('click', function() { list.scrollBy({ left: -560, behavior: 'smooth' }); });
-  right.addEventListener('click', function() { list.scrollBy({ left: 560, behavior: 'smooth' }); });
-  list.addEventListener('keydown', function(event) {
-    if (S.showAll || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) return;
-    const links = Array.from(list.querySelectorAll('.session-card'));
-    const index = links.indexOf(document.activeElement);
-    if (index < 0) return;
-    const nextIndex = Math.max(0, Math.min(links.length - 1, index + (event.key === 'ArrowRight' ? 1 : -1)));
-    if (nextIndex === index) return;
-    event.preventDefault(); links[nextIndex].focus(); links[nextIndex].scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
-  });
-}
-
-function sessionCard(card) {
-  const danger = isDanger(card.verdict);
-  const title = sessionTitle(card, null);
-  const link = h('a', { className: 'session-card' + (danger ? ' risk' : ''), href: sessionHref(card.session_id, 'overview'), 'aria-label': 'Open session ' + title });
-  const state = danger ? cap(card.verdict) + ' risk' : (fmtRel(card.ended) === 'Live now' ? 'Live now' : 'Recorded');
-  const stateEl = h('span', { className: 'card-state' + (danger ? ' danger' : ''), textContent: state });
-  const flagged = Number(card.flagged || 0);
-  const findings = Array.isArray(card.combos) ? card.combos.length : 0;
-  const reviewCount = flagged
-    ? flagged + ' flagged'
-    : findings
-      ? findings + ' finding' + (findings === 1 ? '' : 's')
-      : 'no flags';
-  link.append(
-    h('div', { className: 'card-top' }, h('span', { className: 'card-project', textContent: basename(card.cwd) }), stateEl),
-    h('h3', { textContent: title }),
-    h('div', { className: 'card-footer' },
-      h('div', { className: 'card-stats' }, h('strong', { textContent: fmtRel(card.ended) }), String(card.events || 0) + ' events · ' + reviewCount),
-      h('span', { className: 'card-arrow', 'aria-hidden': 'true', textContent: '↗' })
-    )
+function renderSearchView(app, q) {
+  const view = h('section', { className: 'search-view', 'aria-label': 'Search results' });
+  const sessions = localMatches();
+  const hitCount = S.deepHits.length;
+  view.append(
+    h('div', { className: 'search-eyebrow', textContent: 'Search' }),
+    h('h1', { className: 'search-q', textContent: '“' + q + '”' }),
+    h('div', { className: 'search-sum', textContent: sessions.length + ' session' + (sessions.length === 1 ? '' : 's') + ' · ' + (S.searching ? 'searching evidence…' : hitCount + ' evidence hit' + (hitCount === 1 ? '' : 's')) + ' · esc to clear' })
   );
-  return link;
-}
-
-function renderSearchResults(host, sessions) {
-  const groups = h('section', { className: 'search-groups', 'aria-label': 'Search results' });
-  const sessionGroup = h('div', { className: 'result-group' }, h('div', { className: 'result-label', textContent: sessions.length + ' session' + (sessions.length === 1 ? '' : 's') }));
-  sessions.slice(0, 10).forEach(function(card) {
-    const title = sessionTitle(card, null);
-    sessionGroup.append(h('a', { className: 'result-row', href: sessionHref(card.session_id, 'overview') },
-      h('span', null, h('div', { className: 'result-title', textContent: title }), h('div', { className: 'result-sub', textContent: basename(card.cwd) + ' · ' + fmtRel(card.ended) + ' · ' + String(card.events || 0) + ' events' })),
-      h('span', { className: 'result-kind', textContent: isDanger(card.verdict) ? card.verdict + ' risk' : 'session' })
-    ));
-  });
-  groups.append(sessionGroup);
-  if (S.searching) groups.append(h('div', { className: 'result-group' }, h('div', { className: 'result-label', textContent: 'Searching recorded evidence…' })));
-  else if (S.deepHits.length) {
+  if (sessions.length) {
+    view.append(h('div', { className: 'mlabel sr-label', textContent: 'Sessions' }));
+    const list = h('div', { className: 'sr-list' });
+    sessions.slice(0, 10).forEach(function(card) {
+      const danger = isDanger(card.verdict);
+      list.append(h('button', { className: 'sr-row', type: 'button', onclick: function() { clearSearch(); setRoute(sessionHref(card.session_id, 'overview')); } },
+        h('span', { style: 'min-width:0' },
+          h('span', { className: 'sr-title', textContent: sessionTitle(card, null) }),
+          h('span', { className: 'sr-sub', textContent: basename(card.cwd) + ' · ' + fmtRel(card.ended) + ' · ' + fmtInt(card.events) + ' events' })),
+        h('span', { className: 'sr-kind' + (danger ? ' danger' : ''), textContent: danger ? card.verdict + ' risk' : 'recorded' })
+      ));
+    });
+    view.append(list);
+  }
+  if (!S.searching && S.deepHits.length) {
     const bySession = new Map();
     S.deepHits.slice(0, 30).forEach(function(hit) { const list = bySession.get(hit.session_id) || []; list.push(hit); bySession.set(hit.session_id, list); });
     bySession.forEach(function(hits, sessionId) {
       const card = cardFor(sessionId);
-      const evidence = h('div', { className: 'result-group' }, h('div', { className: 'result-label', textContent: (card ? sessionTitle(card, null) : shortId(sessionId)) + ' · ' + basename(card && card.cwd) }));
+      view.append(h('div', { className: 'mlabel sr-label', textContent: (card ? sessionTitle(card, null) : shortId(sessionId)) + ' · ' + basename(card && card.cwd) }));
+      const list = h('div', { className: 'sr-list' });
       hits.slice(0, 8).forEach(function(hit) {
-        const link = h('a', { className: 'result-row', href: sessionHref(hit.session_id, 'activity'), onclick: function(event) {
-          event.preventDefault();
+        const row = h('button', { className: 'sr-row hit', type: 'button', onclick: function() {
           S.pendingPromptId = hit.prompt_id || null;
           S.pendingSeq = hit.kind === 'prompt' || hit.kind === 'reasoning' ? null : (hit.seq == null ? null : hit.seq);
+          clearSearch();
           setRoute(sessionHref(hit.session_id, 'activity'));
-        } }, h('span', null, h('span', { className: 'result-title snippet-title' }), h('span', { className: 'result-sub', textContent: hit.prompt_id ? 'Open matching prompt' : 'Open recorded event' })), h('span', { className: 'result-kind', textContent: hit.kind || 'evidence' }));
-        renderSnippet(link.querySelector('.snippet-title'), hit.snippet || hit.summary || hit.target || 'Recorded evidence');
-        evidence.append(link);
+        } },
+          h('span', { className: 'sr-num', textContent: hit.seq != null ? String(hit.seq) : '·' }),
+          h('span', { className: 'sr-snippet' }),
+          h('span', { className: 'sr-kind', textContent: hit.kind || 'evidence' }));
+        renderSnippet(row.querySelector('.sr-snippet'), hit.snippet || hit.summary || hit.target || 'Recorded evidence');
+        list.append(row);
       });
-      groups.append(evidence);
+      view.append(list);
     });
   }
-  if (!sessions.length && !S.searching && !S.deepHits.length) groups.append(h('div', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '⌕' }), h('h2', { textContent: 'No matching sessions' }), h('p', { textContent: 'Try a project name, part of a prompt, a file path, or a session ID.' })));
-  host.append(groups);
+  if (!sessions.length && !S.searching && !S.deepHits.length) {
+    view.append(h('section', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '⌕' }), h('h2', { textContent: 'No matches' }), h('p', { textContent: 'Try a project name, part of a prompt, a file path, or a session ID.' })));
+  }
+  app.append(view);
 }
 
 function renderSnippet(node, value) {
@@ -268,18 +317,6 @@ async function runDeepSearch() {
     S.deepHits = result.hits || [];
   } catch (_) { S.deepHits = []; }
   S.searching = false;
-  renderHomeResults();
-}
-
-function renderDashboardSkeleton(host) {
-  const block = h('section', { className: 'section-block' });
-  block.append(h('div', { className: 'section-head' }, h('div', null, h('h2', { textContent: 'Loading sessions' }), h('p', { textContent: 'Reading the local forensic store.' }))));
-  const row = h('div', { className: 'session-shelf', 'aria-busy': 'true' });
-  for (let i = 0; i < 4; i++) row.append(h('div', { className: 'skeleton-card' }));
-  block.append(row); host.append(block);
-}
-
-function dashboardEmpty() {
-  return h('section', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '□' }), h('h2', { textContent: 'No sessions recorded yet' }), h('p', { textContent: 'Start a coding session with the Blackbox hooks enabled. It will appear here automatically.' }));
+  if (S.route.page === 'home') renderDashboard();
 }
 `;
