@@ -46,7 +46,7 @@
     "demo": "npm run build && node scripts/demo.mjs"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1"
+    "better-sqlite3": "^13.0.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
