@@ -27,7 +27,7 @@ Blackbox sits beside the agent as a passive recorder. It turns hook-visible acti
 > Blackbox `0.1.x` is a **macOS-first public beta**. It records and explains; it does not block, sandbox, roll back, or claim kernel-level visibility.
 
 <p align="center">
-  <img src="docs/assets/blackbox-dashboard.png" alt="Blackbox dashboard showing one high-risk synthetic session and one clean synthetic session" width="100%" />
+  <img src="docs/assets/blackbox-dashboard.png" alt="Blackbox console dashboard with synthetic sessions: nine flagged for review, sparkline event density per session, and recorder totals" width="100%" />
   <br />
   <sub>Real interface · fully synthetic demo data · no captured user sessions</sub>
 </p>
