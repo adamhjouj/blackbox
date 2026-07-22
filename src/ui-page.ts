@@ -24,6 +24,7 @@ export function renderPage(): string {
 <meta name="description" content="A local forensic record of AI coding sessions">
 <meta name="theme-color" content="#070708">
 <title>Blackbox</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23070708'/%3E%3Crect x='19' y='19' width='26' height='26' fill='%23f2f2f0'/%3E%3C/svg%3E">
 <style>${UI_CSS}</style>
 </head>
 <body>
