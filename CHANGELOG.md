@@ -42,6 +42,7 @@ All notable changes are documented here. The project follows [Semantic Versionin
 - Opening a legacy store creates the review ledger additively without rewriting evidence.
 - Review decisions automatically reopen when the session head or baseline policy changes.
 - Invalid baseline state is no longer confused with no baseline; it invalidates prior decisions and blocks new decisions/attestations until corrected.
+- Review Inbox cards no longer render absent optional baseline metadata as literal `null` text.
 - First-run config, key, and adapter settings writes are atomic and preserve unrelated/unknown fields; Claude and Gemini settings changes use private, versioned, no-clobber backups.
 
 ### Security
