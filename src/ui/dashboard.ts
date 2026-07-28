@@ -358,7 +358,7 @@ function renderDashboard() {
     return;
   }
 
-  const review = S.cards.filter(function(card) { return isDanger(card.verdict); })
+  const review = S.cards.filter(function(card) { return Number(card.review_count || 0) > 0; })
     .sort(function(a, b) { return Date.parse(b.ended || 0) - Date.parse(a.ended || 0); });
   const projects = new Set(S.cards.map(function(card) { return basename(card.cwd); })).size;
   const tiles = h('div', { className: 'stat-grid' });
@@ -374,13 +374,13 @@ function renderDashboard() {
   });
   app.append(tiles);
 
-  app.append(sectionHead('01', 'Needs review', review.length ? review.length + ' session' + (review.length === 1 ? '' : 's') + ' with elevated risk' : 'no elevated risk'));
+  app.append(sectionHead('01', 'Needs review', review.length ? review.length + ' session' + (review.length === 1 ? '' : 's') + ' with unresolved findings' : 'no unresolved findings'));
   if (review.length) {
     const list = h('div', { className: 'review-list' });
     review.forEach(function(card) { list.append(reviewRow(card)); });
     app.append(list);
   } else {
-    app.append(h('div', { className: 'review-list' }, h('div', { className: 'rail-note', style: 'padding:16px 20px', textContent: 'No recorded session carries an elevated-risk verdict right now.' })));
+    app.append(h('div', { className: 'review-list' }, h('div', { className: 'rail-note', style: 'padding:16px 20px', textContent: 'No recorded session has an unresolved finding right now.' })));
   }
 
   const sort = h('div', { className: 'seg', 'aria-label': 'Sort sessions' },

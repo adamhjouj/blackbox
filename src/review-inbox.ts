@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
 import { loadBaselinePolicy, type LoadedBaselinePolicy } from './baseline';
 import { resolveRepoTop } from './git-collector';
+import { hashString } from './hash';
 import { safeParse } from './json';
 import { deriveReviewFindings, reviewIsStale, type ReviewDisposition, type ReviewFinding } from './review';
 import { KNOWN_RULESETS } from './risk-rules';
@@ -87,6 +88,13 @@ export function sessionReviewView(store: Store, sessionId: string): SessionRevie
   const last = events[events.length - 1]!;
   const risk = newestRisk(store, sessionId);
   const baselineState = loadProjectBaseline(events);
+  // A malformed/unreadable policy is a distinct fail-closed state, not the same
+  // thing as "no policy". Its content never enters the UI or review ledger; this
+  // stable error fingerprint exists only to invalidate decisions made under a
+  // different policy state.
+  const policyHash = baselineState.baseline?.hash ?? (baselineState.error
+    ? hashString(`blackbox-baseline-error-v1\n${baselineState.error}`)
+    : null);
   const combos = risk ? safeParse<ComboFire[]>(risk.combos, []) : [];
   const risks = risk
     ? store.riskForSession(sessionId, risk.ruleset_version).map((row) => ({
@@ -109,9 +117,11 @@ export function sessionReviewView(store: Store, sessionId: string): SessionRevie
   const reviews = latestReviews(store.reviewsForSession(sessionId));
   const findings: ReviewFindingState[] = projected.map((finding) => {
     const review = reviews.get(finding.key) ?? null;
-    const stale = review ? reviewIsStale(review, { last_seq: last.seq, last_hash: last.hash, policy_hash: finding.policy_hash }) : false;
-    const disposition: ReviewDisposition = review && !stale ? review.disposition : 'unreviewed';
-    return { ...finding, review, disposition, stale, resolved: disposition !== 'unreviewed' };
+    const stale = review
+      ? baselineState.error !== null || reviewIsStale(review, { last_seq: last.seq, last_hash: last.hash, policy_hash: policyHash })
+      : false;
+    const disposition: ReviewDisposition = review && !stale && !baselineState.error ? review.disposition : 'unreviewed';
+    return { ...finding, policy_hash: policyHash, review, disposition, stale, resolved: disposition !== 'unreviewed' };
   });
   const anchor = anchorFrom(events);
   const cwd = baselineState.cwd;
@@ -127,7 +137,7 @@ export function sessionReviewView(store: Store, sessionId: string): SessionRevie
     verdict: risk?.verdict ?? 'unscored',
     score: risk?.score ?? 0,
     ruleset_version: risk?.ruleset_version ?? null,
-    policy_hash: baselineState.baseline?.hash ?? null,
+    policy_hash: policyHash,
     baseline_error: baselineState.error,
     last_seq: last.seq,
     last_hash: last.hash,
@@ -139,11 +149,20 @@ export function sessionReviewView(store: Store, sessionId: string): SessionRevie
   };
 }
 
-export function reviewInbox(store: Store): SessionReviewView[] {
+export function reviewViews(store: Store): SessionReviewView[] {
   return store
     .sessions()
     .filter((session) => session.activity > 0 && !session.session_id.startsWith('bb:'))
     .map((session) => sessionReviewView(store, session.session_id))
-    .filter((session): session is SessionReviewView => !!session && session.unresolved > 0)
+    .filter((session): session is SessionReviewView => !!session);
+}
+
+export function reviewInboxFromViews(views: readonly SessionReviewView[]): SessionReviewView[] {
+  return views
+    .filter((session) => session.unresolved > 0)
     .sort((a, b) => b.score - a.score || Date.parse(b.ended) - Date.parse(a.ended));
+}
+
+export function reviewInbox(store: Store): SessionReviewView[] {
+  return reviewInboxFromViews(reviewViews(store));
 }

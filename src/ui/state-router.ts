@@ -295,8 +295,8 @@ function renderSidebarLists() {
   if (!reviewHost || !recentHost) return;
   reviewHost.textContent = ''; recentHost.textContent = '';
   const byEnded = S.cards.slice().sort(function(a, b) { return Date.parse(b.ended || 0) - Date.parse(a.ended || 0); });
-  const review = byEnded.filter(function(card) { return isDanger(card.verdict); });
-  const rest = byEnded.filter(function(card) { return !isDanger(card.verdict); });
+  const review = byEnded.filter(function(card) { return Number(card.review_count || 0) > 0; });
+  const rest = byEnded.filter(function(card) { return Number(card.review_count || 0) === 0; });
   if (review.length) {
     reviewHost.append(h('div', { className: 'sb-group-head' },
       h('span', { className: 'mlabel', textContent: 'Needs review' }),

@@ -33,7 +33,7 @@ import { renderPage } from './ui-page';
 import { buildSetupStatus, type SetupStatus } from './readiness';
 import { readConfig } from './config';
 import { adaptGeminiHook, GeminiCorrelator } from './adapters/gemini';
-import { reviewInbox, sessionReviewView } from './review-inbox';
+import { reviewInboxFromViews, reviewViews, sessionReviewView, type SessionReviewView } from './review-inbox';
 import { redactText } from './redact';
 
 export interface DaemonOptions {
@@ -215,6 +215,24 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   const uiCsrfToken = randomBytes(24).toString('base64url');
   const riskEngine = new RiskEngine((sid) => store.eventsLight(sid));
   let setupCache: { headSeq: number; checkedAt: number; value: SetupStatus } | null = null;
+  let reviewCache: { headSeq: number; headHash: string; reviewCount: number; checkedAt: number; views: SessionReviewView[] } | null = null;
+  const reviewSnapshot = (): SessionReviewView[] => {
+    const meta = store.chainMeta();
+    const headSeq = meta?.head_seq ?? 0;
+    const headHash = meta?.head_hash ?? '';
+    const reviewCount = store.reviewCount();
+    const now = Date.now();
+    // Share one expensive projection between /api/sessions and
+    // /api/review-inbox. The short TTL still discovers policy-only filesystem
+    // changes on the next UI poll even when the evidence/review heads are idle.
+    if (reviewCache && reviewCache.headSeq === headSeq && reviewCache.headHash === headHash &&
+        reviewCache.reviewCount === reviewCount && now - reviewCache.checkedAt < 500) {
+      return reviewCache.views;
+    }
+    const views = reviewViews(store);
+    reviewCache = { headSeq, headHash, reviewCount, checkedAt: now, views };
+    return views;
+  };
   const setupStatus = (): SetupStatus => {
     const headSeq = store.chainMeta()?.head_seq ?? 0;
     if (setupCache && setupCache.headSeq === headSeq && Date.now() - setupCache.checkedAt < 3_000) return setupCache.value;
@@ -537,8 +555,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             return;
           }
           if (path === '/api/sessions') {
+            const reviews = new Map(reviewSnapshot().map((view) => [view.session_id, view]));
             const cards = sessionCards(store).map((card) => {
-              const review = sessionReviewView(store, card.session_id);
+              const review = reviews.get(card.session_id);
               return review
                 ? { ...card, review_count: review.unresolved, review_total: review.total, reviewed: review.total - review.unresolved }
                 : card;
@@ -578,7 +597,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             return;
           }
           if (path === '/api/review-inbox') {
-            sendJson(res, 200, { sessions: reviewInbox(store), csrf_token: uiCsrfToken });
+            sendJson(res, 200, { sessions: reviewInboxFromViews(reviewSnapshot()), csrf_token: uiCsrfToken });
             return;
           }
           const mf = path.match(/^\/api\/session\/(.+)\/findings$/);
@@ -686,6 +705,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           const current = sessionReviewView(store, sessionId);
           const finding = current?.findings.find((item) => item.key === findingKey);
           if (!current || !finding) { sendJson(res, 404, { ok: false, error: 'finding is no longer current' }); return; }
+          if (current.baseline_error) {
+            sendJson(res, 409, { ok: false, error: 'project baseline is invalid; fix it before recording a review decision' });
+            return;
+          }
           const rawNote = typeof input.note === 'string' ? input.note.trim() : '';
           const note = rawNote ? Array.from(redactText(rawNote).text).slice(0, 1_000).join('') : null;
           store.reviewAppend({
@@ -699,6 +722,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             policy_hash: finding.policy_hash,
             created_at: new Date().toISOString(),
           });
+          reviewCache = null;
           sendJson(res, 200, { ok: true, session: sessionReviewView(store, sessionId) });
           return;
         }

@@ -81,6 +81,7 @@ test('the dashboard reads as stat tiles, a review queue, and the sessions table'
   for (const needle of ['Sessions recorded', 'Need review', 'Projects observed', 'Events recorded', "sectionHead('01', 'Needs review'", "sectionHead('02', 'All sessions'", 'sparkline', 'verdictChip', 'allSessionsTable']) {
     assert.ok(js.indexOf(needle) >= 0, 'dashboard should include ' + needle);
   }
+  assert.ok(js.indexOf('Number(card.review_count || 0) > 0') >= 0, 'Needs review must follow unresolved findings rather than verdict alone');
   for (const needle of ['.stat-tile', '.review-row', '.table-card', '.spark i.hot', '.chip-verdict']) {
     assert.ok(html.indexOf(needle) >= 0, 'dashboard styles should include ' + needle);
   }
