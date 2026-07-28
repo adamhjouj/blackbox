@@ -89,10 +89,11 @@ export function mapGeminiToolName(name: string): string {
     glob: 'Glob',
   };
   if (direct[name]) return direct[name]!;
-  // Gemini documents MCP names as mcp_<server>_<tool>. The boundary between
-  // server and tool is not separately supplied, so preserve the full suffix.
-  // `mcp__` is Blackbox's established classifier prefix.
-  if (name.startsWith('mcp_')) return `mcp__${name.slice(4)}`;
+  // Gemini documents MCP names as mcp_<serverAlias>_<actualToolName>. Split at
+  // the first separator after the prefix: tool names commonly contain further
+  // underscores, while Blackbox's canonical form is mcp__server__tool.
+  const mcp = /^mcp_([^_]+)_(.+)$/.exec(name);
+  if (mcp) return `mcp__${mcp[1]}__${mcp[2]}`;
   return name;
 }
 

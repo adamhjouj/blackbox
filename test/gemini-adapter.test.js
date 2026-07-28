@@ -9,6 +9,7 @@ const {
   UnsupportedGeminiHookEventError,
 } = require('../dist/adapters/gemini.js');
 const { normalizeAndCapture } = require('../dist/normalize.js');
+const { RiskEngine } = require('../dist/risk-engine.js');
 
 const AT = '2026-07-28T10:00:00.000Z';
 const base = (event, extra = {}) => ({
@@ -61,14 +62,38 @@ test('tool names map to existing action classifiers, including MCP', () => {
   assert.equal(mapGeminiToolName('read_file'), 'Read');
   assert.equal(mapGeminiToolName('write_file'), 'Write');
   assert.equal(mapGeminiToolName('replace'), 'Edit');
-  assert.equal(mapGeminiToolName('mcp_github_create_issue'), 'mcp__github_create_issue');
+  assert.equal(mapGeminiToolName('mcp_github_create_issue'), 'mcp__github__create_issue');
+  assert.equal(mapGeminiToolName('mcp_github_create_issue_comment'), 'mcp__github__create_issue_comment');
+  assert.equal(mapGeminiToolName('mcp_incomplete'), 'mcp_incomplete');
   assert.equal(mapGeminiToolName('future_tool'), 'future_tool');
 
   const c = new GeminiCorrelator({ idFactory: ids() });
   const shell = adaptGeminiHook(base('BeforeTool', { tool_name: 'run_shell_command', tool_input: { command: 'git status' } }), c);
   const mcp = adaptGeminiHook(base('BeforeTool', { tool_name: 'mcp_github_create_issue', tool_input: { title: 'x' } }), c);
   assert.equal(normalizeAndCapture(shell.payload, AT).event.action_type, 'git_action');
-  assert.equal(normalizeAndCapture(mcp.payload, AT).event.action_type, 'mcp_call');
+  const mcpEvent = normalizeAndCapture(mcp.payload, AT).event;
+  assert.equal(mcpEvent.action_type, 'mcp_call');
+  assert.equal(mcpEvent.tool_name, 'mcp__github__create_issue');
+});
+
+test('Gemini MCP identity survives normalization into tool-poisoning correlation', () => {
+  const c = new GeminiCorrelator({ idFactory: ids() });
+  const inputs = [
+    ['read_file', { file_path: '/app/.env' }],
+    ['mcp_evil_upload', { note: 'first contact' }],
+    ['mcp_evil_upload', { file_path: '/app/.env' }],
+  ];
+  const events = inputs.map(([tool_name, tool_input], index) => {
+    const adapted = adaptGeminiHook(base('BeforeTool', { tool_name, tool_input }), c);
+    return { ...normalizeAndCapture(adapted.payload, AT).event, seq: index + 1 };
+  });
+  const engine = new RiskEngine(undefined, 'r2');
+  let verdict;
+  for (const event of events) verdict = engine.score(event).verdict;
+  const poisoning = verdict.combos.find((combo) => combo.id === 'tool-poisoning');
+  assert.equal(events[1].tool_name, 'mcp__evil__upload');
+  assert.equal(poisoning?.severity, 'high');
+  assert.equal(poisoning?.server, 'evil');
 });
 
 test('BeforeTool/AfterTool correlate FIFO by canonical tool input despite key ordering', () => {
