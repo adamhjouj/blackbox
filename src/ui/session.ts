@@ -59,13 +59,19 @@ function renderSessionError() {
 }
 
 function deterministicSummary(story, card) {
-  const flagged = card && Number(card.flagged || 0) || story.turns.filter(turnFlagged).length;
+  const flagged = card && Number(card.flagged || 0) || 0;
+  const findings = card && Number(card.findings || 0) || 0;
   const project = basename(story.cwd || card && card.cwd);
   const outcomes = [];
   if (story.counts.files) outcomes.push('changed ' + story.counts.files + ' file' + (story.counts.files === 1 ? '' : 's'));
   if (story.counts.commits) outcomes.push('recorded ' + story.counts.commits + ' commit' + (story.counts.commits === 1 ? '' : 's'));
   let text = outcomes.length ? 'The agent ' + outcomes.join(' and ') + ' in ' + project + '.' : 'The session completed in ' + project + ' without a stored file or commit outcome.';
-  text += flagged ? ' ' + flagged + ' action' + (flagged === 1 ? '' : 's') + ' require review.' : ' No elevated-risk action was detected.';
+  if (findings || flagged) {
+    const review = [];
+    if (findings) review.push(findings + ' session finding' + (findings === 1 ? '' : 's'));
+    if (flagged) review.push(flagged + ' individually flagged action' + (flagged === 1 ? '' : 's'));
+    text += ' ' + review.join(' and ') + ' require review.';
+  } else text += ' No elevated-risk finding or action was detected.';
   return text;
 }
 
@@ -246,7 +252,7 @@ function overviewFindings(card, story) {
   (card && card.combos || []).forEach(function(combo, index) {
     out.push({
       title: String(combo.id || 'Risk chain').replace(/-/g, ' '),
-      sub: 'Events ' + String(combo.antecedent_seq || '—') + ' → ' + String(combo.consequent_seq || '—') + (combo.note ? ' · ' + clampText(combo.note, 130) : ''),
+      sub: cap(combo.outcome || 'unknown') + ' · Events ' + String(combo.antecedent_seq || '—') + ' → ' + String(combo.consequent_seq || '—') + (combo.display_note ? ' · ' + clampText(combo.display_note, 130) : ''),
       count: null,
       open: function() { S.graphSelected = 'F:' + index; S.graphPendingCenter = true; setRoute(sessionHref(S.route.id, 'graph')); }
     });
@@ -262,7 +268,14 @@ function overviewFindings(card, story) {
   return out;
 }
 
-function turnFlagged(turn) { return Number(turn.flagged || 0) > 0 || Number(turn.max_score || 0) > 0 || Object.keys(turn.flags || {}).length > 0; }
+function turnFindingCount(turn) {
+  const card = cardFor(S.route.id);
+  const seqs = new Set();
+  (turn.steps || []).forEach(function(step) { if (step.seq != null) seqs.add(Number(step.seq)); if (step.post_seq != null) seqs.add(Number(step.post_seq)); });
+  return ((card && card.combos) || []).filter(function(finding) { return (finding.related_seqs || []).some(function(seq) { return seqs.has(Number(seq)); }); }).length;
+}
+
+function turnFlagged(turn) { return Number(turn.flagged || 0) > 0 || Number(turn.max_score || 0) > 0 || Object.keys(turn.flags || {}).length > 0 || turnFindingCount(turn) > 0; }
 
 /* ── activity: prompts with their evidence inlined + the sticky rail ──────── */
 
@@ -280,13 +293,16 @@ function hostsByTurn() {
 function turnEvidenceRows(turn, index, hostMap) {
   const rows = [];
   (turn.steps || []).forEach(function(step) {
-    const danger = step.success === 0 || Number(step.score || 0) > 0 || (step.signals || []).length > 0;
+    const card = cardFor(S.route.id);
+    const finding = (step.findings || [])[0] || ((card && card.combos) || []).find(function(item) { return (item.related_seqs || []).some(function(seq) { return Number(seq) === Number(step.seq) || Number(seq) === Number(step.post_seq); }); });
+    const danger = step.outcome === 'failed' || Number(step.score || 0) > 0 || (step.signals || []).length > 0 || !!finding;
     if (!danger) return;
     const signals = (step.signals || []).map(function(signal) { return String(signal).replace(/-/g, ' '); });
+    if (finding) signals.push(String(finding.severity || 'risk').toUpperCase() + ' finding · ' + cap(finding.outcome || 'unknown'));
     rows.push({
       kind: 'RECORD',
       label: (step.tool || step.type || 'event') + ' · ' + oneLine(step.summary || step.target || 'recorded action'),
-      sub: 'seq ' + (step.post_seq || step.seq) + (signals.length ? ' · ' + signals.join(' · ') : step.success === 0 ? ' · failed' : ''),
+      sub: 'seq ' + (step.post_seq || step.seq) + (signals.length ? ' · ' + signals.join(' · ') : step.outcome === 'failed' ? ' · failed' : ''),
       seq: step.post_seq || step.seq, danger: true
     });
   });
@@ -424,10 +440,12 @@ function turnBody(turn, index, evidence) {
   const steps = h('details', { className: 'turn-more' }, h('summary', { textContent: 'Full action log · ' + (turn.steps || []).length }));
   const stepList = h('div', { className: 'step-list' });
   (turn.steps || []).forEach(function(step) {
-    const failed = step.success === 0;
+    const failed = step.outcome === 'failed';
     const danger = failed || Number(step.score || 0) > 0 || (step.signals || []).length > 0;
     const labels = [];
     if (failed) labels.push('Failed');
+    else if (step.outcome === 'attempted') labels.push('Completion not recorded');
+    else if (step.outcome === 'unknown') labels.push('Outcome unknown');
     if (step.is_subagent) labels.push(step.agent_type || 'Subagent');
     (step.signals || []).forEach(function(signal) { labels.push(String(signal).replace(/-/g, ' ')); });
     stepList.append(h('button', { className: 'step-row' + (danger ? ' danger' : ''), id: 'event-' + (step.post_seq || step.seq), type: 'button', onclick: function() { openEvidence(step.post_seq || step.seq); } },

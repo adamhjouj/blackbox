@@ -5,7 +5,7 @@ labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: "Do not attach real databases, prompts, signing keys, or credentials. Security vulnerabilities belong in a private GitHub Security Advisory."
+      value: "Do not attach real databases, prompts, reports, attestations, review notes, signing keys, or credentials. Security vulnerabilities belong in a private GitHub Security Advisory."
   - type: input
     id: version
     attributes:
@@ -23,15 +23,23 @@ body:
   - type: input
     id: node
     attributes:
-      label: Node.js and Claude Code versions
-      placeholder: Node 22.14.0; Claude Code 2.1.119
+      label: Node.js and agent CLI versions
+      description: Blackbox supports Node 22, 24, and 26. Include every configured adapter.
+      placeholder: Node 24.5.0; Claude Code 2.1.119; Gemini CLI 0.x
+    validations:
+      required: true
+  - type: dropdown
+    id: adapter
+    attributes:
+      label: Recording adapter
+      options: [Claude Code, Gemini CLI, Both, Import or internal event, Not adapter-related]
     validations:
       required: true
   - type: textarea
     id: doctor
     attributes:
       label: blackbox doctor output
-      description: Remove local paths or identifiers before pasting.
+      description: Remove local paths, session/recorder identifiers, branch names, and other sensitive metadata before pasting.
       render: text
   - type: textarea
     id: reproduce

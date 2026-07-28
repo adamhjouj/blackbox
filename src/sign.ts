@@ -24,9 +24,10 @@
  * TRUE off-machine resistance is the `--anchor` path (ship signed heads to a
  * remote append-only log) — a later/enterprise capability.
  */
-import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
+import { chmodSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { writePrivateFileAtomic } from './config';
 import { blackboxDir, ensureBlackboxDir } from './paths';
 import type { SessionIdentityRow, SignatureRow, Store } from './store';
 
@@ -51,20 +52,42 @@ export interface Watermark {
 export function ensureKeypair(dir: string = ensureBlackboxDir()): Keypair {
   const privPath = join(dir, PRIV_FILE);
   const pubPath = join(dir, PUB_FILE);
-  if (existsSync(privPath) && existsSync(pubPath)) {
-    return { privateKeyPem: readFileSync(privPath, 'utf8'), publicKeyPem: readFileSync(pubPath, 'utf8') };
+  const hasPrivate = existsSync(privPath);
+  const hasPublic = existsSync(pubPath);
+  if (hasPrivate !== hasPublic) {
+    const survivor = hasPrivate ? privPath : pubPath;
+    const missing = hasPrivate ? pubPath : privPath;
+    throw new Error(
+      `incomplete signing keypair: ${survivor} exists but ${missing} is missing; ` +
+        'refusing to overwrite or rotate the surviving key — restore the missing file or move the survivor aside explicitly',
+    );
+  }
+  if (hasPrivate && hasPublic) {
+    try {
+      chmodSync(privPath, 0o600);
+      chmodSync(pubPath, 0o600);
+    } catch (err) {
+      if (process.platform !== 'win32') throw err;
+    }
+    const privateKeyPem = readFileSync(privPath, 'utf8');
+    const publicKeyPem = readFileSync(pubPath, 'utf8');
+    try {
+      const expected = createPublicKey(createPrivateKey(privateKeyPem)).export({ type: 'spki', format: 'der' });
+      const actual = createPublicKey(publicKeyPem).export({ type: 'spki', format: 'der' });
+      if (!expected.equals(actual)) throw new Error('public key does not match the private key');
+    } catch (err) {
+      throw new Error(`invalid signing keypair in ${dir}: ${(err as Error).message}; refusing automatic rotation`);
+    }
+    return { privateKeyPem, publicKeyPem };
   }
   const { publicKey, privateKey } = generateKeyPairSync('ed25519', {
     publicKeyEncoding: { type: 'spki', format: 'pem' },
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
   });
-  writeFileSync(privPath, privateKey, { mode: 0o600 });
-  try {
-    chmodSync(privPath, 0o600); // enforce even if the file pre-existed with other perms
-  } catch {
-    /* best-effort on non-POSIX */
-  }
-  writeFileSync(pubPath, publicKey);
+  // Private first: a crash between files leaves a recoverable private survivor.
+  // Each publish is no-clobber, so a concurrent initializer can never rotate keys.
+  writePrivateFileAtomic(privPath, privateKey, { overwrite: false });
+  writePrivateFileAtomic(pubPath, publicKey, { overwrite: false });
   return { privateKeyPem: privateKey, publicKeyPem: publicKey };
 }
 
@@ -93,12 +116,7 @@ export function recorderId(publicKeyPem: string): string {
 /** Record the newest signed checkpoint out of band (0600) — the anti-deletion anchor. */
 export function writeWatermark(dir: string, w: Watermark): void {
   const p = join(dir, HEAD_FILE);
-  writeFileSync(p, JSON.stringify(w), { mode: 0o600 });
-  try {
-    chmodSync(p, 0o600);
-  } catch {
-    /* best-effort */
-  }
+  writePrivateFileAtomic(p, JSON.stringify(w));
 }
 
 /** Load the high-watermark, or null if the store was never signed on this machine. */

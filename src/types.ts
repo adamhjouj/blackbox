@@ -34,6 +34,10 @@ export type ActionType =
   | 'session'
   | 'other';
 
+/** Producer of the normalized event. Nullable on legacy rows so the additive
+ * migration preserves every existing event hash byte-for-byte. */
+export type EventSource = 'claude-code' | 'gemini-cli' | 'git' | 'blackbox';
+
 /** A fully persisted event, including its chain fields. */
 export interface BlackboxEvent {
   /** Monotonic chain position, assigned by the store (1-based). */
@@ -53,6 +57,7 @@ export interface BlackboxEvent {
   /** Human-facing target: file path, command, url, or arg summary. */
   target: string | null;
   agent_id: string | null;
+  source: EventSource | null;
   /** 'main' for the top-level agent; the subagent name otherwise. */
   agent_type: string | null;
   cwd: string | null;
@@ -89,7 +94,10 @@ export interface BlackboxEvent {
 }
 
 /** An event before the store assigns its chain fields. */
-export type NormalizedEvent = Omit<BlackboxEvent, 'seq' | 'prev_hash' | 'hash'>;
+export type NormalizedEvent = Omit<BlackboxEvent, 'seq' | 'prev_hash' | 'hash' | 'source'> & {
+  /** Optional for internal/legacy event constructors; Store.append persists null. */
+  source?: EventSource | null;
+};
 
 /**
  * Column order of the `events` table. The hash covers every column except
@@ -107,6 +115,7 @@ export const EVENT_COLUMNS = [
   'action_type',
   'target',
   'agent_id',
+  'source',
   'agent_type',
   'cwd',
   'permission_mode',

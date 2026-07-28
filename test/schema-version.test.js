@@ -10,6 +10,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const Database = require('better-sqlite3');
 const { Store } = require('../dist/store.js');
+const { verify } = require('../dist/verify.js');
 const { normEv } = require('./util.js');
 
 function tmpPath() {
@@ -73,6 +74,27 @@ test('a legacy store (user_version 0 with data) opens and is re-stamped', () => 
     const check = new Database(p, { readonly: true });
     assert.equal(check.pragma('user_version', { simple: true }), 1, 're-stamped to current');
     check.close();
+  } finally {
+    cleanup(p);
+  }
+});
+
+test('the nullable source migration preserves legacy event hashes', () => {
+  const p = tmpPath();
+  try {
+    const created = new Store(p);
+    const legacyEvent = created.append(normEv({ phase: 'session_start', hook_event: 'SessionStart' }));
+    created.close();
+
+    const oldSchema = new Database(p);
+    oldSchema.exec('ALTER TABLE events DROP COLUMN source');
+    oldSchema.close();
+
+    const migrated = new Store(p);
+    assert.equal(migrated.get(legacyEvent.seq).source, null);
+    assert.equal(migrated.get(legacyEvent.seq).hash, legacyEvent.hash);
+    assert.equal(verify(migrated).ok, true);
+    migrated.close();
   } finally {
     cleanup(p);
   }

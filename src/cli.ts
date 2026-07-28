@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
-import { existsSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { resolve as resolvePath, sep } from 'node:path';
-import { ANCHOR_REF, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAnchor, readReceipts, receiptFromSignature, setAnchorLocalOnly, setAnchorTarget, type AnchorTarget } from './anchor';
+import { createInterface } from 'node:readline/promises';
+import { ANCHOR_REF, anchorDisplayDestination, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAnchor, readReceipts, receiptFromSignature, setAnchorLocalOnly, setAnchorTarget, type AnchorTarget } from './anchor';
+import { compareSessionAttestationToStore, createSessionAttestation, SessionAttestationError, verifySessionAttestation } from './attest';
 import { disableAutostart, enableAutostart } from './autostart';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { staticDoctorChecks, type DoctorCheck } from './doctor';
@@ -12,7 +14,12 @@ import { blastRadius } from './blast';
 import { fileHistory, reconstructAt } from './filestate';
 import { decideInitAnchor, ensureConfig, init, uninit, versionWarning } from './init';
 import { reindexAll, search } from './search';
+import { runSelfTest } from './self-test';
+import { claudeAdapterReadiness, geminiAdapterReadiness, recordSelfTestPass } from './readiness';
+import { readConfig, writePrivateFileAtomic } from './config';
+import { initGeminiHooks, rollbackGeminiInit, uninitGeminiHooks } from './gemini-init';
 import { normalizeAndCapture } from './normalize';
+import { attestationFailsAt, emitGitHubCheckOutput, type FindingThreshold } from './github-check';
 import { persistReconciliation } from './reconcile';
 import { buildForensicReport, buildReport, defaultReportSession } from './report';
 import { INTENT_VERSION, persistIntent } from './intent';
@@ -21,12 +28,14 @@ import { ensureKeypair, loadPublicKey, loadWatermark, recorderId, signHead } fro
 import { backfill, computeSession, rescoreSession } from './risk-engine';
 import { isKnownRuleset, KNOWN_RULESETS, RULESET_VERSION, rulesFingerprint, type RulesetVersion } from './risk-rules';
 import { unwatchGlobal, unwatchRepo, watchGlobal, watchRepo } from './watch';
-import { blackboxDir, configPath, ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
+import { blackboxDir, configPath, defaultDbPath, ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
 import { Store } from './store';
 import { verify } from './verify';
 
 interface Args {
   _: string[];
+  parseErrors: string[];
+  provided: Set<string>;
   db?: string;
   session?: string;
   port?: number;
@@ -51,30 +60,74 @@ interface Args {
   all?: boolean;
   eraseData?: boolean;
   yes?: boolean;
+  noOpen?: boolean;
+  agents?: string;
   endpoint?: string;
+  installPrefix?: string;
+  force?: boolean;
+  githubOutput?: boolean;
+  failOn?: string;
+  commit?: string;
+  branch?: string;
+  trustedKey?: string;
+  expectedCommit?: string;
 }
 
 function parseArgs(argv: string[]): Args {
-  const out: Args = { _: [] };
+  const out: Args = { _: [], parseErrors: [], provided: new Set() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--db') out.db = argv[++i] ?? out.db;
-    else if (a === '--session') out.session = argv[++i];
-    else if (a === '--port') out.port = Number(argv[++i]);
+    if (a === '--') {
+      out._.push(...argv.slice(i + 1));
+      break;
+    }
+    if (a?.startsWith('--')) out.provided.add(a);
+    const take = (flag: string): string | undefined => {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) {
+        out.parseErrors.push(`${flag} requires a value`);
+        return undefined;
+      }
+      i += 1;
+      return value;
+    };
+    if (a === '--db') out.db = take(a);
+    else if (a === '--session') out.session = take(a);
+    else if (a === '--port') {
+      const value = take(a);
+      if (value !== undefined) {
+        out.port = Number(value);
+        if (!Number.isFinite(out.port)) out.parseErrors.push('--port requires a number');
+      }
+    }
     else if (a === '--foreground') out.foreground = true;
     else if (a === '--capture-output') out.captureOutput = true;
     else if (a === '--global') out.global = true;
-    else if (a === '--ruleset') out.ruleset = argv[++i];
+    else if (a === '--ruleset') out.ruleset = take(a);
     else if (a === '--check') out.check = true;
-    else if (a === '--prune') out.prune = argv[++i];
-    else if (a === '--out') out.out = argv[++i];
-    else if (a === '--endpoint') out.endpoint = argv[++i];
+    else if (a === '--prune') out.prune = take(a);
+    else if (a === '--out') out.out = take(a);
+    else if (a === '--endpoint') out.endpoint = take(a);
+    else if (a === '--prefix') out.installPrefix = take(a);
+    else if (a === '--force') out.force = true;
+    else if (a === '--github-output') out.githubOutput = true;
+    else if (a === '--fail-on') out.failOn = take(a);
+    else if (a === '--commit') out.commit = take(a);
+    else if (a === '--branch') out.branch = take(a);
+    else if (a === '--trusted-key') out.trustedKey = take(a);
+    else if (a === '--expected-commit') out.expectedCommit = take(a);
     else if (a === '--off') out.off = true;
-    else if (a === '--older-than') out.olderThan = argv[++i];
+    else if (a === '--older-than') out.olderThan = take(a);
     else if (a === '--forensic') out.forensic = true;
-    else if (a === '--anchor') out.anchor = argv[++i];
-    else if (a === '--to') out.to = argv[++i];
-    else if (a === '--at') out.at = Number(argv[++i]);
+    else if (a === '--anchor') out.anchor = take(a);
+    else if (a === '--to') out.to = take(a);
+    else if (a === '--at') {
+      const value = take(a);
+      if (value !== undefined) {
+        out.at = Number(value);
+        if (!Number.isFinite(out.at)) out.parseErrors.push('--at requires a number');
+      }
+    }
     else if (a === '--rebuild') out.rebuild = true;
     else if (a === '--allow-insecure-git') out.allowInsecureGit = true;
     else if (a === '--local-only-anchor') out.localOnlyAnchor = true;
@@ -85,7 +138,10 @@ function parseArgs(argv: string[]): Args {
     } else if (a === '--all') out.all = true;
     else if (a === '--erase-data') out.eraseData = true;
     else if (a === '--yes' || a === '-y') out.yes = true;
+    else if (a === '--no-open') out.noOpen = true;
+    else if (a === '--agents') out.agents = take(a);
     else if (a === '-h' || a === '--help') out._.push('help');
+    else if (a?.startsWith('-')) out.parseErrors.push(`unknown option: ${a}`);
     else out._.push(a as string);
   }
   return out;
@@ -156,23 +212,71 @@ function getHealth(port: number, timeoutMs = 1000): Promise<Health | null> {
     });
   });
 }
-async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
+async function waitForHealth(port: number, timeoutMs: number): Promise<Health | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const h = await getHealth(port, 500);
-    if (h?.ok) return true;
+    if (h?.ok) return h;
     await sleep(150);
   }
-  return false;
+  return null;
+}
+
+async function readHookStdin(maxBytes: number = 16 * 1024 * 1024): Promise<string | null> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > maxBytes) return null;
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function postLocalHook(port: number, path: string, body: string, timeoutMs: number = 1_000): Promise<void> {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1', port, path, method: 'POST', timeout: timeoutMs,
+        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+      },
+      (res) => { res.resume(); res.on('end', resolve); },
+    );
+    req.on('error', () => resolve());
+    req.on('timeout', () => { req.destroy(); resolve(); });
+    req.end(body);
+  });
+}
+
+/** Gemini invokes command hooks synchronously. Recording must never block the
+ * agent: every input/error path emits the exact allow response and exits zero. */
+async function cmdHook(args: Args): Promise<number> {
+  if (args._[1] !== 'gemini') return 2;
+  try {
+    const body = await readHookStdin();
+    if (body !== null) {
+      const config = readConfig(configPath());
+      const port = typeof config.port === 'number' && Number.isInteger(config.port) ? config.port : DEFAULT_PORT;
+      await postLocalHook(port, '/hook/gemini', body);
+    }
+  } catch {
+    // Recorder failures are intentionally invisible to the agent hook protocol.
+  }
+  process.stdout.write('{}');
+  return 0;
 }
 
 const HELP = `blackbox — forensic recorder for AI coding agents
 
+  blackbox install     Permanently install the CLI, then run first-time setup
   blackbox init        Install hooks, start the daemon, and begin recording
   blackbox status      Show whether it's recording (+ security posture)
   blackbox doctor      Diagnose setup, runtime, hooks, custody, and data-store health
+  blackbox self-test   Exercise capture, redaction, risk, signing, and verification in isolation
   blackbox ui          Open the timeline UI (http://127.0.0.1:7842)
   blackbox report      Export a shareable session report (--forensic for a case-file)
+  blackbox attest      Export or verify a signed, metadata-only session attestation
   blackbox stop        Stop the daemon
   blackbox uninit      Remove blackbox hooks
 
@@ -182,24 +286,30 @@ Run \`blackbox help --all\` for forensic & advanced commands.
 const HELP_ALL = `blackbox — forensic recorder for AI coding agents
 
 Setup & lifecycle:
+  blackbox install               Persist an npx/bootstrap copy globally, then run init in one command
   blackbox init                  Install hooks, start the daemon, and begin recording (alias: setup)
-  blackbox uninit                Remove blackbox hooks from ~/.claude/settings.json
+  blackbox uninit                Remove Blackbox hooks from configured agent settings
                                  Add --erase-data --yes to also delete all local Blackbox data
   blackbox start                 Start the localhost hook-receiver daemon (background)
   blackbox stop                  Stop the daemon
   blackbox status                Show daemon status + security posture
   blackbox doctor                Diagnose runtime, hooks, daemon, custody, and chain health
+  blackbox self-test             Run an isolated end-to-end recorder test (never touches your evidence chain)
   blackbox ui                    Open the timeline UI in your browser (http://127.0.0.1:7842)
   blackbox autostart             Keep the daemon running across reboots (macOS LaunchAgent; --off to disable)
   blackbox watch [repo]          Install git forensics hooks in a repo (--global for all repos)
   blackbox unwatch [repo]        Remove git forensics hooks (--global to disable global)
+  blackbox hook gemini           Internal Gemini CLI command-hook bridge (stdin → local recorder)
 
 Recording & reports:
   blackbox ingest <file.jsonl>   Normalize raw hook payloads into the chained store
   blackbox report                Export a shareable Markdown session report (--session, --ruleset, --out <file>)
                                  Add --forensic for an evidentiary case-file (custody + signature + manifest)
   blackbox otel                  Export the session as OTLP/JSON traces for a SIEM (--session, --all, --out <file>)
-                                 Add --endpoint <url> to POST to an OTLP/HTTP collector (the only egress)
+                                 Add --endpoint <url> to explicitly POST to an OTLP/HTTP collector
+  blackbox attest                Sign aggregate session metadata (--session, --out, --fail-on high|medium|low)
+                                 Verify with: attest verify <file> [--trusted-key <public.pem> | --check]
+                                 Add --github-output to either form inside GitHub Actions
 
 Chain & custody:
   blackbox verify                Verify the hash chain; report the first break
@@ -228,9 +338,18 @@ Options:
   --capture-output     Store tool output bodies (still redacted) instead of eliding to a hash
   --allow-insecure-git start: accept unauthenticated /git writes (INSECURE opt-out of the token requirement)
   --local-only-anchor  init: accept local-only custody instead of an off-machine anchor (reduced security)
+  --no-open            init: do not open the Health & privacy screen after setup
+  --agents <list>      init: configure claude, gemini, or both (default: installed agents)
+  --prefix <path>      install: use a custom npm global prefix
   --erase-data --yes   uninit: also permanently remove ~/.blackbox after removing hooks
   --session <id>       Filter to one session (list/audit/report)
-  --out <file>         Write the report to a file instead of stdout (report)
+  --out <file>         Write a report or attestation to a file instead of stdout
+  --force              attest: replace an existing output file
+  --github-output      attest: append a GitHub Actions job summary and step outputs
+  --fail-on <severity> attest: exit 1 for current unresolved high, medium+, or low+ findings
+  --commit/--branch    attest: override captured revision metadata
+  --trusted-key <file> attest verify: require a specific recorder public key
+  --expected-commit <sha> attest in Actions: bind output to this full commit SHA (defaults to GITHUB_SHA)
   --older-than <dur>   Retention cutoff for prune (e.g. 30d, 12h; default 30d)
   -h, --help           Show this help (--all for every command)
 
@@ -243,6 +362,80 @@ Exit codes:
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+function npmInvocation(args: string[]): { command: string; args: string[] } {
+  const npmCli = process.env.npm_execpath;
+  if (npmCli && existsSync(npmCli)) return { command: process.execPath, args: [npmCli, ...args] };
+  return { command: process.platform === 'win32' ? 'npm.cmd' : 'npm', args };
+}
+
+function runInherited(command: string, args: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { env, stdio: 'inherit' });
+    child.once('error', (error) => {
+      console.error(`could not run ${command}: ${error.message}`);
+      resolve(2);
+    });
+    child.once('exit', (code, signal) => {
+      if (signal) {
+        console.error(`${command} stopped by ${signal}`);
+        resolve(2);
+      } else resolve(code ?? 2);
+    });
+  });
+}
+
+/** Durable one-command bootstrap. `npx ... install` otherwise leaves Gemini
+ * command hooks and autostart pointing into npm's disposable execution cache.
+ * Install the exact running version into a stable npm prefix, then invoke that
+ * copy's `init` so every persisted path points at the durable runtime. */
+async function cmdInstall(args: Args): Promise<number> {
+  let version: string;
+  try {
+    const pkg = JSON.parse(readFileSync(resolvePath(__dirname, '..', 'package.json'), 'utf8')) as { version?: unknown };
+    if (typeof pkg.version !== 'string' || !pkg.version) throw new Error('package version is missing');
+    version = pkg.version;
+  } catch (error) {
+    console.error(`install: cannot identify this Blackbox package: ${(error as Error).message}`);
+    return 2;
+  }
+  const prefix = args.installPrefix ?? process.env.BLACKBOX_INSTALL_PREFIX;
+  const spec = process.env.BLACKBOX_INSTALL_SPEC ?? `blackbox-recorder@${version}`;
+  const installArgs = ['install', '--global', '--no-audit', '--no-fund'];
+  if (prefix) installArgs.push('--prefix', resolvePath(prefix));
+  installArgs.push(spec);
+  const install = npmInvocation(installArgs);
+  console.log(`Installing a durable Blackbox ${version} runtime${prefix ? ` under ${resolvePath(prefix)}` : ''}…`);
+  const installed = await runInherited(install.command, install.args);
+  if (installed !== 0) {
+    console.error('install: npm could not persist the CLI; no agent hooks were changed');
+    return installed;
+  }
+
+  const rootArgs = ['root', '--global'];
+  if (prefix) rootArgs.push('--prefix', resolvePath(prefix));
+  const rootInvocation = npmInvocation(rootArgs);
+  let globalRoot: string;
+  try {
+    globalRoot = execFileSync(rootInvocation.command, rootInvocation.args, { encoding: 'utf8' }).trim();
+  } catch (error) {
+    console.error(`install: could not locate the durable npm runtime: ${(error as Error).message}`);
+    return 2;
+  }
+  const durableCli = resolvePath(globalRoot, 'blackbox-recorder', 'dist', 'cli.js');
+  if (!existsSync(durableCli)) {
+    console.error(`install: npm completed but ${durableCli} is missing`);
+    return 2;
+  }
+  const rawInitArgs = process.argv.slice(3);
+  const initArgs: string[] = [];
+  for (let i = 0; i < rawInitArgs.length; i++) {
+    if (rawInitArgs[i] === '--prefix') { i += 1; continue; }
+    initArgs.push(rawInitArgs[i]!);
+  }
+  console.log('Durable CLI installed. Starting first-run setup…\n');
+  return runInherited(process.execPath, [durableCli, 'init', ...initArgs]);
 }
 
 function cmdIngest(args: Args): number {
@@ -321,7 +514,7 @@ function resolveAnchorReceipts(args: Args): { receipts: ReturnType<typeof readRe
 }
 
 function anchorLabel(t: AnchorTarget): string {
-  return t.kind === 'file' ? `file ${t.path}` : t.kind === 'git' ? `git ${t.repo}` : `url ${t.url}`;
+  return anchorDisplayDestination(t);
 }
 
 function cmdVerify(args: Args): number {
@@ -413,7 +606,7 @@ async function cmdAnchor(args: Args): Promise<number> {
     return 1;
   }
   console.log(`anchor target set to ${args.to}; receipt for head seq ${s.seq} written.`);
-  if (target.kind === 'https') console.log('  note: https anchoring sends signed head receipts off-machine — the one exception to blackbox staying local.');
+  if (target.kind === 'https') console.log('  note: this configured https anchor sends signed head receipts off-machine; raw evidence stays local.');
   console.log('  the daemon will emit a fresh receipt at each session boundary (restart it to pick up this target).');
   return 0;
 }
@@ -518,61 +711,174 @@ function cmdUnwatch(args: Args): number {
   return 0;
 }
 
+type AgentAdapter = 'claude' | 'gemini';
+
+function adaptersForInit(args: Args, port: number): { adapters: AgentAdapter[]; explicit: boolean; error?: string } {
+  if (args.agents) {
+    const aliases: Record<string, AgentAdapter> = { claude: 'claude', 'claude-code': 'claude', gemini: 'gemini', 'gemini-cli': 'gemini' };
+    const adapters = [...new Set(args.agents.split(',').map((item) => aliases[item.trim().toLowerCase()]).filter((item): item is AgentAdapter => !!item))];
+    const requested = args.agents.split(',').map((item) => item.trim()).filter(Boolean);
+    if (!adapters.length || adapters.length !== new Set(requested.map((item) => item.toLowerCase().replace(/-code$|-cli$/, ''))).size) {
+      return { adapters: [], explicit: true, error: '--agents accepts claude, gemini, or claude,gemini' };
+    }
+    return { adapters, explicit: true };
+  }
+  const adapters: AgentAdapter[] = [];
+  if (claudeAdapterReadiness(port).installed) adapters.push('claude');
+  if (geminiAdapterReadiness().installed) adapters.push('gemini');
+  return adapters.length
+    ? { adapters, explicit: false }
+    : { adapters, explicit: false, error: 'no supported agent CLI was found on PATH; install Claude Code or Gemini CLI, or preconfigure one with --agents <name>' };
+}
+
+async function confirmExternalAnchor(remote: string): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await prompt.question(`Allow Blackbox to push signed receipt metadata to ${remote}? [y/N] `);
+    return /^(?:y|yes)$/i.test(answer.trim());
+  } finally {
+    prompt.close();
+  }
+}
+
+function openLocalPage(port: number, route: string): void {
+  const url = `http://127.0.0.1:${port}/${route}`;
+  const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+  try {
+    spawn(opener, [url], { detached: true, stdio: 'ignore' }).unref();
+    console.log(`opened ${url}`);
+  } catch {
+    console.log(`open the readiness screen: ${url}`);
+  }
+}
+
 async function cmdInit(args: Args): Promise<number> {
   const port = args.port ?? DEFAULT_PORT;
-  const warn = versionWarning();
-  if (warn) console.error(`warning: ${warn}`);
+  const selected = adaptersForInit(args, port);
+  if (selected.error) {
+    console.error(`setup preflight failed: ${selected.error}`);
+    return 2;
+  }
+  if (selected.adapters.includes('claude')) {
+    const warn = versionWarning();
+    if (warn) console.error(`warning: ${warn}`);
+  }
 
   console.log('Blackbox privacy notice:');
   console.log('  • Records prompts, agent-stated reasoning, tool actions, paths, and redacted evidence locally.');
   console.log(`  • Local data lives under ${blackboxDir()} unless BLACKBOX_HOME/BLACKBOX_DB overrides it.`);
-  console.log('  • Only signed chain-head receipts leave the machine when external anchoring is enabled.');
+  console.log('  • No raw evidence leaves automatically; enabled anchors send signed chain-head receipts only.');
+  console.log(`  • Agent adapters selected: ${selected.adapters.map((adapter) => adapter === 'claude' ? 'Claude Code' : 'Gemini CLI').join(', ')}.`);
   console.log("  • Use 'blackbox prune' to age out stored file content or 'blackbox uninit --erase-data --yes' to remove everything.\n");
 
   // Decide the custody posture FIRST (pure) — init is all-or-nothing; we never
   // silently set up recording with no off-machine anchor. Fail loudly here if none
   // resolves, before touching hooks/config, so re-running with a fix is clean.
-  ensureBlackboxDir();
-  const decision = decideInitAnchor({ cwd: process.cwd(), localOnly: args.localOnlyAnchor });
+  let decision: ReturnType<typeof decideInitAnchor>;
+  try {
+    ensureBlackboxDir();
+    decision = decideInitAnchor({ cwd: process.cwd(), localOnly: args.localOnlyAnchor });
+  } catch (err) {
+    console.error(`setup preflight failed: ${(err as Error).message}`);
+    return 2;
+  }
   if (!decision.ok) {
     console.error(decision.message);
     return 2;
   }
 
-  const { settingsPath, addedEvents } = init(port);
-  if (addedEvents.length) {
-    console.log(`registered blackbox hooks for ${addedEvents.length} event(s) in ${settingsPath}`);
-    console.log(`  ${addedEvents.join(', ')}`);
-  } else {
-    console.log(`blackbox hooks already registered in ${settingsPath} (nothing to do)`);
+  if (decision.kind === 'git' && !args.yes) {
+    console.log(`Proposed external anchor: signed receipt metadata on ${ANCHOR_REF} → ${decision.remote}`);
+    console.log('Receipts contain chain position, hash, timestamp, and signature; never prompts, paths, commands, code, or tool output.');
+    if (!(await confirmExternalAnchor(decision.remote))) {
+      console.error('setup stopped before configuring custody or hooks. Re-run and approve, pass --yes, or choose --local-only-anchor.');
+      return 2;
+    }
   }
 
   // Apply the anchor decision (writes config) and report the posture plainly.
-  if (decision.kind === 'git') {
-    setAnchorTarget(decision.spec);
-    setAnchorLocalOnly(false);
-    console.log(`external anchor: git receipts on ${ANCHOR_REF} → ${decision.remote} (auto-push ON)`);
-  } else if (decision.kind === 'local-only') {
-    setAnchorTarget(`file:${decision.path}`);
-    setAnchorLocalOnly(true);
-    console.log('⚠ external anchor: LOCAL-ONLY (reduced security)');
-    console.log(`  receipts are written to ${decision.path} — on the SAME machine as the DB`);
-    console.log('  and signing key, so a full-write attacker could rewrite history AND re-sign it');
-    console.log('  undetectably. For real tamper-evidence, point --to an off-machine target:');
-    console.log('    blackbox anchor --to git:<repo-with-remote>  |  file:</other/disk/receipts.jsonl>');
-  } else {
-    console.log(`external anchor: already configured (${anchorLabel(decision.target)})`);
+  try {
+    if (decision.kind === 'git') {
+      setAnchorTarget(decision.spec);
+      setAnchorLocalOnly(false);
+      console.log(`external anchor: git receipts on ${ANCHOR_REF} → ${decision.remote} (auto-push ON)`);
+    } else if (decision.kind === 'local-only') {
+      setAnchorTarget(`file:${decision.path}`);
+      setAnchorLocalOnly(true);
+      console.log('⚠ external anchor: LOCAL-ONLY (reduced security)');
+      console.log(`  receipts are written to ${decision.path} — on the SAME machine as the DB`);
+      console.log('  and signing key, so a full-write attacker could rewrite history AND re-sign it');
+      console.log('  undetectably. For real tamper-evidence, point --to an off-machine target:');
+      console.log('    blackbox anchor --to git:<repo-with-remote>  |  file:</other/disk/receipts.jsonl>');
+    } else {
+      console.log(`external anchor: already configured (${anchorLabel(decision.target)})`);
+    }
+  } catch (err) {
+    console.error(`setup could not configure custody: ${(err as Error).message}`);
+    return 2;
   }
 
-  // Bring the daemon up (idempotent: a healthy daemon is left as-is) and confirm /health.
+  // Bring the daemon up and confirm /health before touching agent settings. A
+  // failed startup therefore cannot leave live hooks pointing at nowhere.
+  const before = readPid();
+  const beforeHealth = before && isAlive(before.pid) ? await getHealth(before.port) : null;
+  const reusedHealthy = !!before && !!beforeHealth?.ok && beforeHealth.pid === before.pid && before.port === port && before.db === resolveDb(args.db);
   const code = await cmdStart(args);
   if (code !== 0) {
-    console.error("hooks are registered, but the daemon isn't up — run 'blackbox start' and check the log.");
+    console.error("setup stopped before installing hooks — check 'blackbox doctor' and the daemon log.");
     return code;
   }
-  console.log(`\n✓ you are recording — open the timeline UI at http://127.0.0.1:${port}/`);
-  console.log('  New Claude Code sessions record automatically.');
+
+  const selfTest = await runSelfTest();
+  if (!selfTest.ok) {
+    for (const item of selfTest.checks.filter((item) => !item.ok)) console.error(`self-test: ${item.name}: ${item.detail}`);
+    if (!reusedHealthy) await cmdStop(args);
+    console.error('setup stopped before installing hooks because the isolated capture pipeline did not pass.');
+    return 2;
+  }
+  try {
+    recordSelfTestPass();
+    let geminiInstall: ReturnType<typeof initGeminiHooks> | null = null;
+    try {
+      if (selected.adapters.includes('gemini')) {
+        geminiInstall = initGeminiHooks({
+          nodePath: resolvePath(process.execPath),
+          cliPath: resolvePath(process.argv[1] as string),
+        });
+        const changed = geminiInstall.addedEvents.length + geminiInstall.updatedEvents.length;
+        console.log(changed
+          ? `registered Gemini CLI hooks for ${changed} event(s) in ${geminiInstall.settingsPath}`
+          : `Gemini CLI hooks already registered in ${geminiInstall.settingsPath} (nothing to do)`);
+      }
+      if (selected.adapters.includes('claude')) {
+        const { settingsPath, addedEvents, updatedEvents } = init(port);
+        if (addedEvents.length || updatedEvents.length) {
+          console.log(`registered Claude Code hooks in ${settingsPath}`);
+          if (addedEvents.length) console.log(`  added: ${addedEvents.join(', ')}`);
+          if (updatedEvents.length) console.log(`  migrated to port ${port}: ${updatedEvents.join(', ')}`);
+        } else {
+          console.log(`Claude Code hooks already registered in ${settingsPath} (nothing to do)`);
+        }
+      }
+    } catch (err) {
+      if (geminiInstall) {
+        try { rollbackGeminiInit(geminiInstall); }
+        catch (rollbackErr) { throw new Error(`${(err as Error).message}; Gemini rollback also failed: ${(rollbackErr as Error).message}`); }
+      }
+      throw err;
+    }
+  } catch (err) {
+    if (!reusedHealthy) await cmdStop(args);
+    console.error(`setup could not install hooks safely: ${(err as Error).message}`);
+    return 2;
+  }
+
+  console.log(`\n✓ recorder ready — ${selfTest.events} synthetic events passed the isolated pipeline and were deleted`);
+  console.log(`  Health & privacy: http://127.0.0.1:${port}/#/settings`);
+  console.log(`  New ${selected.adapters.map((adapter) => adapter === 'claude' ? 'Claude Code' : 'Gemini CLI').join(' and ')} sessions record automatically.`);
   console.log("  Stop the daemon with 'blackbox stop'; remove hooks with 'blackbox uninit'.");
+  if (!args.noOpen) openLocalPage(port, '#/settings');
   return 0;
 }
 
@@ -581,8 +887,29 @@ async function cmdUninit(args: Args): Promise<number> {
     console.error('refusing to erase data without --yes; this permanently deletes the event store, keys, logs, and local receipts');
     return 2;
   }
-  const { settingsPath, removed } = uninit();
-  console.log(`removed ${removed} blackbox hook(s) from ${settingsPath}`);
+  const selection = args.agents ? adaptersForInit(args, args.port ?? DEFAULT_PORT) : { adapters: ['claude', 'gemini'] as AgentAdapter[], explicit: false };
+  if (selection.error) {
+    console.error(selection.error);
+    return 2;
+  }
+  const failures: string[] = [];
+  if (selection.adapters.includes('gemini')) {
+    try {
+      const result = uninitGeminiHooks();
+      console.log(`removed ${result.removed} Blackbox Gemini hook(s) from ${result.settingsPath}`);
+    } catch (err) { failures.push(`Gemini CLI: ${(err as Error).message}`); }
+  }
+  if (selection.adapters.includes('claude')) {
+    try {
+      const { settingsPath, removed } = uninit();
+      console.log(`removed ${removed} Blackbox Claude hook(s) from ${settingsPath}`);
+    } catch (err) { failures.push(`Claude Code: ${(err as Error).message}`); }
+  }
+  if (failures.length) {
+    for (const failure of failures) console.error(`could not remove ${failure}`);
+    console.error('data was left intact because at least one active adapter may still write to it');
+    return 2;
+  }
   if (args.eraseData) {
     await cmdStop(args);
     eraseLocalData(args);
@@ -650,18 +977,29 @@ async function cmdStart(args: Args): Promise<number> {
   // token-less rather than silently regaining a token.
   let cfgInsecureGit = false;
   try {
-    cfgInsecureGit = (JSON.parse(readFileSync(configPath(), 'utf8')) as { insecure_git?: boolean }).insecure_git === true;
-  } catch {
-    /* no config yet */
+    cfgInsecureGit = readConfig(configPath()).insecure_git === true;
+  } catch (err) {
+    console.error(`failed to read secure configuration: ${(err as Error).message}`);
+    return 2;
   }
-  if (!args.allowInsecureGit && !cfgInsecureGit) ensureConfig(port);
+  if (!args.allowInsecureGit && !cfgInsecureGit) {
+    try { ensureConfig(port); }
+    catch (err) {
+      console.error(`failed to provision secure configuration: ${(err as Error).message}`);
+      return 2;
+    }
+  }
   const existing = readPid();
   if (existing && isAlive(existing.pid)) {
     // Confirm the PID is actually our daemon (not a recycled PID) via /health.
     const h = await getHealth(existing.port);
     if (h?.ok && h.pid === existing.pid) {
-      console.log(`blackbox daemon already running (pid ${existing.pid}, port ${existing.port})`);
-      return 0;
+      if (existing.port === port && existing.db === db) {
+        console.log(`blackbox daemon already running (pid ${existing.pid}, port ${existing.port})`);
+        return 0;
+      }
+      console.log(`restarting blackbox daemon to apply ${existing.port !== port ? `port ${port}` : `database ${db}`}`);
+      await cmdStop(args);
     }
   }
   if (existing) removePid(); // stale or recycled pid
@@ -692,13 +1030,19 @@ async function cmdStart(args: Args): Promise<number> {
 
   // Background: re-spawn ourselves in --foreground, detached, logging to file.
   ensureBlackboxDir();
+  const occupant = await getHealth(port, 350);
+  if (occupant?.ok) {
+    console.error(`port ${port} already hosts a Blackbox recorder (pid ${occupant.pid}, db ${occupant.db}); choose another --port or stop that recorder explicitly`);
+    return 2;
+  }
   const logFd = openSync(logPath(), 'a');
   const childArgs = [process.argv[1] as string, 'start', '--foreground', '--db', db, '--port', String(port)];
   if (args.captureOutput) childArgs.push('--capture-output');
   if (args.allowInsecureGit) childArgs.push('--allow-insecure-git');
   const child = spawn(process.execPath, childArgs, { detached: true, stdio: ['ignore', logFd, logFd] });
   child.unref();
-  if (!(await waitForHealth(port, 3000))) {
+  const started = await waitForHealth(port, 3000);
+  if (!started || child.pid === undefined || started.pid !== child.pid || started.db !== db) {
     console.error(`daemon did not become healthy on port ${port} — check ${logPath()}`);
     return 2;
   }
@@ -762,15 +1106,20 @@ async function cmdStatus(_args: Args): Promise<number> {
   // Security posture — so a weaker mode is visible now, not discovered later.
   let tok = '';
   try {
-    tok = (JSON.parse(readFileSync(configPath(), 'utf8')) as { token?: string }).token ?? '';
-  } catch {
-    /* no config */
+    const config = readConfig(configPath());
+    tok = typeof config.token === 'string' ? config.token : '';
+  } catch (err) {
+    console.log(`  configuration: INVALID (${(err as Error).message})`);
   }
-  const acfg = loadAnchorConfig();
+  let anchorPosture = 'INVALID CONFIGURATION';
+  try {
+    const acfg = loadAnchorConfig();
+    anchorPosture = acfg.target ? anchorLabel(acfg.target) + (acfg.push ? ' + auto-push' : '') : acfg.localOnly ? 'local-only (reduced security)' : 'NONE (reduced security)';
+  } catch (err) {
+    anchorPosture = `INVALID (${(err as Error).message})`;
+  }
   console.log(`  git route: ${tok ? 'authenticated' : 'UNAUTHENTICATED (insecure_git)'}`);
-  console.log(
-    `  external anchor: ${acfg.target ? anchorLabel(acfg.target) + (acfg.push ? ' + auto-push' : '') : acfg.localOnly ? 'local-only (reduced security)' : 'NONE (reduced security)'}`,
-  );
+  console.log(`  external anchor: ${anchorPosture}`);
   return 0;
 }
 
@@ -813,6 +1162,24 @@ async function cmdDoctor(args: Args): Promise<number> {
   const warnings = checks.filter((item) => item.status === 'warn').length;
   console.log(`\n${failures ? `${failures} failure(s)` : 'No failures'}${warnings ? `, ${warnings} warning(s)` : ''}.`);
   return failures ? 1 : 0;
+}
+
+async function cmdSelfTest(): Promise<number> {
+  console.log('Blackbox isolated self-test\n');
+  const result = await runSelfTest();
+  for (const item of result.checks) console.log(`${item.ok ? '✓' : '✗'} ${item.name.padEnd(22)} ${item.detail}`);
+  if (result.ok) {
+    try {
+      recordSelfTestPass();
+      console.log(`\nReady: ${result.events} synthetic session events captured; temporary evidence deleted.`);
+      return 0;
+    } catch (err) {
+      console.error(`\nPipeline passed, but its local readiness marker could not be saved: ${(err as Error).message}`);
+      return 1;
+    }
+  }
+  console.log('\nSelf-test failed; no synthetic evidence was added to your store.');
+  return 1;
 }
 
 async function cmdUi(args: Args): Promise<number> {
@@ -1109,7 +1476,7 @@ function cmdIntent(args: Args): number {
 }
 
 /** R8 (AARM) — emit the session as OTLP/JSON traces. Writes locally by default;
- *  `--endpoint` is the only way bytes leave the machine, and it is always explicit. */
+ *  `--endpoint` is the explicit network-export form of this command. */
 async function cmdOtel(args: Args): Promise<number> {
   const store = new Store(resolveDb(args.db));
   try {
@@ -1188,10 +1555,238 @@ function cmdReport(args: Args): number {
   }
 }
 
+const MAX_ATTESTATION_BYTES = 1024 * 1024;
+
+function readBoundedRegularFile(path: string, maxBytes: number): string {
+  let fd: number | null = null;
+  try {
+    const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+    const before = noFollow === 0 ? lstatSync(path) : null;
+    if (before && (!before.isFile() || before.isSymbolicLink())) throw new Error('not a regular file');
+    fd = openSync(path, constants.O_RDONLY | noFollow);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || (before && (before.dev !== stat.dev || before.ino !== stat.ino))) {
+      throw new Error('not a stable regular file');
+    }
+    if (stat.size > maxBytes) {
+      throw new Error(`larger than ${maxBytes} bytes`);
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (total <= maxBytes) {
+      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes + 1 - total));
+      const bytes = readSync(fd, buffer, 0, buffer.length, null);
+      if (bytes === 0) break;
+      total += bytes;
+      chunks.push(buffer.subarray(0, bytes));
+    }
+    if (total > maxBytes) throw new Error(`larger than ${maxBytes} bytes`);
+    return Buffer.concat(chunks, total).toString('utf8');
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+function parseFindingThreshold(value: string | undefined): FindingThreshold | null {
+  if (value === undefined) return null;
+  return value === 'high' || value === 'medium' || value === 'low' ? value : null;
+}
+
+function localAttestationDbPath(args: Args): string {
+  return args.db ?? process.env.BLACKBOX_DB ?? defaultDbPath();
+}
+
+function rejectAttestOptions(args: Args, allowed: ReadonlySet<string>): boolean {
+  const rejected = [...args.provided].filter((flag) => !allowed.has(flag));
+  if (!rejected.length) return false;
+  console.error(`attest: option(s) not valid in this mode: ${rejected.join(', ')}`);
+  return true;
+}
+
+function cmdAttest(args: Args): number {
+  const threshold = parseFindingThreshold(args.failOn);
+  if (args.failOn !== undefined && threshold === null) {
+    console.error('attest: --fail-on must be high, medium, or low');
+    return 2;
+  }
+  if (args._[1] === 'verify') {
+    if (args._.length !== 3) {
+      console.error('usage: blackbox attest verify <file> [--trusted-key <public.pem> | --check] [--github-output] [--fail-on high|medium|low]');
+      return 2;
+    }
+    if (rejectAttestOptions(args, new Set(['--db', '--check', '--trusted-key', '--github-output', '--fail-on', '--expected-commit']))) {
+      return 2;
+    }
+    if (args.expectedCommit && !args.githubOutput) {
+      console.error('attest verify: --expected-commit requires --github-output');
+      return 2;
+    }
+    if ((args.githubOutput || threshold) && !args.check && !args.trustedKey) {
+      console.error('attest verify: gating or GitHub output requires --trusted-key <public.pem> or --check; a self-signature alone does not establish recorder identity');
+      return 2;
+    }
+    const file = args._[2];
+    if (!file) {
+      console.error('usage: blackbox attest verify <file> [--trusted-key <public.pem> | --check] [--github-output] [--fail-on high|medium|low]');
+      return 2;
+    }
+    let raw: string;
+    let pinnedKey: string | null = null;
+    try {
+      raw = readBoundedRegularFile(file, MAX_ATTESTATION_BYTES);
+      if (args.trustedKey) pinnedKey = readBoundedRegularFile(args.trustedKey, 16 * 1024);
+    } catch (error) {
+      console.error(`attest verify: cannot safely read input: ${(error as Error).message}`);
+      return 2;
+    }
+    const standalone = verifySessionAttestation(raw, { trustedPublicKey: pinnedKey });
+    if (!standalone.ok) {
+      console.error(`✗ invalid session attestation — ${standalone.reason}`);
+      return 1;
+    }
+    const envelope = standalone.envelope;
+    console.log(
+      `✓ signature valid — session ${envelope.payload.session_id} · recorder ${envelope.payload.recorder.id} · ` +
+      `${envelope.payload.evidence.event_count} event(s)`,
+    );
+    let trust: 'self-signed' | 'pinned-key' | 'local-recorder' = pinnedKey ? 'pinned-key' : 'self-signed';
+    if (args.check) {
+      const dbPath = localAttestationDbPath(args);
+      const trustedPublicKey = loadPublicKey();
+      if (!existsSync(dbPath)) {
+        console.error(`✗ local comparison unavailable — evidence store not found at ${dbPath}`);
+        return 2;
+      }
+      if (!trustedPublicKey) {
+        console.error('✗ local comparison unavailable — no trusted signing.pub exists for this recorder');
+        return 2;
+      }
+      const store = new Store(dbPath);
+      try {
+        const compared = compareSessionAttestationToStore(store, envelope, {
+          trustedPublicKey,
+          watermark: loadWatermark(),
+        });
+        if (!compared.ok) {
+          console.error(`✗ local attestation comparison failed — ${compared.reason ?? 'unknown mismatch'}`);
+          return 1;
+        }
+        trust = 'local-recorder';
+        console.log('✓ trusted local recorder key, evidence chain, and signed session range match');
+      } finally {
+        store.close();
+      }
+    } else if (pinnedKey) {
+      console.log('✓ signature matches the pinned recorder public key');
+    } else {
+      console.log('  self-contained signature check only; add --trusted-key to pin identity or --check to compare local evidence');
+    }
+    if (args.githubOutput) {
+      try {
+        const emitted = emitGitHubCheckOutput(envelope, {
+          threshold,
+          attestationPath: resolvePath(file),
+          trust,
+          expectedCommit: args.expectedCommit,
+        });
+        console.error(
+          `GitHub Actions summary${emitted.outputs_written ? ' and step outputs' : ''} written · result ${emitted.conclusion}`,
+        );
+      } catch (error) {
+        console.error(`attest verify: ${(error as Error).message}`);
+        return 2;
+      }
+    }
+    if (threshold && attestationFailsAt(envelope, threshold)) {
+      console.error(`review gate failed: unresolved ${threshold}+ finding(s) remain`);
+      return 1;
+    }
+    return 0;
+  }
+
+  if (args._.length !== 1) {
+    console.error('usage: blackbox attest [--session <id>] [--out <file>] [--force] [--fail-on high|medium|low] [--github-output]');
+    return 2;
+  }
+  if (rejectAttestOptions(args, new Set(['--db', '--session', '--out', '--force', '--fail-on', '--github-output', '--commit', '--branch', '--expected-commit']))) {
+    return 2;
+  }
+  if (args.trustedKey) {
+    console.error('attest: --trusted-key is only valid with `attest verify`');
+    return 2;
+  }
+  if (args.expectedCommit && !args.githubOutput) {
+    console.error('attest: --expected-commit requires --github-output');
+    return 2;
+  }
+  if (args.githubOutput && !args.out) {
+    console.error('attest: --github-output requires --out so attestation metadata is not printed into Actions logs');
+    return 2;
+  }
+
+  const store = new Store(resolveDb(args.db));
+  try {
+    const sessionId = args.session ?? defaultReportSession(store);
+    if (!sessionId) {
+      console.error('attest: no sessions recorded (pass --session)');
+      return 2;
+    }
+    const envelope = createSessionAttestation(store, sessionId, ensureKeypair(), {
+      watermark: loadWatermark(),
+      commit: args.commit,
+      branch: args.branch,
+    });
+    const sanity = verifySessionAttestation(envelope);
+    if (!sanity.ok) throw new Error(`generated attestation failed verification: ${sanity.reason}`);
+    const json = JSON.stringify(envelope, null, 2) + '\n';
+
+    let outputPath: string | null = null;
+    if (args.out) {
+      outputPath = resolvePath(args.out);
+      if (existsSync(outputPath) && !args.force) {
+        console.error(`attest: refusing to replace existing file ${outputPath} (add --force)`);
+        return 2;
+      }
+      writePrivateFileAtomic(outputPath, json, { overwrite: args.force === true });
+      console.log(`wrote signed attestation for session ${sessionId} to ${outputPath}`);
+    } else {
+      process.stdout.write(json);
+    }
+
+    if (args.githubOutput) {
+      const emitted = emitGitHubCheckOutput(envelope, {
+        threshold,
+        attestationPath: outputPath,
+        trust: 'local-recorder',
+        expectedCommit: args.expectedCommit,
+      });
+      console.error(
+        `GitHub Actions summary${emitted.outputs_written ? ' and step outputs' : ''} written · result ${emitted.conclusion}`,
+      );
+    }
+    if (threshold && attestationFailsAt(envelope, threshold)) {
+      console.error(`review gate failed: unresolved ${threshold}+ finding(s) remain`);
+      return 1;
+    }
+    return 0;
+  } catch (error) {
+    console.error(`attest: ${(error as Error).message}`);
+    return error instanceof SessionAttestationError && (error.code === 'chain-invalid' || error.code === 'session-changed') ? 1 : 2;
+  } finally {
+    store.close();
+  }
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
+  if (args.parseErrors.length) {
+    for (const error of args.parseErrors) console.error(`blackbox: ${error}`);
+    return 2;
+  }
   const cmd = args._[0];
   switch (cmd) {
+    case 'install':
+      return cmdInstall(args);
     case 'init':
     case 'setup':
       return cmdInit(args);
@@ -1213,8 +1808,12 @@ async function main(): Promise<number> {
       return cmdStatus(args);
     case 'doctor':
       return cmdDoctor(args);
+    case 'self-test':
+      return cmdSelfTest();
     case 'ui':
       return cmdUi(args);
+    case 'hook':
+      return cmdHook(args);
     case 'ingest':
       return cmdIngest(args);
     case 'verify':
@@ -1235,6 +1834,8 @@ async function main(): Promise<number> {
       return cmdBlast(args);
     case 'report':
       return cmdReport(args);
+    case 'attest':
+      return cmdAttest(args);
     case 'otel':
       return cmdOtel(args);
     case 'intent':

@@ -14,6 +14,8 @@
  * null `prompt` (intent unknown), which is honest degradation, not a failure.
  */
 import type { Action } from './read-api';
+import type { FindingOutcome } from './findings';
+import type { FindingView } from './findings';
 import type { Coverage, Discrepancy } from './reconcile';
 import type { FlagId } from './risk-rules';
 import { RISK_FLAGS } from './risk-rules';
@@ -83,6 +85,8 @@ export interface StoryStep {
   target: string | null;
   summary: string;
   success: 0 | 1 | null;
+  outcome: FindingOutcome;
+  findings: FindingView[];
   duration_ms: number | null;
   signals: FlagId[];
   score: number;
@@ -365,6 +369,8 @@ export function buildStory(input: StoryInput): SessionStory {
       target: a.target,
       summary: a.summary,
       success: a.success,
+      outcome: a.outcome,
+      findings: a.findings,
       duration_ms: a.duration_ms,
       signals: a.signals,
       score: a.score,

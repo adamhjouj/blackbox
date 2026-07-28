@@ -42,14 +42,15 @@ function renderDrawer(detail) {
   const drawer = drawerShell();
   const action = detail.action_type || detail.type || detail.hook_event || detail.phase || 'Recorded event';
   const flags = detail.risk && detail.risk.flags || [];
-  const tag = flags.length ? String(flags[0]).replace(/-/g, ' ') : action;
-  drawer.append(drawerHeader(detail.tool || detail.tool_name || action, detail.seq, tag, flags.length > 0));
+  const findings = detail.findings || [];
+  const tag = findings.length ? String(findings[0].outcome || 'unknown') + ' ' + String(findings[0].severity || 'risk') + ' finding' : flags.length ? String(flags[0]).replace(/-/g, ' ') : action;
+  drawer.append(drawerHeader(detail.tool || detail.tool_name || action, detail.seq, tag, findings.length > 0 || flags.length > 0));
   const body = h('div', { className: 'drawer-body' });
   drawer.append(body);
 
   const dl = h('dl', { className: 'kv-grid' });
   addKv(dl, 'Sequence', detail.seq); addKv(dl, 'Time', detail.ts || detail.captured_at); addKv(dl, 'Duration', fmtDur(detail.duration_ms));
-  addKv(dl, 'Tool', detail.tool || detail.tool_name); addKv(dl, 'Target', detail.target); addKv(dl, 'Phase', detail.phase); addKv(dl, 'Session', detail.session_id);
+  addKv(dl, 'Tool', detail.tool || detail.tool_name); addKv(dl, 'Target', detail.target); addKv(dl, 'Phase', detail.phase); addKv(dl, 'Outcome', cap(detail.action_outcome || 'unknown')); addKv(dl, 'Session', detail.session_id);
   addKv(dl, 'Tool use ID', detail.tool_use_id); addKv(dl, 'Redactions', detail.redaction_count);
   body.append(h('section', { className: 'drawer-section first' }, h('h3', { textContent: 'Record' }), dl));
 
@@ -74,10 +75,20 @@ function renderDrawer(detail) {
 
   if (detail.mutation) body.append(drawerMutationSection(detail.mutation));
 
+  if (findings.length) {
+    const section = h('section', { className: 'drawer-section' }, h('h3', { textContent: 'Session finding participation' }));
+    findings.forEach(function(finding) {
+      section.append(h('div', { className: 'danger-explanation' },
+        h('strong', { textContent: cap(finding.severity || 'risk') + ' · ' + String(finding.id || 'finding').replace(/-/g, ' ') + ' · ' + cap(finding.outcome || 'unknown') }),
+        h('span', { textContent: finding.display_note || 'This event participates in a session-level finding.' })));
+    });
+    body.append(section);
+  }
+
   if (detail.risk && (detail.risk.score || (detail.risk.flags || []).length)) {
     const score = Math.max(0, Math.min(100, Number(detail.risk.score || 0)));
     const risk = h('section', { className: 'drawer-section' }, h('h3', { textContent: 'Risk interpretation' }));
-    const row = h('div', { className: 'risk-line' }, h('strong', { textContent: 'Score ' + Number(detail.risk.score || 0) }));
+    const row = h('div', { className: 'risk-line' }, h('strong', { textContent: 'Individual action score ' + Number(detail.risk.score || 0) }));
     (detail.risk.flags || []).forEach(function(flag) { row.append(h('span', { className: 'tag-chip', textContent: String(flag).replace(/-/g, ' ') })); });
     row.append(h('span', { className: 'who', textContent: 'machine evidence' }));
     risk.append(row);

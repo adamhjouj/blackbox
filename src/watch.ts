@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { readConfig, writeConfig } from './config';
 import { blackboxDir, configPath, ensureBlackboxDir } from './paths';
 
 const MARKER = '>>> blackbox';
@@ -24,18 +25,20 @@ interface Config {
 /** Load config, generating+persisting a token if none exists, so installed
  *  git hooks always carry a token that the daemon requires on /git. */
 function loadConfig(): Config {
-  let c: Record<string, unknown> = {};
-  try {
-    c = JSON.parse(readFileSync(configPath(), 'utf8')) as Record<string, unknown>;
-  } catch {
-    /* no config yet */
-  }
+  ensureBlackboxDir();
+  const path = configPath();
+  const c = readConfig(path);
+  let changed = false;
   if (typeof c.token !== 'string' || !c.token) {
-    ensureBlackboxDir();
-    c = { ...c, token: randomBytes(16).toString('hex'), port: (c.port as number) ?? 7842 };
-    writeFileSync(configPath(), JSON.stringify(c, null, 2) + '\n');
+    c.token = randomBytes(16).toString('hex');
+    changed = true;
   }
-  return { token: c.token as string, port: (c.port as number) ?? 7842 };
+  if (typeof c.port !== 'number' || !Number.isInteger(c.port) || c.port < 1 || c.port > 65_535) {
+    c.port = 7842;
+    changed = true;
+  }
+  if (changed) writeConfig(c, path);
+  return { token: c.token as string, port: c.port as number };
 }
 
 function git(cwd: string, args: string[]): string {
@@ -187,20 +190,16 @@ export function watchGlobal(): { hooksDir: string; priorHooksPath: string } {
   // persist prior so uninstall can restore it — but never overwrite an already-saved
   // real prior with '' (would lose the user's original hooksPath on a second run).
   const cfgPath = configPath();
-  const existing = existsSync(cfgPath) ? (JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>) : {};
+  const existing = readConfig(cfgPath);
   const savedPrior = typeof existing.priorHooksPath === 'string' && existing.priorHooksPath ? existing.priorHooksPath : prior;
-  writeFileSync(cfgPath, JSON.stringify({ ...existing, priorHooksPath: savedPrior }, null, 2) + '\n');
+  writeConfig({ ...existing, priorHooksPath: savedPrior }, cfgPath);
   execFileSync('git', ['config', '--global', 'core.hooksPath', dir]);
   return { hooksDir: dir, priorHooksPath: prior };
 }
 
 export function unwatchGlobal(): { restored: string | null } {
-  let prior: string | null = null;
-  try {
-    prior = (JSON.parse(readFileSync(configPath(), 'utf8')) as { priorHooksPath?: string }).priorHooksPath ?? '';
-  } catch {
-    prior = '';
-  }
+  const cfg = readConfig(configPath());
+  const prior = typeof cfg.priorHooksPath === 'string' ? cfg.priorHooksPath : '';
   if (prior) execFileSync('git', ['config', '--global', 'core.hooksPath', prior]);
   else execFileSync('git', ['config', '--global', '--unset', 'core.hooksPath']);
   try {

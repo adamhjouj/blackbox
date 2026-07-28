@@ -1,5 +1,8 @@
 # Phase 9 (R4) — The provenance graph (Obsidian-style)
 
+> [!NOTE]
+> Historical implementation record. Commands and capability boundaries may be superseded; use the [README](../README.md) and [current architecture](ARCHITECTURE.md) as the product contract.
+
 The Story view is linear. A graph shows what a list hides: **fan-out** (one prompt exploding into many steps), **shared-entity relationships** (a file touched by several steps is a high-degree node), and a **risk chain as a drawn path** (the exfil combo `secret → send → host` rendered in red — the postable screenshot). R4 adds a third **Graph** tab beside Timeline and Story.
 
 ## The load-bearing rule

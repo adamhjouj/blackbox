@@ -1,7 +1,8 @@
 export const CORE_JS = String.raw`
 'use strict';
 const S = {
-  cards: [], cardsFp: '', fleet: null, health: null, profile: null, privacy: null, displayName: 'there',
+  cards: [], cardsFp: '', fleet: null, health: null, profile: null, privacy: null, setup: null, setupFp: '', displayName: 'there',
+  reviewInbox: [], reviewFp: '', reviewCsrf: '', loadingReview: false,
   route: { page: 'home', id: null, tab: null, eventSeq: null }, currentId: null,
   story: null, blast: null, verify: null, sessionFp: '', loadingSession: false,
   query: '', deepHits: [], searching: false, searchTimer: null, dashboardSort: 'recent',
@@ -35,6 +36,16 @@ function append(node, child) {
 
 async function api(path) {
   const response = await fetch(path, { headers: { accept: 'application/json' } });
+  if (!response.ok) throw new Error('Request failed with status ' + response.status);
+  return response.json();
+}
+
+async function apiWrite(path, body) {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'x-blackbox-csrf': S.reviewCsrf },
+    body: JSON.stringify(body)
+  });
   if (!response.ok) throw new Error('Request failed with status ' + response.status);
   return response.json();
 }
@@ -161,6 +172,7 @@ function parseRoute() {
     return { page: 'session', id: id, tab: tab, eventSeq: eventSeq };
   }
   if (parts[0] === 'settings') return { page: 'settings', id: null, tab: null, eventSeq: null };
+  if (parts[0] === 'review') return { page: 'review', id: null, tab: null, eventSeq: null };
   return { page: 'home', id: null, tab: null, eventSeq: null };
 }
 
@@ -217,6 +229,13 @@ function routeChanged() {
     loadPrivacy();
     return;
   }
+  if (next.page === 'review') {
+    closeDrawerNodes(); S.selectedSeq = null;
+    renderReviewInbox();
+    if (changedView) setWindowScroll(0);
+    loadReviewInbox(false);
+    return;
+  }
   if (!changedView && changedEvidence) {
     if (next.eventSeq != null) openEvidence(next.eventSeq, true);
     else { S.selectedSeq = null; closeDrawerNodes(); }
@@ -242,7 +261,11 @@ function routeChanged() {
 
 function sidebarActive() {
   const dash = document.getElementById('navDash');
+  const review = document.getElementById('navReview');
+  const settings = document.getElementById('navSettings');
   if (dash) dash.classList.toggle('active', S.route.page === 'home' && !S.query.trim());
+  if (settings) settings.classList.toggle('active', S.route.page === 'settings');
+  if (review) review.classList.toggle('active', S.route.page === 'review');
   document.querySelectorAll('.sb-item, .sb-recent').forEach(function(item) {
     item.classList.toggle('active', S.route.page === 'session' && item.getAttribute('data-id') === S.route.id);
   });
@@ -257,7 +280,7 @@ function sidebarSessionButton(card, review) {
     h('span', null,
       h('span', { className: 'sb-item-title', textContent: title }),
       h('span', { className: 'sb-item-sub', textContent: basename(card.cwd) })),
-    h('span', { className: 'sb-flag', textContent: Number(card.flagged || 0) + '⚑' })
+    h('span', { className: 'sb-flag', textContent: Number(card.review_count || 0) + '⚑' })
   );
   else button.append(
     h('span', { className: 'sb-recent-title', textContent: title }),
@@ -272,8 +295,8 @@ function renderSidebarLists() {
   if (!reviewHost || !recentHost) return;
   reviewHost.textContent = ''; recentHost.textContent = '';
   const byEnded = S.cards.slice().sort(function(a, b) { return Date.parse(b.ended || 0) - Date.parse(a.ended || 0); });
-  const review = byEnded.filter(function(card) { return isDanger(card.verdict); });
-  const rest = byEnded.filter(function(card) { return !isDanger(card.verdict); });
+  const review = byEnded.filter(function(card) { return Number(card.review_count || 0) > 0; });
+  const rest = byEnded.filter(function(card) { return Number(card.review_count || 0) === 0; });
   if (review.length) {
     reviewHost.append(h('div', { className: 'sb-group-head' },
       h('span', { className: 'mlabel', textContent: 'Needs review' }),
@@ -324,6 +347,26 @@ async function loadPrivacy() {
   if (S.route.page === 'settings') renderSettingsPage();
 }
 
+async function loadReviewInbox(force) {
+  if (S.loadingReview) return;
+  S.loadingReview = true;
+  try {
+    const data = await api('/api/review-inbox');
+    const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+    const fp = JSON.stringify(sessions);
+    S.reviewCsrf = data.csrf_token || S.reviewCsrf;
+    if (force || fp !== S.reviewFp) {
+      S.reviewFp = fp; S.reviewInbox = sessions;
+      if (S.route.page === 'review') renderPreservingScroll(renderReviewInbox);
+    }
+    const count = sessions.reduce(function(total, session) { return total + Number(session.unresolved || 0); }, 0);
+    const badge = document.getElementById('reviewNavCount');
+    if (badge) badge.textContent = count ? String(count) : '';
+  } catch (_) {
+    if (S.route.page === 'review') showToast('Review Inbox could not be loaded');
+  } finally { S.loadingReview = false; }
+}
+
 function openProfile() {
   const pop = document.getElementById('profilePopover');
   pop.textContent = '';
@@ -355,15 +398,21 @@ function showToast(message) {
 }
 
 async function refreshBase() {
-  let health = null, cards = null, fleet = null;
+  let health = null, cards = null, fleet = null, setup = null;
   try {
-    const data = await Promise.all([api('/health'), api('/api/sessions'), api('/api/fleet').catch(function() { return null; })]);
-    health = data[0]; cards = data[1]; fleet = data[2]; S.offline = false;
+    const data = await Promise.all([api('/health'), api('/api/sessions'), api('/api/fleet').catch(function() { return null; }), api('/api/setup-status').catch(function() { return null; })]);
+    health = data[0]; cards = data[1]; fleet = data[2]; setup = data[3]; S.offline = false;
   } catch (_) { S.offline = true; }
   if (health) S.health = health;
   if (health && S.lastHead != null && Number(health.head_seq || 0) > S.lastHead) S.recordingUntil = Date.now() + 6500;
   if (health) S.lastHead = Number(health.head_seq || 0);
   if (fleet) S.fleet = fleet;
+  let setupChanged = false;
+  if (setup) {
+    const setupFp = JSON.stringify(setup);
+    setupChanged = setupFp !== S.setupFp;
+    S.setup = setup; S.setupFp = setupFp;
+  }
   updateChrome();
   if (cards) {
     const fp = JSON.stringify(cards);
@@ -372,6 +421,10 @@ async function refreshBase() {
       renderSidebarLists();
       if (S.route.page === 'home') renderPreservingScroll(renderDashboard);
       else if (S.route.page === 'session') renderPreservingScroll(renderSessionPage);
+      else if (S.route.page === 'settings') renderPreservingScroll(renderSettingsPage);
+    }
+    else if (setupChanged) {
+      if (S.route.page === 'home') renderPreservingScroll(renderDashboard);
       else if (S.route.page === 'settings') renderPreservingScroll(renderSettingsPage);
     }
   }
@@ -405,6 +458,7 @@ function schedulePoll() {
   clearTimeout(S.pollTimer);
   S.pollTimer = setTimeout(async function tick() {
     await refreshBase();
+    await loadReviewInbox(false);
     if (S.route.page === 'session' && S.route.id) {
       await loadSessionData(S.route.id, false);
       if (S.route.tab === 'graph') await loadGraph(false);
@@ -469,5 +523,5 @@ window.addEventListener('hashchange', routeChanged);
 if (!location.hash) history.replaceState(null, '', '#/');
 S.route = parseRoute();
 loadProfile();
-refreshBase().finally(function() { routeChanged(); schedulePoll(); });
+refreshBase().finally(function() { loadReviewInbox(false); routeChanged(); schedulePoll(); });
 `;

@@ -1,6 +1,7 @@
-import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, statSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   Correlator,
   classify,
@@ -13,7 +14,7 @@ import {
 import { sessionAnchor } from './mutation';
 import { collectEnv } from './envsnap';
 import { daemonStartEvent, daemonStopEvent, envSnapshotEvent, normalize, normalizeAndCapture, reasoningEvent, worktreeBaseEvent, worktreeDeltaEvent } from './normalize';
-import { emitReceipt, loadAnchorConfig, receiptFromSignature } from './anchor';
+import { anchorDisplayDestination, emitReceipt, loadAnchorConfig, receiptFromSignature } from './anchor';
 import { persistReconciliation } from './reconcile';
 import { readTurnIntent } from './transcript';
 import { captureWorktreeDelta } from './worktree';
@@ -29,6 +30,11 @@ import { ensureKeypair, isSignableBoundary, signHead, signIdentity, writeWaterma
 import { Store } from './store';
 import type { BlackboxEvent } from './types';
 import { renderPage } from './ui-page';
+import { buildSetupStatus, type SetupStatus } from './readiness';
+import { readConfig } from './config';
+import { adaptGeminiHook, GeminiCorrelator } from './adapters/gemini';
+import { reviewInboxFromViews, reviewViews, sessionReviewView, type SessionReviewView } from './review-inbox';
+import { redactText } from './redact';
 
 export interface DaemonOptions {
   db: string;
@@ -88,7 +94,7 @@ function privacyStatus(opts: DaemonOptions): Record<string, unknown> {
     anchor: target
       ? {
           kind: target.kind,
-          destination: target.kind === 'git' ? target.repo : target.kind === 'file' ? target.path : target.url,
+          destination: anchorDisplayDestination(target),
           external: !anchor.localOnly,
           auto_push: anchor.push,
         }
@@ -149,6 +155,28 @@ function isBrowserForged(headers: http.IncomingHttpHeaders): boolean {
   return !!s && s !== 'same-origin' && s !== 'none';
 }
 
+function nonceMatches(expected: string, supplied: string): boolean {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(supplied);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function isAllowedUiWrite(headers: http.IncomingHttpHeaders, port: number): boolean {
+  const site = headers['sec-fetch-site'];
+  const fetchSite = Array.isArray(site) ? site[0] : site;
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') return false;
+  const value = headers.origin;
+  const origin = Array.isArray(value) ? value[0] : value;
+  if (!origin) return true; // non-browser clients still need the CSRF nonce
+  try {
+    const parsed = new URL(origin);
+    const originPort = parsed.port ? Number(parsed.port) : parsed.protocol === 'http:' ? 80 : 443;
+    return parsed.protocol === 'http:' && isLoopbackHost(parsed.host) && originPort === port;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Start the receiver. Binds 127.0.0.1 ONLY (never 0.0.0.0). Single long-lived
  * Store instance → writes serialize (single-writer invariant). The request
@@ -156,7 +184,9 @@ function isBrowserForged(headers: http.IncomingHttpHeaders): boolean {
  * are async/fire-and-forget so we always answer 200 after logging.
  */
 export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
-  const port = opts.port ?? DEFAULT_PORT;
+  // Keep the actual bound port in the closure. `port: 0` is useful for isolated
+  // health/self-tests and asks the OS for an available ephemeral port.
+  let port = opts.port ?? DEFAULT_PORT;
   const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
 
   // /git auth is REQUIRED by default. Without a token that route would accept
@@ -165,15 +195,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   // present — before opening a Store or binding a socket. `blackbox init`/`start`
   // generate a token automatically, so this only fires on a deliberately token-less
   // config, not on a fresh install.
-  let configToken = '';
-  let cfgInsecureGit = false;
-  try {
-    const raw = JSON.parse(readFileSync(configPath(), 'utf8')) as { token?: string; insecure_git?: boolean };
-    configToken = raw.token ?? '';
-    cfgInsecureGit = raw.insecure_git === true;
-  } catch {
-    /* no config yet */
-  }
+  const rawConfig = readConfig(configPath());
+  const configToken = typeof rawConfig.token === 'string' ? rawConfig.token : '';
+  const cfgInsecureGit = rawConfig.insecure_git === true;
   const allowInsecureGit = opts.allowInsecureGit ?? cfgInsecureGit;
   if (!configToken && !allowInsecureGit) {
     throw new Error(
@@ -187,15 +211,39 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   const store = new Store(opts.db);
   const startedAt = Date.now();
   const correlator = new Correlator();
+  const geminiCorrelator = new GeminiCorrelator();
+  const uiCsrfToken = randomBytes(24).toString('base64url');
   const riskEngine = new RiskEngine((sid) => store.eventsLight(sid));
-  // R3 chain-of-custody: load the signing key once (null if never keyed). Signing
-  // is off the hook path and best-effort — it can never fail a recording.
-  let signingKeys: Keypair | null = null;
-  try {
-    signingKeys = ensureKeypair();
-  } catch {
-    /* signing stays off until a key exists */
-  }
+  let setupCache: { headSeq: number; checkedAt: number; value: SetupStatus } | null = null;
+  let reviewCache: { headSeq: number; headHash: string; reviewCount: number; checkedAt: number; views: SessionReviewView[] } | null = null;
+  const reviewSnapshot = (): SessionReviewView[] => {
+    const meta = store.chainMeta();
+    const headSeq = meta?.head_seq ?? 0;
+    const headHash = meta?.head_hash ?? '';
+    const reviewCount = store.reviewCount();
+    const now = Date.now();
+    // Share one expensive projection between /api/sessions and
+    // /api/review-inbox. The short TTL still discovers policy-only filesystem
+    // changes on the next UI poll even when the evidence/review heads are idle.
+    if (reviewCache && reviewCache.headSeq === headSeq && reviewCache.headHash === headHash &&
+        reviewCache.reviewCount === reviewCount && now - reviewCache.checkedAt < 500) {
+      return reviewCache.views;
+    }
+    const views = reviewViews(store);
+    reviewCache = { headSeq, headHash, reviewCount, checkedAt: now, views };
+    return views;
+  };
+  const setupStatus = (): SetupStatus => {
+    const headSeq = store.chainMeta()?.head_seq ?? 0;
+    if (setupCache && setupCache.headSeq === headSeq && Date.now() - setupCache.checkedAt < 3_000) return setupCache.value;
+    const value = buildSetupStatus(store, { db: opts.db, port });
+    setupCache = { headSeq, checkedAt: Date.now(), value };
+    return value;
+  };
+  // A missing identity is created once. Partial, corrupt, or mismatched keys are
+  // a custody failure and must stop startup rather than silently recording an
+  // unsigned chain that the UI could mistake for healthy.
+  const signingKeys: Keypair = ensureKeypair();
 
   // R6 external anchoring: emit a signed head receipt to the configured target at
   // the same boundaries we sign at. Loaded at startup; enabling it takes effect on
@@ -411,6 +459,25 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     }
   };
 
+  const recordGeminiHook = (body: string, truncated: boolean): void => {
+    if (truncated) {
+      const capturedAt = new Date().toISOString();
+      scoreAndPersist(store.append(normalize({ hook_event_name: 'OversizedHook', session_id: 'unknown', _truncated: true, _blackbox_adapter: 'gemini-cli' }, capturedAt)));
+      log('recorded oversized/truncated Gemini hook as marker');
+      return;
+    }
+    let payload: unknown;
+    try { payload = JSON.parse(body) as unknown; }
+    catch { log('gemini: drop invalid JSON body'); return; }
+    if (!isPlainObject(payload)) { log('gemini: drop non-object payload'); return; }
+    try {
+      const adapted = adaptGeminiHook(payload, geminiCorrelator);
+      recordHook(JSON.stringify(adapted.payload), false);
+    } catch (err) {
+      log(`gemini: drop unsupported payload: ${(err as Error).message}`);
+    }
+  };
+
   const recordGit = (headers: http.IncomingHttpHeaders, body: string): void => {
     if (configToken && hdr(headers, 'x-bb-token') !== configToken) {
       log('git: token mismatch — dropped');
@@ -488,7 +555,14 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             return;
           }
           if (path === '/api/sessions') {
-            sendJson(res, 200, sessionCards(store));
+            const reviews = new Map(reviewSnapshot().map((view) => [view.session_id, view]));
+            const cards = sessionCards(store).map((card) => {
+              const review = reviews.get(card.session_id);
+              return review
+                ? { ...card, review_count: review.unresolved, review_total: review.total, reviewed: review.total - review.unresolved }
+                : card;
+            });
+            sendJson(res, 200, cards);
             return;
           }
           // Local-only dashboard personalisation. The browser may override this
@@ -498,7 +572,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             return;
           }
           if (path === '/api/privacy') {
-            sendJson(res, 200, privacyStatus(opts));
+            sendJson(res, 200, privacyStatus({ ...opts, port }));
+            return;
+          }
+          if (path === '/api/setup-status') {
+            sendJson(res, 200, setupStatus());
             return;
           }
           // R3: chain integrity + signature status for the forensic badge. Read-only
@@ -516,6 +594,20 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           // R8.3: fleet overview — one cached aggregation across all sessions.
           if (path === '/api/fleet') {
             sendJson(res, 200, fleetOverview(store));
+            return;
+          }
+          if (path === '/api/review-inbox') {
+            sendJson(res, 200, { sessions: reviewInboxFromViews(reviewSnapshot()), csrf_token: uiCsrfToken });
+            return;
+          }
+          const mf = path.match(/^\/api\/session\/(.+)\/findings$/);
+          if (mf) {
+            let id: string;
+            try { id = decodeURIComponent(mf[1]!); }
+            catch { sendJson(res, 400, { ok: false, error: 'bad session id' }); return; }
+            const view = sessionReviewView(store, id);
+            if (!view) { sendJson(res, 404, { ok: false, error: 'no such session' }); return; }
+            sendJson(res, 200, { ...view, csrf_token: uiCsrfToken });
             return;
           }
           // R8.1: blast radius + containment checklist for one session.
@@ -584,8 +676,59 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           sendJson(res, 404, { ok: false, error: 'not found' });
           return;
         }
+        // The sole browser write API: append a local review decision. A random
+        // same-origin-readable nonce plus Origin/Fetch-Site validation protects
+        // localhost from cross-site form/fetch attacks. Evidence rows are never
+        // mutated; the review ledger is separate and append-only.
+        if (req.method === 'POST' && path === '/api/review') {
+          if (!isAllowedUiWrite(req.headers, port) || !nonceMatches(uiCsrfToken, hdr(req.headers, 'x-blackbox-csrf'))) {
+            sendJson(res, 403, { ok: false, error: 'forbidden' });
+            return;
+          }
+          if (!hdr(req.headers, 'content-type').includes('application/json')) {
+            sendJson(res, 415, { ok: false, error: 'expected application/json' });
+            return;
+          }
+          const { body, truncated } = await readBody(req, Math.min(maxBody, 64 * 1024));
+          if (truncated) { sendJson(res, 413, { ok: false, error: 'review payload too large' }); return; }
+          let input: unknown;
+          try { input = JSON.parse(body) as unknown; }
+          catch { sendJson(res, 400, { ok: false, error: 'invalid JSON' }); return; }
+          if (!isPlainObject(input)) { sendJson(res, 400, { ok: false, error: 'expected an object' }); return; }
+          const sessionId = typeof input.session_id === 'string' ? input.session_id : '';
+          const findingKey = typeof input.finding_key === 'string' ? input.finding_key : '';
+          const disposition = typeof input.disposition === 'string' ? input.disposition : '';
+          if (!sessionId || !findingKey || !['acknowledged', 'expected', 'false_positive', 'unreviewed'].includes(disposition)) {
+            sendJson(res, 400, { ok: false, error: 'invalid review decision' });
+            return;
+          }
+          const current = sessionReviewView(store, sessionId);
+          const finding = current?.findings.find((item) => item.key === findingKey);
+          if (!current || !finding) { sendJson(res, 404, { ok: false, error: 'finding is no longer current' }); return; }
+          if (current.baseline_error) {
+            sendJson(res, 409, { ok: false, error: 'project baseline is invalid; fix it before recording a review decision' });
+            return;
+          }
+          const rawNote = typeof input.note === 'string' ? input.note.trim() : '';
+          const note = rawNote ? Array.from(redactText(rawNote).text).slice(0, 1_000).join('') : null;
+          store.reviewAppend({
+            id: randomUUID(),
+            session_id: sessionId,
+            finding_key: findingKey,
+            disposition: disposition as 'acknowledged' | 'expected' | 'false_positive' | 'unreviewed',
+            note,
+            reviewed_through_seq: current.last_seq,
+            reviewed_through_hash: current.last_hash,
+            policy_hash: finding.policy_hash,
+            created_at: new Date().toISOString(),
+          });
+          reviewCache = null;
+          sendJson(res, 200, { ok: true, session: sessionReviewView(store, sessionId) });
+          return;
+        }
+
         // Reject browser-forged writes to both recording routes (CSRF to localhost).
-        if (req.method === 'POST' && (path === '/hook' || path === '/git') && isBrowserForged(req.headers)) {
+        if (req.method === 'POST' && (path === '/hook' || path === '/hook/gemini' || path === '/git') && isBrowserForged(req.headers)) {
           log(`rejected browser-forged POST ${path}`);
           sendJson(res, 403, { ok: false, error: 'forbidden' });
           return;
@@ -605,6 +748,19 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             // never let an append failure surface as a hook error
             log(`append error: ${(err as Error).message}`);
           }
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        if (req.method === 'POST' && path === '/hook/gemini') {
+          const ct = hdr(req.headers, 'content-type');
+          if (!ct.includes('application/json')) {
+            log('rejected /hook/gemini with non-JSON content-type');
+            sendJson(res, 415, { ok: false, error: 'expected application/json' });
+            return;
+          }
+          const { body, truncated } = await readBody(req, maxBody);
+          try { recordGeminiHook(body, truncated); }
+          catch (err) { log(`gemini append error: ${(err as Error).message}`); }
           sendJson(res, 200, { ok: true });
           return;
         }
@@ -640,6 +796,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     server.once('error', onError);
     server.listen(port, '127.0.0.1', () => {
       server.removeListener('error', onError);
+      const address = server.address();
+      if (address && typeof address === 'object') port = address.port;
       log(`listening on 127.0.0.1:${port} (db ${opts.db})`);
       // Surface the security posture LOUDLY at startup so a weaker mode is never a
       // silent surprise: git-route auth + external-anchor (off-machine custody).

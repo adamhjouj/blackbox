@@ -82,6 +82,7 @@ export interface OtlpOptions {
 }
 
 const SPAN_KIND_INTERNAL = 1;
+const STATUS_UNSET = 0;
 const STATUS_OK = 1;
 const STATUS_ERROR = 2;
 
@@ -194,6 +195,7 @@ function sessionSpans(store: Store, sessionId: string, card: Card | null): Span[
         'blackbox.action.type': a.type,
         'blackbox.action.target': a.target,
         'blackbox.action.summary': a.summary,
+        'blackbox.action.outcome': a.outcome,
         'blackbox.agent.type': a.agent_type,
         'blackbox.prompt_id': a.prompt_id,
         'blackbox.redaction_count': a.redaction_count,
@@ -201,12 +203,15 @@ function sessionSpans(store: Store, sessionId: string, card: Card | null): Span[
         'blackbox.risk.flags': a.signals,
         'blackbox.risk.notes': a.notes,
       }),
-      status: a.success === 0 ? { code: STATUS_ERROR, message: 'tool call failed' } : { code: STATUS_OK },
+      status: a.outcome === 'failed' ? { code: STATUS_ERROR, message: 'tool call failed' } : a.outcome === 'succeeded' ? { code: STATUS_OK } : { code: STATUS_UNSET },
     };
     // Findings surface as span events so they are visible in any trace UI.
-    const findings = [...a.signals, ...a.notes];
-    if (findings.length) {
-      span.events = findings.map((f) => ({ timeUnixNano: s, name: 'blackbox.finding', attributes: attrs({ 'blackbox.flag': f }) }));
+    const ruleFindings = [...a.signals, ...a.notes];
+    if (ruleFindings.length || a.findings.length) {
+      span.events = [
+        ...ruleFindings.map((f) => ({ timeUnixNano: s, name: 'blackbox.finding', attributes: attrs({ 'blackbox.flag': f }) })),
+        ...a.findings.map((finding) => ({ timeUnixNano: s, name: 'blackbox.session_finding', attributes: attrs({ 'blackbox.finding.id': finding.id, 'blackbox.finding.severity': finding.severity, 'blackbox.finding.outcome': finding.outcome }) })),
+      ];
     }
     spans.push(span);
 

@@ -1,4 +1,5 @@
-import { actionSummary, explainEvent } from './explain';
+import { actionSummary, explainEvent, explanationForOutcome, summaryForOutcome } from './explain';
+import { actionOutcome, projectFindings, type FindingOutcome, type FindingView } from './findings';
 import { safeParse } from './json';
 import { buildTrace, ALL_DEPTH, type TraceView } from './graph';
 import { INTENT_VERSION } from './intent';
@@ -8,7 +9,7 @@ import { recoverSessionTurns, sessionTitleFromTranscript } from './transcript';
 import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, KNOWN_RULESETS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
 import { loadPublicKey, loadWatermark } from './sign';
 import type { SessionRiskRow, Store } from './store';
-import type { BlackboxEvent } from './types';
+import type { BlackboxEvent, EventSource } from './types';
 import { verify } from './verify';
 
 /** One row in the timeline: a Pre/Post tool pair collapsed into a single action,
@@ -25,24 +26,19 @@ export interface Action {
   summary: string; // plain-English one-liner for the row (agent description, else synthesized)
   phase: string;
   success: 0 | 1 | null;
+  outcome: FindingOutcome;
   duration_ms: number | null;
   redaction_count: number;
   signals: FlagId[]; // risk flags + always-show / on-combo annotations → red/muted row chips
   notes: FlagId[]; // muted annotations shown only in the expanded dossier
+  findings: FindingView[]; // session-level causal findings this action participates in
   score: number;
   prompt_id: string | null;
   agent_type: string | null;
+  source: EventSource | null;
 }
 
-export interface ComboEvidence {
-  id: string;
-  severity: string;
-  antecedent_seq: number;
-  consequent_seq: number;
-  note: string;
-  server?: string; // tool-poisoning: the poisoned server
-  host?: string; // optional external host evidence
-}
+export type ComboEvidence = FindingView;
 
 export interface SessionCard {
   session_id: string;
@@ -57,6 +53,8 @@ export interface SessionCard {
   flags: Record<string, number>; // risk-flag counts only (drives the "N flagged" badge)
   annotations: Record<string, number>; // muted context counts (secret-touch, etc.)
   flagged: number;
+  findings: number;
+  review_count: number;
   cwd: string | null;
   name: string | null; // human-readable session name (user /rename, else AI title)
   density: number[]; // event-count histogram over the session span (UI sparkline)
@@ -94,9 +92,12 @@ export function looksLikeHost(h: string): boolean {
 
 // Cache keyed on chain head_seq: the store is append-only and the daemon writes
 // risk right after each append, so a result is valid until head_seq advances.
-let cardsCache: { head: number; cards: SessionCard[] } | null = null;
-const actionsCache = new Map<string, { head: number; actions: Action[] }>();
-const storyCache = new Map<string, { head: number; transcript: string; story: SessionStory }>();
+// Cache by Store identity as well as chain head. CLI/tests can open more than one
+// database in a process; a global head-only cache could otherwise disclose a
+// different store's equally-sized session projection.
+const cardsCaches = new WeakMap<Store, { head: number; cards: SessionCard[] }>();
+const actionsCaches = new WeakMap<Store, Map<string, { head: number; actions: Action[] }>>();
+const storyCaches = new WeakMap<Store, Map<string, { head: number; transcript: string; story: SessionStory }>>();
 const headSeq = (store: Store): number => store.chainMeta()?.head_seq ?? 0;
 
 // Version-fallback read: after an r2 bump but before backfill, a session only has
@@ -177,6 +178,7 @@ export function sessionName(store: Store, sessionId: string): string | null {
 /** Sessions with their persisted risk verdict, highest-risk first. */
 export function sessionCards(store: Store): SessionCard[] {
   const head = headSeq(store);
+  const cardsCache = cardsCaches.get(store);
   if (cardsCache && cardsCache.head === head) return cardsCache.cards;
 
   // Merge verdicts across ALL known rulesets, preferring the highest per session —
@@ -205,40 +207,54 @@ export function sessionCards(store: Store): SessionCard[] {
     const name = sessionName(store, s.session_id);
     const density = densities.get(s.session_id) ?? [];
     if (!r) {
-      return { ...s, verdict: 'unscored', score: 0, ruleset_version: RULESET_VERSION, combos: [], flags: {}, annotations: {}, flagged: 0, cwd, name, density };
+      return { ...s, verdict: 'unscored', score: 0, ruleset_version: RULESET_VERSION, combos: [], flags: {}, annotations: {}, flagged: 0, findings: 0, review_count: 0, cwd, name, density };
     }
-    // Split the persisted rule_counts: RISK_FLAGS drive the "N flagged" badge;
-    // ANNOTATION_FLAGS stay as muted context (a truthful count, not 345).
+    // Persisted rule_counts count event rows, while the product speaks in collapsed
+    // actions. Build risk counts from sessionActions so a Pre/Failure pair and an
+    // action carrying two flags still count as one action requiring review.
     const all = safeParse<Record<string, number>>(r.rule_counts, {});
     const flags: Record<string, number> = {};
     const annotations: Record<string, number> = {};
     for (const [k, v] of Object.entries(all)) {
-      if (RISK_FLAGS.has(k as FlagId)) flags[k] = v;
-      else if (ANNOTATION_FLAGS.has(k as FlagId)) annotations[k] = v;
+      if (ANNOTATION_FLAGS.has(k as FlagId)) annotations[k] = v;
     }
-    const flagged = Object.values(flags).reduce((a, b) => a + b, 0);
+    const scoredActions = sessionActions(store, s.session_id);
+    let flagged = 0;
+    for (const action of scoredActions) {
+      const actionFlags = action.signals.filter((flag) => RISK_FLAGS.has(flag));
+      if (actionFlags.length) flagged++;
+      for (const flag of new Set(actionFlags)) flags[flag] = (flags[flag] ?? 0) + 1;
+    }
+    const combos = projectFindings(store.eventsLight(s.session_id), safeArray(r.combos));
     return {
       ...s,
       verdict: r.verdict,
       score: r.score,
       ruleset_version: r.ruleset_version,
-      combos: safeArray<ComboEvidence>(r.combos),
+      combos,
       flags,
       annotations,
       flagged,
+      findings: combos.length,
+      review_count: flagged + combos.length,
       cwd,
       name,
       density,
     };
   });
   cards.sort((a, b) => (VERDICT_RANK[a.verdict] ?? 5) - (VERDICT_RANK[b.verdict] ?? 5) || (a.ended < b.ended ? 1 : -1));
-  cardsCache = { head, cards };
+  cardsCaches.set(store, { head, cards });
   return cards;
 }
 
 /** The Pre/Post-paired timeline for one session, annotated with persisted risk. */
 export function sessionActions(store: Store, sessionId: string): Action[] {
   const head = headSeq(store);
+  let actionsCache = actionsCaches.get(store);
+  if (!actionsCache) {
+    actionsCache = new Map();
+    actionsCaches.set(store, actionsCache);
+  }
   const cached = actionsCache.get(sessionId);
   if (cached && cached.head === head) return cached.actions;
 
@@ -249,8 +265,9 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
   const scoreFor = (seq: number): number => riskBySeq.get(seq)?.score ?? 0;
   // Seqs a fired combo cites as evidence — an annotation on one of these is
   // promoted from a dossier note to a visible row chip.
+  const findingViews = projectFindings(events, safeArray(store.sessionRisk(sessionId, ruleset)?.combos ?? null));
   const comboSeqs = new Set<number>();
-  for (const c of safeArray<ComboEvidence>(store.sessionRisk(sessionId, ruleset)?.combos ?? null)) {
+  for (const c of findingViews) {
     comboSeqs.add(c.antecedent_seq);
     comboSeqs.add(c.consequent_seq);
   }
@@ -270,16 +287,19 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
         type: e.action_type,
         tool: e.tool_name,
         target: e.target,
-        summary: actionSummary(e.action_type, e.target, e.tool_name, eventDescription(e)),
+        summary: summaryForOutcome(actionSummary(e.action_type, e.target, e.tool_name, eventDescription(e)), actionOutcome(events, e)),
         phase: e.phase,
         success: null,
+        outcome: actionOutcome(events, e),
         duration_ms: null,
         redaction_count: e.redaction_count,
         signals: [...signals],
         notes: [...notes],
+        findings: [],
         score: scoreFor(e.seq),
         prompt_id: e.prompt_id,
         agent_type: e.agent_type,
+        source: e.source,
       };
       open.set(e.tool_use_id, a);
       actions.push(a);
@@ -287,6 +307,8 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
       const a = open.get(e.tool_use_id)!;
       a.post_seq = e.seq;
       a.success = e.success;
+      a.outcome = actionOutcome(events, e);
+      a.summary = summaryForOutcome(actionSummary(a.type, a.target, a.tool, eventDescription(events.find((candidate) => candidate.seq === a.seq) ?? e)), a.outcome);
       a.duration_ms = e.duration_ms;
       a.phase = e.phase;
       a.redaction_count += e.redaction_count;
@@ -304,18 +326,26 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
         type: e.action_type,
         tool: e.tool_name,
         target: e.target,
-        summary: actionSummary(e.action_type, e.target, e.tool_name, eventDescription(e)),
+        summary: summaryForOutcome(actionSummary(e.action_type, e.target, e.tool_name, eventDescription(e)), actionOutcome(events, e)),
         phase: e.phase,
         success: e.success,
+        outcome: actionOutcome(events, e),
         duration_ms: e.duration_ms,
         redaction_count: e.redaction_count,
         signals,
         notes,
+        findings: [],
         score: scoreFor(e.seq),
         prompt_id: e.prompt_id,
         agent_type: e.agent_type,
+        source: e.source,
       });
     }
+  }
+
+  for (const action of actions) {
+    const seqs = new Set([action.seq, action.post_seq].filter((seq): seq is number => seq !== null));
+    action.findings = findingViews.filter((finding) => finding.related_seqs.some((seq) => seqs.has(seq)));
   }
 
   if (actionsCache.size > 64) actionsCache.clear();
@@ -328,6 +358,11 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
  *  head-seq cache discipline; the projection itself lives in provenance.ts. */
 export function sessionStory(store: Store, sessionId: string): SessionStory {
   const head = headSeq(store);
+  let storyCache = storyCaches.get(store);
+  if (!storyCache) {
+    storyCache = new Map();
+    storyCaches.set(store, storyCache);
+  }
   const transcriptPath = store.sessionTranscriptPath(sessionId);
   const recovery = transcriptPath ? recoverSessionTurns(transcriptPath, sessionId) : { fingerprint: '', turns: new Map() };
   const cached = storyCache.get(sessionId);
@@ -414,7 +449,7 @@ export interface TraceParams {
 export function sessionTrace(store: Store, sessionId: string, params?: TraceParams): TraceView {
   const story = sessionStory(store, sessionId);
   const ruleset = resolveRuleset(store, sessionId);
-  const combos = safeArray<ComboEvidence>(store.sessionRisk(sessionId, ruleset)?.combos ?? null);
+  const combos = projectFindings(store.eventsLight(sessionId), safeArray(store.sessionRisk(sessionId, ruleset)?.combos ?? null));
   const p = params ?? {};
   const depth = p.whole ? ALL_DEPTH : p.depth ?? null;
   return buildTrace(story, combos, { root: p.root ?? null, depth, whole: !!p.whole, expand: p.expand ?? [] });
@@ -491,7 +526,12 @@ export function eventDetail(store: Store, seq: number): Record<string, unknown> 
   // The redacted tool_input drives the plain-English explanation (and carries
   // extras like `dangerouslyDisableSandbox`). Re-derived at read time, never stored.
   const rawInput = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).tool_input : null;
-  const explanation = explainEvent(e, flags, rawInput && typeof rawInput === 'object' ? (rawInput as Record<string, unknown>) : null);
+  const outcome = actionOutcome(store.eventsLight(e.session_id), e);
+  const explanation = explanationForOutcome(explainEvent(e, flags, rawInput && typeof rawInput === 'object' ? (rawInput as Record<string, unknown>) : null), outcome);
+  const findings = projectFindings(
+    store.eventsLight(e.session_id),
+    safeArray(store.sessionRisk(e.session_id, resolveRuleset(store, e.session_id))?.combos ?? null),
+  ).filter((finding) => finding.related_seqs.includes(seq));
   // A mutation fact rides on the POST event; a timeline row expands its PRE event,
   // so fall back to the paired Post's detail — otherwise expanding an edit shows no
   // diff (the "I can't see what changed" bug). The story view drills into post_seq
@@ -511,12 +551,15 @@ export function eventDetail(store: Store, seq: number): Record<string, unknown> 
     tool_name: e.tool_name,
     action_type: e.action_type,
     target: e.target,
+    success: e.success,
+    action_outcome: outcome,
     ts: e.ts,
     duration_ms: e.duration_ms,
     output_hash: e.output_hash,
     output_size_bytes: e.output_size_bytes,
     redaction_count: e.redaction_count,
     explanation,
+    findings,
     raw,
     detail,
     mutation,
@@ -540,9 +583,10 @@ export interface VerifyStatus {
   latest_sig_seq: number | null;
   latest_sig_ts: string | null;
 }
-let verifyCache: { head: number; status: VerifyStatus } | null = null;
+const verifyCaches = new WeakMap<Store, { head: number; status: VerifyStatus }>();
 export function verifyStatus(store: Store): VerifyStatus {
   const head = headSeq(store);
+  const verifyCache = verifyCaches.get(store);
   if (verifyCache && verifyCache.head === head) return verifyCache.status;
   let ok = false;
   let break_reason: string | null = null;
@@ -569,6 +613,6 @@ export function verifyStatus(store: Store): VerifyStatus {
     break_reason = 'verify-error';
   }
   const status: VerifyStatus = { ok, break_reason, head_seq, count, signed, latest_sig_seq, latest_sig_ts };
-  verifyCache = { head, status };
+  verifyCaches.set(store, { head, status });
   return status;
 }

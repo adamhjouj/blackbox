@@ -1,5 +1,8 @@
 # Phase 1 — Live capture: daemon + redaction + git forensics (built)
 
+> [!NOTE]
+> Historical implementation record. Commands, support ranges, and capability boundaries may be superseded; use the [README](../README.md) and [current architecture](ARCHITECTURE.md) as the product contract.
+
 Phase 0 was the store. Phase 1 makes blackbox actually record real Claude Code sessions automatically, with secrets redacted, plus a git ground-truth collector — all landing in the same hash-chained store `verify` already covers.
 
 ## Quick start

@@ -1,7 +1,7 @@
 {
   "name": "blackbox-recorder",
   "version": "0.1.0-beta.1",
-  "description": "Forensic black-box recorder for AI coding agents (Claude Code first)",
+  "description": "Local-first forensic recorder and pre-merge review for AI coding agents",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -14,6 +14,9 @@
   "keywords": [
     "ai-agents",
     "claude-code",
+    "gemini-cli",
+    "code-review",
+    "attestation",
     "forensics",
     "observability",
     "security",
@@ -21,7 +24,7 @@
   ],
   "type": "commonjs",
   "engines": {
-    "node": ">=18 <23"
+    "node": "^22.0.0 || ^24.0.0 || ^26.0.0"
   },
   "bin": {
     "blackbox": "dist/cli.js"
@@ -39,14 +42,16 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc && chmod +x dist/cli.js",
+    "prepack": "npm run build",
     "prepublishOnly": "npm run build",
     "start": "node dist/cli.js",
     "verify": "node dist/cli.js verify",
     "test": "npm run build && node --test test/*.test.js",
+    "test:packed-install": "node scripts/test-packed-install.mjs",
     "demo": "npm run build && node scripts/demo.mjs"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1"
+    "better-sqlite3": "13.0.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

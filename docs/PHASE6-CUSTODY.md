@@ -1,5 +1,8 @@
 # Phase 6 (R3) — Chain-of-custody hardening
 
+> [!NOTE]
+> Historical implementation record. Commands and custody details may be superseded; use the [README](../README.md), [current architecture](ARCHITECTURE.md), and [attestation guide](ATTESTATIONS.md) as the product contract.
+
 Phases 0–5 made the store tamper-**evident**: a local SHA-256 hash chain plus a same-file `chain_meta` head anchor. Its honest limit (stated at `store.ts`): an attacker who rewrites the whole chain *and* the anchor consistently passes `verify()` — a local chain proves internal consistency, not that it wasn't re-authored. R3 closes that with **cryptographic signing**, and ships a real **forensic case-file**.
 
 ## The load-bearing rule (unchanged)

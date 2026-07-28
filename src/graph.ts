@@ -24,7 +24,7 @@ import type { ComboEvidence } from './read-api';
 
 export type DagKind = 'prompt' | 'step' | 'file' | 'dir' | 'commit' | 'finding' | 'host';
 // Distinct relation types so the UI can style edges by meaning.
-export type DagRel = 'caused' | 'wrote' | 'committed' | 'flagged' | 'sent';
+export type DagRel = 'caused' | 'wrote' | 'committed' | 'flagged' | 'sent' | 'targeted';
 
 export interface DagNode {
   id: string;
@@ -256,7 +256,7 @@ function buildModel(story: SessionStory, combos: ComboEvidence[]): Model {
     const fid = 'F:' + ci;
     const sev = cb.severity || 'high';
     const label = cb.id === 'exfil-chain' ? 'exfil chain' : cb.id.startsWith('injected') ? 'injected instruction' : cb.server ? 'tool poisoning' : cb.id.replace(/-/g, ' ');
-    add(node(fid, 'finding', label, cb.note ? cb.note.replace(/\s+/g, ' ').slice(0, 90) : sev, cb.consequent_seq, true, 'lg'));
+    add(node(fid, 'finding', label, cb.display_note ? cb.display_note.replace(/\s+/g, ' ').slice(0, 90) : cb.note ? cb.note.replace(/\s+/g, ' ').slice(0, 90) : sev, cb.consequent_seq, true, 'lg'));
     roots.unshift({ id: fid, label: label + ' · ' + sev, risk: true, kind: 'finding' });
 
     const aStep = tiA != null ? stepIdForSeq(tiA, cb.antecedent_seq) : null;
@@ -267,18 +267,18 @@ function buildModel(story: SessionStory, combos: ComboEvidence[]): Model {
       link(fid, cStep, 'flagged');
       if (cb.host) {
         const hid = 'h:' + ci;
-        add(node(hid, 'host', cb.host, 'exfil target', null, true, 'md'));
-        link(cStep, hid, 'sent');
+        add(node(hid, 'host', cb.host, cb.outcome === 'succeeded' ? 'tool-reported destination' : 'attempted destination', null, true, 'md'));
+        link(cStep, hid, cb.outcome === 'succeeded' ? 'sent' : 'targeted');
       }
     } else if (cb.host) {
       const hid = 'h:' + ci;
-      add(node(hid, 'host', cb.host, 'exfil target', null, true, 'md'));
-      link(fid, hid, 'sent');
+      add(node(hid, 'host', cb.host, cb.outcome === 'succeeded' ? 'tool-reported destination' : 'attempted destination', null, true, 'md'));
+      link(fid, hid, cb.outcome === 'succeeded' ? 'sent' : 'targeted');
     }
     if (cb.server) {
       const mid = 'm:' + ci;
       add(node(mid, 'host', cb.server, 'poisoned server', null, true, 'md'));
-      link(fid, mid, 'sent');
+      link(fid, mid, cb.outcome === 'succeeded' ? 'sent' : 'targeted');
     }
   });
 

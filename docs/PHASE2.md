@@ -1,5 +1,8 @@
 # Phase 2 — the Blackbox viewer (built)
 
+> [!NOTE]
+> Historical implementation record. Commands, support ranges, and capability boundaries may be superseded; use the [README](../README.md) and [current architecture](ARCHITECTURE.md) as the product contract.
+
 The viewer turns the tamper-evident event stream into a personal, local session dashboard. It is served by the recorder daemon and remains a zero-runtime-dependency, self-contained page.
 
 ## Use it

@@ -19,6 +19,29 @@ function commandRow(command, copy) {
   return h('div', { className: 'privacy-command' }, h('code', { textContent: command }), h('span', { textContent: copy }));
 }
 
+function readinessGlyph(status) {
+  if (status === 'pass') return '✓';
+  if (status === 'fail') return '×';
+  if (status === 'warn') return '!';
+  return '·';
+}
+
+function readinessChecklist() {
+  const list = h('div', { className: 'readiness-list' });
+  const checks = S.setup && S.setup.checks || [];
+  checks.forEach(function(item) {
+    list.append(h('div', { className: 'readiness-row ' + String(item.status || 'pending') },
+      h('span', { className: 'readiness-mark', 'aria-hidden': 'true', textContent: readinessGlyph(item.status) }),
+      h('span', { className: 'readiness-body' },
+        h('strong', { textContent: item.label }),
+        h('span', { textContent: item.detail }),
+        item.command ? h('code', { textContent: item.command }) : null
+      )
+    ));
+  });
+  return list;
+}
+
 function renderSettingsPage() {
   const app = document.getElementById('app');
   app.textContent = '';
@@ -83,8 +106,137 @@ function renderSettingsPage() {
       commandRow('blackbox uninit --erase-data --yes', 'Remove hooks, stop recording, and delete all local data')
     )
   );
-  page.append(h('div', { className: 'settings-grid' }, recorder, storage, custody, captured, controls));
+  const readiness = h('section', { className: 'panel settings-panel settings-wide readiness-panel' },
+    h('div', { className: 'panel-label', textContent: 'Installation readiness' }),
+    h('div', { className: 'readiness-heading' },
+      h('h2', { textContent: S.setup && S.setup.ready ? 'Recorder is ready' : 'Finish recorder setup' }),
+      h('span', { className: 'readiness-progress', textContent: S.setup ? S.setup.passed + ' / ' + S.setup.total : 'Checking…' })
+    ),
+    h('p', { className: 'settings-copy', textContent: 'These checks cover the local runtime, signing identity, adapter hooks, evidence-chain health, custody, and an isolated capture test.' }),
+    S.setup ? readinessChecklist() : h('div', { className: 'settings-loading' })
+  );
+  page.append(h('div', { className: 'settings-grid' }, readiness, recorder, storage, custody, captured, controls));
   app.append(page);
+}
+
+/* ── pre-merge Review Inbox ─────────────────────────────────────────────── */
+
+function reviewOutcomeLabel(outcome) {
+  if (outcome === 'succeeded') return 'Tool reported success';
+  if (outcome === 'failed') return 'Failed';
+  if (outcome === 'attempted') return 'Attempted';
+  return 'Unknown outcome';
+}
+
+async function submitReviewDecision(sessionId, findingKey, disposition, noteInput) {
+  if (!S.reviewCsrf) { showToast('Review session expired; refreshing'); await loadReviewInbox(true); return; }
+  try {
+    await apiWrite('/api/review', {
+      session_id: sessionId,
+      finding_key: findingKey,
+      disposition: disposition,
+      note: noteInput && noteInput.value || ''
+    });
+    showToast(disposition === 'unreviewed' ? 'Finding returned to inbox' : 'Review decision saved');
+    await loadReviewInbox(true);
+    await refreshBase();
+  } catch (_) { showToast('Review decision could not be saved'); }
+}
+
+function reviewFindingCard(session, finding) {
+  const note = h('input', {
+    className: 'review-note text-field',
+    type: 'text',
+    value: finding.review && finding.review.note || '',
+    maxlength: 1000,
+    placeholder: 'Optional local review note',
+    'aria-label': 'Optional local review note for ' + finding.title
+  });
+  const card = h('article', { className: 'inbox-finding' + (finding.resolved ? ' resolved' : '') + (finding.stale ? ' stale' : '') });
+  // Use the null-filtering append helper. Native Element.append() stringifies an
+  // optional null child, which previously painted a literal "null" whenever a
+  // finding had a target but no matching baseline.
+  append(card, [
+    h('div', { className: 'inbox-finding-head' },
+      h('div', null,
+        h('div', { className: 'finding-badges' },
+          h('span', { className: 'risk-badge ' + finding.severity, textContent: finding.severity }),
+          h('span', { className: 'finding-state', textContent: reviewOutcomeLabel(finding.outcome) }),
+          finding.expected ? h('span', { className: 'finding-state expected', textContent: 'Expected by baseline' }) : null,
+          finding.stale ? h('span', { className: 'finding-state stale', textContent: 'Review stale' }) : null,
+          finding.resolved && !finding.stale ? h('span', { className: 'finding-state resolved', textContent: cap(finding.disposition.replace('_', ' ')) }) : null
+        ),
+        h('h3', { textContent: finding.title }),
+        h('p', { textContent: finding.note })
+      ),
+      h('span', { className: 'inbox-score', textContent: String(finding.score) })
+    ),
+    finding.target ? h('code', { className: 'inbox-target', textContent: finding.target }) : null,
+    finding.baseline_matches && finding.baseline_matches.length
+      ? h('div', { className: 'baseline-reasons' }, finding.baseline_matches.map(function(match) { return h('span', { textContent: match.id + ' · ' + match.reason }); }))
+      : null,
+    h('div', { className: 'review-controls' },
+      note,
+      h('div', { className: 'review-buttons' },
+        h('button', { className: 'quiet-button', type: 'button', textContent: 'Acknowledge', onclick: function() { submitReviewDecision(session.session_id, finding.key, 'acknowledged', note); } }),
+        h('button', { className: 'quiet-button', type: 'button', textContent: 'Expected', onclick: function() { submitReviewDecision(session.session_id, finding.key, 'expected', note); } }),
+        h('button', { className: 'quiet-button', type: 'button', textContent: 'False positive', onclick: function() { submitReviewDecision(session.session_id, finding.key, 'false_positive', note); } }),
+        finding.resolved ? h('button', { className: 'quiet-button', type: 'button', textContent: 'Reopen', onclick: function() { submitReviewDecision(session.session_id, finding.key, 'unreviewed', note); } }) : null
+      )
+    )
+  ]);
+  return card;
+}
+
+function renderReviewInbox() {
+  const app = document.getElementById('app');
+  if (S.route.page !== 'review') return;
+  app.textContent = '';
+  app.append(h('header', { className: 'inbox-hero' },
+    h('div', null,
+      h('div', { className: 'panel-label', textContent: 'Pre-merge control' }),
+      h('h1', { textContent: 'Review Inbox' }),
+      h('p', { textContent: 'Acknowledge elevated findings before merge. Decisions stay local, bind to the evidence head and baseline policy, and become stale when either changes.' })
+    ),
+    h('span', { className: 'readiness-progress', textContent: S.reviewInbox.reduce(function(total, session) { return total + Number(session.unresolved || 0); }, 0) + ' open' })
+  ));
+  if (!S.reviewFp) {
+    app.append(h('div', { className: 'skeleton-card', style: 'height:220px' }));
+    return;
+  }
+  if (!S.reviewInbox.length) {
+    app.append(h('section', { className: 'empty-state inbox-clear' },
+      h('div', { className: 'empty-symbol', textContent: '✓' }),
+      h('h2', { textContent: 'Review Inbox is clear' }),
+      h('p', { textContent: 'No current finding is waiting for acknowledgement. New evidence or a policy change will reopen stale reviews automatically.' })
+    ));
+    return;
+  }
+  const groups = new Map();
+  S.reviewInbox.forEach(function(session) {
+    const key = session.project + '|' + (session.branch || 'detached') + '|' + (session.commit || 'no-commit');
+    const group = groups.get(key) || [];
+    group.push(session); groups.set(key, group);
+  });
+  groups.forEach(function(sessions) {
+    const first = sessions[0];
+    const group = h('section', { className: 'inbox-group' });
+    group.append(h('div', { className: 'inbox-group-head' },
+      h('div', null, h('h2', { textContent: first.project }), h('p', { textContent: (first.branch || 'detached HEAD') + (first.commit ? ' · ' + shortId(first.commit) : '') })),
+      h('span', { textContent: sessions.reduce(function(total, session) { return total + Number(session.unresolved || 0); }, 0) + ' open' })
+    ));
+    sessions.forEach(function(session) {
+      const section = h('div', { className: 'inbox-session' });
+      section.append(h('div', { className: 'inbox-session-head' },
+        h('div', null, h('h3', { textContent: session.title }), h('p', { textContent: fmtRel(session.ended) + ' · ' + session.unresolved + ' unresolved' + (session.stale ? ' · ' + session.stale + ' stale' : '') })),
+        h('a', { className: 'quiet-button', href: sessionHref(session.session_id, 'overview'), textContent: 'Open session →' })
+      ));
+      if (session.baseline_error) section.append(h('div', { className: 'baseline-error', textContent: 'Baseline ignored: ' + session.baseline_error }));
+      session.findings.forEach(function(finding) { section.append(reviewFindingCard(session, finding)); });
+      group.append(section);
+    });
+    app.append(group);
+  });
 }
 
 /* ── dashboard ────────────────────────────────────────────────────────────── */
@@ -101,7 +253,7 @@ function sparkline(card) {
   if (!density.length) return h('span', { className: 'spark', 'aria-hidden': 'true' });
   const max = Math.max.apply(null, density.concat([1]));
   const spark = h('span', { className: 'spark', 'aria-hidden': 'true' });
-  const flagged = Number(card.flagged || 0) > 0;
+  const flagged = Number(card.review_count || 0) > 0;
   density.forEach(function(value, index) {
     const bar = h('i', { className: flagged && index >= density.length - 3 ? 'hot' : '' });
     bar.style.height = (4 + Math.round((value / max) * 22)) + 'px';
@@ -130,7 +282,7 @@ function reviewRow(card) {
     sparkline(card),
     h('span', { className: 'review-nums' },
       h('span', { className: 'ev', textContent: fmtInt(card.events) + ' events' }),
-      h('span', { className: 'fl', textContent: fmtInt(card.flagged) + ' flagged' })),
+      h('span', { className: 'fl', textContent: fmtInt(card.findings || 0) + ' finding' + (Number(card.findings || 0) === 1 ? '' : 's') + ' · ' + fmtInt(card.flagged || 0) + ' flagged action' + (Number(card.flagged || 0) === 1 ? '' : 's') })),
     h('span', { className: 'review-rel', textContent: fmtRel(card.ended) }),
     h('span', { className: 'review-arrow', 'aria-hidden': 'true', textContent: '→' })
   );
@@ -145,7 +297,7 @@ function allSessionsTable() {
     h('span', { textContent: 'Session' }),
     h('span', { className: 'h-proj', textContent: 'Project' }),
     h('span', { className: 'r h-ev', textContent: 'Events' }),
-    h('span', { className: 'r', textContent: 'Flags' }),
+    h('span', { className: 'r', textContent: 'Review' }),
     h('span', { className: 'r', textContent: 'Risk' }),
     h('span', { className: 'r h-last', textContent: 'Last' })
   ));
@@ -154,7 +306,7 @@ function allSessionsTable() {
       h('span', { className: 't-title', textContent: sessionTitle(card, null) }),
       h('span', { className: 't-proj', textContent: basename(card.cwd) }),
       h('span', { className: 'r t-num ev-col', textContent: fmtInt(card.events) }),
-      h('span', { className: 'r t-num' + (Number(card.flagged || 0) ? ' red' : ' dim'), textContent: Number(card.flagged || 0) ? fmtInt(card.flagged) : '—' }),
+      h('span', { className: 'r t-num' + (Number(card.review_count || 0) ? ' red' : ' dim'), textContent: Number(card.review_count || 0) ? fmtInt(card.review_count) : '—' }),
       verdictChip(card),
       h('span', { className: 'r t-last', textContent: fmtRel(card.ended) })
     ));
@@ -185,11 +337,31 @@ function renderDashboard() {
     return;
   }
   if (!S.cards.length) {
-    app.append(h('section', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '□' }), h('h2', { textContent: 'No sessions recorded yet' }), h('p', { textContent: 'Start a coding session with the Blackbox hooks enabled. It will appear here automatically.' })));
+    if (!S.setup) {
+      app.append(h('section', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '□' }), h('h2', { textContent: 'Checking recorder readiness' }), h('p', { textContent: 'Blackbox is verifying the local runtime, adapter hooks, signing identity, and evidence store.' })));
+      return;
+    }
+    app.append(h('section', { className: 'onboarding-panel' },
+      h('div', { className: 'onboarding-top' },
+        h('div', null,
+          h('div', { className: 'panel-label', textContent: 'First run' }),
+          h('h2', { textContent: S.setup.ready ? 'Ready for your first recorded session' : 'Finish connecting Blackbox' }),
+          h('p', { textContent: S.setup.ready
+            ? 'Start a session in a connected coding agent. Evidence will appear here automatically.'
+            : 'Complete the checks below once. Raw evidence stays on this computer by default.' })
+        ),
+        h('span', { className: 'readiness-progress', textContent: S.setup.passed + ' / ' + S.setup.total })
+      ),
+      readinessChecklist(),
+      h('div', { className: 'onboarding-actions' },
+        h('a', { className: 'secondary-button', href: '#/settings', textContent: 'Open Health & privacy' }),
+        h('code', { textContent: S.setup.ready ? 'Start Claude Code or Gemini CLI' : 'blackbox doctor' })
+      )
+    ));
     return;
   }
 
-  const review = S.cards.filter(function(card) { return isDanger(card.verdict); })
+  const review = S.cards.filter(function(card) { return Number(card.review_count || 0) > 0; })
     .sort(function(a, b) { return Date.parse(b.ended || 0) - Date.parse(a.ended || 0); });
   const projects = new Set(S.cards.map(function(card) { return basename(card.cwd); })).size;
   const tiles = h('div', { className: 'stat-grid' });
@@ -205,13 +377,13 @@ function renderDashboard() {
   });
   app.append(tiles);
 
-  app.append(sectionHead('01', 'Needs review', review.length ? review.length + ' session' + (review.length === 1 ? '' : 's') + ' with elevated risk' : 'no elevated risk'));
+  app.append(sectionHead('01', 'Needs review', review.length ? review.length + ' session' + (review.length === 1 ? '' : 's') + ' with unresolved findings' : 'no unresolved findings'));
   if (review.length) {
     const list = h('div', { className: 'review-list' });
     review.forEach(function(card) { list.append(reviewRow(card)); });
     app.append(list);
   } else {
-    app.append(h('div', { className: 'review-list' }, h('div', { className: 'rail-note', style: 'padding:16px 20px', textContent: 'No recorded session carries an elevated-risk verdict right now.' })));
+    app.append(h('div', { className: 'review-list' }, h('div', { className: 'rail-note', style: 'padding:16px 20px', textContent: 'No recorded session has an unresolved finding right now.' })));
   }
 
   const sort = h('div', { className: 'seg', 'aria-label': 'Sort sessions' },

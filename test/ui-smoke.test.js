@@ -31,7 +31,7 @@ test('renderPage emits a complete, self-contained HTML document', () => {
 
 test('the persistent console rail ships in the static shell', () => {
   const html = renderPage();
-  for (const needle of ['class="sidebar"', 'id="sbSearch"', 'id="navDash"', 'id="sbReview"', 'id="sbRecent"', 'BLACKBOX', 'id="connectionLabel"']) {
+  for (const needle of ['class="sidebar"', 'id="sbSearch"', 'id="navDash"', 'id="navReview"', 'href="#/review"', 'id="navSettings"', 'href="#/settings"', 'id="sbReview"', 'id="sbRecent"', 'BLACKBOX', 'id="connectionLabel"']) {
     assert.ok(html.indexOf(needle) >= 0, 'sidebar shell should include ' + needle);
   }
   const js = clientJs(html);
@@ -57,11 +57,23 @@ test('CLIENT_JS honours the template-literal safety convention', () => {
 
 test('the emitted page carries the dashboard, routing, and evidence controls', () => {
   const js = clientJs(renderPage());
-  for (const needle of ['parseRoute', 'renderDashboard', 'renderSettingsPage', "parts[0] === 'settings'", '/api/privacy', 'renderSessionPage', 'renderOverview', 'renderActivityView', 'renderGraphView', 'renderGraphPanel', 'openEvidence', 'renderSearchView', 'runDeepSearch']) {
+  for (const needle of ['parseRoute', 'renderDashboard', 'renderSettingsPage', "parts[0] === 'settings'", "parts[0] === 'review'", '/api/privacy', '/api/review-inbox', 'renderReviewInbox', 'renderSessionPage', 'renderOverview', 'renderActivityView', 'renderGraphView', 'renderGraphPanel', 'openEvidence', 'renderSearchView', 'runDeepSearch']) {
     assert.ok(js.indexOf(needle) >= 0, 'CLIENT_JS should reference ' + needle);
   }
   // Pre-merge evidence-tab links must still resolve (into Activity).
   assert.ok(js.indexOf("tab === 'evidence'") >= 0, 'old evidence routes should alias into activity');
+});
+
+test('the Review Inbox supports local acknowledgements and baseline labels', () => {
+  const html = renderPage();
+  const js = clientJs(html);
+  for (const needle of ['Review Inbox', 'Pre-merge control', 'Expected by baseline', 'Review stale', 'Acknowledge', 'False positive', "apiWrite('/api/review'", 'x-blackbox-csrf', 'finding_key', 'baseline_error']) {
+    assert.ok(js.indexOf(needle) >= 0, 'review workflow should include ' + needle);
+  }
+  for (const needle of ['.inbox-group', '.inbox-finding', '.review-controls', '.finding-state.expected']) {
+    assert.ok(html.indexOf(needle) >= 0, 'review styles should include ' + needle);
+  }
+  assert.ok(js.indexOf('append(card, [') >= 0, 'optional Review Inbox children must use the null-filtering append helper');
 });
 
 test('the dashboard reads as stat tiles, a review queue, and the sessions table', () => {
@@ -70,6 +82,7 @@ test('the dashboard reads as stat tiles, a review queue, and the sessions table'
   for (const needle of ['Sessions recorded', 'Need review', 'Projects observed', 'Events recorded', "sectionHead('01', 'Needs review'", "sectionHead('02', 'All sessions'", 'sparkline', 'verdictChip', 'allSessionsTable']) {
     assert.ok(js.indexOf(needle) >= 0, 'dashboard should include ' + needle);
   }
+  assert.ok(js.indexOf('Number(card.review_count || 0) > 0') >= 0, 'Needs review must follow unresolved findings rather than verdict alone');
   for (const needle of ['.stat-tile', '.review-row', '.table-card', '.spark i.hot', '.chip-verdict']) {
     assert.ok(html.indexOf(needle) >= 0, 'dashboard styles should include ' + needle);
   }
@@ -83,6 +96,8 @@ test('the session overview walks 01 what happened through 04 trust', () => {
     "numLabel('03', 'How to respond')",
     "numLabel('04', 'Can you trust this record')",
     'deterministicSummary',
+    'No elevated-risk finding or action was detected.',
+    'session finding',
     'blast-strip',
     'overviewFindings',
     'reviewedMap',
@@ -164,6 +179,9 @@ test('the evidence drawer retains the complete forensic dossier and routable con
     'Chain position',
     'Raw redacted record',
     'risk-score-bar',
+    'Session finding participation',
+    'Individual action score ',
+    "addKv(dl, 'Outcome'",
     'Show in graph'
   ]) assert.ok(js.indexOf(needle) >= 0, 'forensic dossier should include ' + needle);
 });
@@ -180,8 +198,12 @@ test('the viewer keeps hostile data on safe DOM rendering paths', () => {
 
 test('the viewer ships responsive layouts and the settings page', () => {
   const html = renderPage();
-  for (const needle of ['evidence-drawer', 'Health & privacy', 'blackbox erase --all --yes', '.settings-grid', '@media (max-width: 900px)', '@media (max-width: 1100px)', 'prefers-reduced-motion']) {
+  for (const needle of ['evidence-drawer', 'Health & privacy', 'blackbox erase --all --yes', '.settings-grid', '.readiness-list', '.onboarding-panel', '@media (max-width: 900px)', '@media (max-width: 1100px)', 'prefers-reduced-motion']) {
     assert.ok(html.indexOf(needle) >= 0, 'page should include ' + needle);
+  }
+  const js = clientJs(html);
+  for (const needle of ['/api/setup-status', 'readinessChecklist', 'Finish connecting Blackbox', 'Raw evidence stays on this computer by default.']) {
+    assert.ok(js.indexOf(needle) >= 0, 'first-run readiness should include ' + needle);
   }
   assert.match(html, /Welcome back/);
   assert.match(html, /blackbox\.displayName/);
