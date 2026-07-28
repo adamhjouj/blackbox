@@ -226,7 +226,7 @@ Standalone verification checks the strict schema and embedded Ed25519 signature.
 
 ### Optional GitHub Actions output
 
-Inside GitHub Actions, Blackbox can append a metadata-only job summary and typed step outputs. A severity threshold also controls the process exit code, so the Actions job becomes the repository's pass/fail check without a direct Checks API call:
+Inside GitHub Actions, Blackbox can append a metadata-only job summary and named step outputs. A severity threshold also controls the process exit code, so the Actions job becomes the repository's pass/fail check without a direct Checks API call:
 
 ```bash
 blackbox attest \

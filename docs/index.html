@@ -907,7 +907,8 @@
         <span class="section-number">01 / Start recording</span>
         <h2 id="install-title">One command. Clear choices.</h2>
         <p class="section-copy">The installer persists the CLI, checks recorder health, configures the agent adapters you select, and opens Health &amp; privacy so you can confirm exactly where evidence lives.</p>
-        <p class="requirements">Requires Node.js 22, 24, or 26 · Git recommended · managed autostart on macOS</p>
+        <p class="requirements">Requires Node.js 22, 24, or 26 · fresh setup needs an approved Git receipt remote or explicit <code>--local-only-anchor</code> · managed autostart on macOS</p>
+        <p class="requirements">The public command works after this build is published under the npm <code>beta</code> tag. Until then, <a class="text-link" href="https://github.com/adamhjouj/blackbox#install-from-source-instead">install the checkout from source →</a></p>
       </div>
 
       <div class="terminal" aria-label="Blackbox installation commands">
@@ -1031,7 +1032,8 @@
           <span class="section-number">04 / Portable trust</span>
           <h3>Sign the result, not the raw evidence.</h3>
           <p>Create an Ed25519-signed session attestation with the chain range, current verdict, finding outcomes, review totals, coverage, recorder identity, and optional revision metadata.</p>
-          <p>In GitHub Actions, Blackbox can write aggregate-only step outputs and a job summary, then fail the job at your chosen unresolved severity threshold.</p>
+          <p>In GitHub Actions, Blackbox can write aggregate-only named outputs and a job summary, then fail the job at your chosen unresolved severity threshold.</p>
+          <p class="note">Existing artifacts require a pinned identity via <code>--trusted-key</code> or <code>--check</code>. Actions output also requires an exact full signed commit match via <code>--expected-commit</code>. <a class="text-link" href="https://github.com/adamhjouj/blackbox/blob/main/docs/ATTESTATIONS.md">Read the attestation guide →</a></p>
           <p class="note">Attestations exclude prompts, commands, paths, source code, tool output, host names, and reviewer notes.</p>
         </div>
 
@@ -1054,7 +1056,7 @@
           </div>
           <div class="attestation-row">
             <span class="attestation-key">signature</span>
-            <span class="attestation-value good">verified locally</span>
+            <span class="attestation-value good">verified under pinned key</span>
           </div>
         </div>
       </article>
@@ -1066,7 +1068,7 @@
           <span class="section-number">05 / Investigation console</span>
           <h2 id="console-title">Start with the sessions that need you.</h2>
           <p class="section-copy">Open the local UI for session summaries, activity, evidence, deterministic graphs, Review Inbox, recorder health, and direct privacy settings.</p>
-          <p><a class="text-link" href="https://github.com/adamhjouj/blackbox#investigation-model">Explore the interface in the README →</a></p>
+          <p><a class="text-link" href="https://github.com/adamhjouj/blackbox#how-it-works">Explore the interface in the README →</a></p>
         </div>
 
         <figure class="shot-frame">
@@ -1087,7 +1089,7 @@
         <ul class="truth-list">
           <li><span class="tick">01</span><span>Blackbox does not block commands, sandbox agents, restore files, or replace endpoint security.</span></li>
           <li><span class="tick">02</span><span>Outbound targets come from hook-visible inputs. They are not kernel-level network telemetry or delivery confirmation.</span></li>
-          <li><span class="tick">03</span><span>Raw evidence stays local by default. Explicit reports and OTLP exports can move data; enabled anchors send signed chain-head receipt metadata only.</span></li>
+          <li><span class="tick">03</span><span>Raw evidence stays local by default. Explicit reports and OTLP exports can move data; GitHub Actions writes aggregate metadata retained with the run; enabled anchors send signed chain-head receipt metadata only.</span></li>
           <li><span class="tick">04</span><span>A process that controls the database, signing key, watermark, hooks, and every external receipt can defeat local custody.</span></li>
           <li><span class="tick">05</span><span>Capture depends on adapter coverage. Health checks, transcript coverage, and Git reconciliation surface gaps rather than guessing them away.</span></li>
         </ul>

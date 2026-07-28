@@ -10,7 +10,7 @@ Create this file at the root of the repository being reviewed:
 <repo>/.blackbox/policy.json
 ```
 
-Blackbox resolves the repository root from the recorded session working directory. If the directory is not a Git repository, it looks beside that working directory instead.
+Blackbox resolves the repository root from the recorded session working directory. If the directory is not inside a Git repository, that working directory itself is used as the root.
 
 The `.blackbox` directory and `policy.json` must be real filesystem entries, not symlinks. The file is limited to 64 KiB. Policies are versioned and reject unknown fields, unsupported versions, duplicate ids, empty selectors, and values over their documented limits.
 

@@ -17,7 +17,7 @@ All notable changes are documented here. The project follows [Semantic Versionin
 - Strict project baselines at `.blackbox/policy.json`, with normalized fingerprints and selectors for finding ids, rule ids, hosts, paths, command prefixes, and MCP servers.
 - Portable v1 Ed25519 session attestations containing a closed aggregate metadata projection of evidence, revision, recorder, sources, current assessment, review state, and reconciliation coverage.
 - Standalone attestation schema/signature verification and optional local recorder/chain/range checking.
-- Optional GitHub Actions summary and typed step outputs from `blackbox attest --github-output`; `--fail-on high|medium|low` turns unresolved signed severity aggregates into job exit status, while no threshold remains informational.
+- Optional GitHub Actions summary and named step outputs from `blackbox attest --github-output`; `--fail-on high|medium|low` turns unresolved signed severity aggregates into job exit status, while no threshold remains informational.
 - Full revision binding for Actions output through `--expected-commit` or `GITHUB_SHA`.
 - Node `22`, `24`, and `26` build/test and packed-install CI coverage on macOS and Linux.
 - Focused baseline and attestation documentation.

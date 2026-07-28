@@ -54,6 +54,13 @@ test('website is semantic, self-contained, responsive, and internally navigable'
   assert.match(html, /Gemini CLI/);
   assert.match(html, /Review Inbox/);
   assert.match(html, /blackbox-recorder@beta install/);
+  assert.match(html, /published under the npm/);
+  assert.match(html, /--local-only-anchor/);
+  assert.match(html, /--trusted-key/);
+  assert.match(html, /--expected-commit/);
+  assert.match(html, /GitHub Actions writes aggregate metadata/);
+  assert.doesNotMatch(html, /Uncorroborated file mutation|Git discrepancy/);
+  assert.doesNotMatch(html, /#investigation-model/);
   assert.doesNotMatch(html, /<script\s+src=/i);
   assert.doesNotMatch(html, /<link[^>]+rel="stylesheet"/i);
 

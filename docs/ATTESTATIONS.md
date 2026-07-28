@@ -187,7 +187,7 @@ For a `pull_request` event, bind the artifact to `github.event.pull_request.head
 The command requires `GITHUB_ACTIONS=true` and at least one runner-provided destination:
 
 - `GITHUB_STEP_SUMMARY`: receives a Markdown table of signed aggregate values and the verification trust level;
-- `GITHUB_OUTPUT`: receives typed `blackbox_*` step outputs.
+- `GITHUB_OUTPUT`: receives named `blackbox_*` step outputs (GitHub serializes output values as strings).
 
 It also requires:
 
