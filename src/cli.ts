@@ -249,16 +249,17 @@ function postLocalHook(port: number, path: string, body: string, timeoutMs: numb
   });
 }
 
-/** Gemini invokes command hooks synchronously. Recording must never block the
- * agent: every input/error path emits the exact allow response and exits zero. */
+/** Gemini and Codex invoke command hooks synchronously. Recording must never
+ * block the agent: every input/error path emits an empty JSON response and exits zero. */
 async function cmdHook(args: Args): Promise<number> {
-  if (args._[1] !== 'gemini') return 2;
+  const adapter = args._[1];
+  if (adapter !== 'gemini' && adapter !== 'codex') return 2;
   try {
     const body = await readHookStdin();
     if (body !== null) {
       const config = readConfig(configPath());
       const port = typeof config.port === 'number' && Number.isInteger(config.port) ? config.port : DEFAULT_PORT;
-      await postLocalHook(port, '/hook/gemini', body);
+      await postLocalHook(port, adapter === 'gemini' ? '/hook/gemini' : '/hook/codex', body);
     }
   } catch {
     // Recorder failures are intentionally invisible to the agent hook protocol.
@@ -300,6 +301,7 @@ Setup & lifecycle:
   blackbox watch [repo]          Install git forensics hooks in a repo (--global for all repos)
   blackbox unwatch [repo]        Remove git forensics hooks (--global to disable global)
   blackbox hook gemini           Internal Gemini CLI command-hook bridge (stdin → local recorder)
+  blackbox hook codex            Internal Codex CLI command-hook bridge (stdin → local recorder)
 
 Recording & reports:
   blackbox ingest <file.jsonl>   Normalize raw hook payloads into the chained store
