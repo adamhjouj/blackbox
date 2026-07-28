@@ -16,7 +16,8 @@ import { normalizeAndCapture } from './normalize';
 import { persistReconciliation } from './reconcile';
 import { buildForensicReport, buildReport, defaultReportSession } from './report';
 import { INTENT_VERSION, persistIntent } from './intent';
-import { ensureKeypair, loadPublicKey, loadWatermark, signHead } from './sign';
+import { postOtlp, toOtlp } from './otel';
+import { ensureKeypair, loadPublicKey, loadWatermark, recorderId, signHead } from './sign';
 import { backfill, computeSession, rescoreSession } from './risk-engine';
 import { isKnownRuleset, KNOWN_RULESETS, RULESET_VERSION, rulesFingerprint, type RulesetVersion } from './risk-rules';
 import { unwatchGlobal, unwatchRepo, watchGlobal, watchRepo } from './watch';
@@ -50,6 +51,7 @@ interface Args {
   all?: boolean;
   eraseData?: boolean;
   yes?: boolean;
+  endpoint?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -66,6 +68,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--check') out.check = true;
     else if (a === '--prune') out.prune = argv[++i];
     else if (a === '--out') out.out = argv[++i];
+    else if (a === '--endpoint') out.endpoint = argv[++i];
     else if (a === '--off') out.off = true;
     else if (a === '--older-than') out.olderThan = argv[++i];
     else if (a === '--forensic') out.forensic = true;
@@ -195,6 +198,8 @@ Recording & reports:
   blackbox ingest <file.jsonl>   Normalize raw hook payloads into the chained store
   blackbox report                Export a shareable Markdown session report (--session, --ruleset, --out <file>)
                                  Add --forensic for an evidentiary case-file (custody + signature + manifest)
+  blackbox otel                  Export the session as OTLP/JSON traces for a SIEM (--session, --all, --out <file>)
+                                 Add --endpoint <url> to POST to an OTLP/HTTP collector (the only egress)
 
 Chain & custody:
   blackbox verify                Verify the hash chain; report the first break
@@ -1103,6 +1108,41 @@ function cmdIntent(args: Args): number {
   }
 }
 
+/** R8 (AARM) — emit the session as OTLP/JSON traces. Writes locally by default;
+ *  `--endpoint` is the only way bytes leave the machine, and it is always explicit. */
+async function cmdOtel(args: Args): Promise<number> {
+  const store = new Store(resolveDb(args.db));
+  try {
+    const sessionIds = args.all ? store.sessions().map((s) => s.session_id) : [args.session ?? defaultReportSession(store)].filter((s): s is string => !!s);
+    if (!sessionIds.length) {
+      console.error('otel: no sessions recorded (pass --session or --all)');
+      return 2;
+    }
+    const pub = loadPublicKey();
+    const payload = toOtlp(store, sessionIds, { recorderId: pub ? recorderId(pub) : null });
+    const spans = payload.resourceSpans[0]?.scopeSpans[0]?.spans.length ?? 0;
+    if (args.endpoint) {
+      const res = await postOtlp(args.endpoint, payload);
+      if (!res.ok) {
+        console.error(`otel: export failed — ${res.error}`);
+        return 1;
+      }
+      console.log(`exported ${spans} span(s) from ${sessionIds.length} session(s) to ${args.endpoint}`);
+      return 0;
+    }
+    const json = JSON.stringify(payload, null, 2);
+    if (args.out) {
+      writeFileSync(args.out, json);
+      console.log(`wrote ${spans} span(s) from ${sessionIds.length} session(s) to ${args.out}`);
+    } else {
+      console.log(json);
+    }
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 function cmdReport(args: Args): number {
   const store = new Store(resolveDb(args.db));
   try {
@@ -1195,6 +1235,8 @@ async function main(): Promise<number> {
       return cmdBlast(args);
     case 'report':
       return cmdReport(args);
+    case 'otel':
+      return cmdOtel(args);
     case 'intent':
       return cmdIntent(args);
     case 'head':
