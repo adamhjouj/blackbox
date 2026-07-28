@@ -25,7 +25,7 @@ import { indexNew, search } from './search';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
 import { RULESET_VERSION } from './risk-rules';
 import { persistIntent } from './intent';
-import { ensureKeypair, isSignableBoundary, signHead, writeWatermark, type Keypair } from './sign';
+import { ensureKeypair, isSignableBoundary, signHead, signIdentity, writeWatermark, type Keypair } from './sign';
 import { Store } from './store';
 import type { BlackboxEvent } from './types';
 import { renderPage } from './ui-page';
@@ -332,13 +332,19 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     } catch (err) {
       log(`reconciliation failed: ${(err as Error).message}`);
     }
-    // Intent divergence (stated narrative vs observed actions) — derived and
-    // un-hashed, in its own try/catch: a failure here must never cost us the
-    // reconciliation above, and neither can fail a recording.
+    // Intent divergence (stated narrative vs observed actions) and the AARM R6
+    // identity assertion. Both are derived + un-hashed, both are best-effort in
+    // their own try/catch: a failure here must never cost us the reconciliation
+    // above, and none of the three can fail a recording.
     try {
       persistIntent(store, sessionId, new Date().toISOString());
     } catch (err) {
       log(`intent analysis failed: ${(err as Error).message}`);
+    }
+    try {
+      if (signingKeys) signIdentity(store, sessionId, signingKeys, new Date().toISOString());
+    } catch (err) {
+      log(`identity assertion failed: ${(err as Error).message}`);
     }
   };
 

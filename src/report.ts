@@ -23,7 +23,7 @@ import { redactText } from './redact';
 import type { ComboFire } from './risk-engine';
 import { KNOWN_RULESETS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
 import type { Store } from './store';
-import type { Watermark } from './sign';
+import { IDENTITY_VERSION, checkIdentity, type Watermark } from './sign';
 import { verify } from './verify';
 import type { BlackboxEvent } from './types';
 
@@ -276,6 +276,20 @@ export function buildForensicReport(store: Store, sessionId: string, opts: Foren
   } else {
     L.push(`- **Signature:** none — this store was never keyed (\`blackbox init\` generates the key; the daemon signs at session boundaries).`);
   }
+  // ── agent identity binding (AARM R6) ──────────────────────────────────────
+  const ident = store.sessionIdentity(sessionId, IDENTITY_VERSION);
+  if (ident) {
+    const check = opts.trustedPublicKey ? checkIdentity(store, ident, opts.trustedPublicKey) : null;
+    const state = check ? (check.ok ? 'verifies under the trusted key' : `FAILED (${check.reason})`) : 'present but not checked (no trusted key supplied)';
+    const agents = JSON.parse(ident.agent_ids) as string[];
+    L.push(
+      `- **Agent identity:** recorder \`${ident.recorder_id}\` attests events ${ident.first_seq}–${ident.last_seq} of this session ` +
+        `were produced by agent \`${ident.agent_type ?? 'unknown'}\`${agents.length ? ` (ids: ${agents.map((a) => `\`${a}\``).join(', ')})` : ''} — ${state}`,
+    );
+  } else {
+    L.push(`- **Agent identity:** no signed assertion for this session (written at SessionEnd once the store is keyed).`);
+  }
+
   // ── external anchors (R6) ─────────────────────────────────────────────────
   if (anchors.length) {
     const seqs = anchors.map((a) => a.seq).sort((x, y) => x - y);

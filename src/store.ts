@@ -172,6 +172,29 @@ CREATE TABLE IF NOT EXISTS session_reconciliation (
 `;
 
 /**
+ * AARM R6 identity binding — a signed assertion that a named RECORDER attests to a
+ * session's events over a chain range. Derived and un-hashed like signatures: it
+ * commits to a chain state, never becomes part of it, so verify() is byte-identical.
+ * Recomputable from the chain + the signing key at any time.
+ */
+const IDENTITY_SCHEMA = `
+CREATE TABLE IF NOT EXISTS session_identity (
+  session_id       TEXT    NOT NULL,
+  identity_version TEXT    NOT NULL,
+  recorder_id      TEXT    NOT NULL,
+  agent_type       TEXT,
+  agent_ids        TEXT    NOT NULL,
+  first_seq        INTEGER NOT NULL,
+  last_seq         INTEGER NOT NULL,
+  head_hash        TEXT    NOT NULL,
+  sig              TEXT    NOT NULL,
+  pubkey           TEXT    NOT NULL,
+  computed_at      TEXT    NOT NULL,
+  PRIMARY KEY (session_id, identity_version)
+);
+`;
+
+/**
  * Intent divergence — the agent's STATED narrative joined against its OBSERVED
  * actions. A third re-derivable interpretation alongside risk and reconciliation;
  * deliberately NOT part of the risk score, and never hashed.
@@ -263,6 +286,21 @@ export interface SessionReconciliationRow {
   computed_at: string;
 }
 
+/** A signed AARM R6 identity assertion over a session's chain range (un-hashed). */
+export interface SessionIdentityRow {
+  session_id: string;
+  identity_version: string;
+  recorder_id: string;
+  agent_type: string | null;
+  agent_ids: string; // JSON string[]
+  first_seq: number;
+  last_seq: number;
+  head_hash: string;
+  sig: string;
+  pubkey: string;
+  computed_at: string;
+}
+
 /** A session's stated-vs-observed divergence findings (re-derivable, un-hashed). */
 export interface SessionIntentRow {
   session_id: string;
@@ -342,6 +380,7 @@ export class Store {
     this.db.exec(BLOB_SCHEMA);
     this.db.exec(SIG_SCHEMA);
     this.db.exec(RECON_SCHEMA);
+    this.db.exec(IDENTITY_SCHEMA);
     this.db.exec(INTENT_SCHEMA);
     this.db.exec(SEARCH_SCHEMA);
     this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
@@ -705,7 +744,26 @@ export class Store {
     );
   }
 
-  // ---- intent divergence (derived, un-hashed) ------------------------------
+  // ---- AARM R6 identity + intent divergence (both derived, both un-hashed) ----
+
+  identityUpsert(r: SessionIdentityRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO session_identity
+           (session_id, identity_version, recorder_id, agent_type, agent_ids, first_seq, last_seq, head_hash, sig, pubkey, computed_at)
+         VALUES (@session_id, @identity_version, @recorder_id, @agent_type, @agent_ids, @first_seq, @last_seq, @head_hash, @sig, @pubkey, @computed_at)
+         ON CONFLICT(session_id, identity_version) DO UPDATE SET
+           recorder_id=@recorder_id, agent_type=@agent_type, agent_ids=@agent_ids, first_seq=@first_seq,
+           last_seq=@last_seq, head_hash=@head_hash, sig=@sig, pubkey=@pubkey, computed_at=@computed_at`,
+      )
+      .run(r);
+  }
+
+  sessionIdentity(sessionId: string, version: string): SessionIdentityRow | null {
+    return (
+      (this.db.prepare('SELECT * FROM session_identity WHERE session_id = ? AND identity_version = ?').get(sessionId, version) as SessionIdentityRow | undefined) ?? null
+    );
+  }
 
   intentUpsert(r: SessionIntentRow): void {
     this.db
