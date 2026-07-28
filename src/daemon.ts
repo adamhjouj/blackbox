@@ -33,6 +33,7 @@ import { renderPage } from './ui-page';
 import { buildSetupStatus, type SetupStatus } from './readiness';
 import { readConfig } from './config';
 import { adaptGeminiHook, GeminiCorrelator } from './adapters/gemini';
+import { adaptCodexHook } from './adapters/codex';
 import { reviewInboxFromViews, reviewViews, sessionReviewView, type SessionReviewView } from './review-inbox';
 import { redactText } from './redact';
 
@@ -436,7 +437,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     // R1: a turn just finished — recover its reasoning from the transcript, async and
     // off the hook path. A short delay lets Claude Code flush the turn's final
     // assistant record (which can lag the Stop hook by a beat).
-    if (he === 'Stop') {
+    if (he === 'Stop' && payload._blackbox_adapter !== 'gemini-cli' && payload._blackbox_adapter !== 'codex-cli') {
       const sid = typeof payload.session_id === 'string' ? payload.session_id : appended.session_id;
       const pid = typeof payload.prompt_id === 'string' ? payload.prompt_id : null;
       const tp = typeof payload.transcript_path === 'string' ? payload.transcript_path : store.sessionTranscriptPath(sid);
@@ -475,6 +476,25 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
       recordHook(JSON.stringify(adapted.payload), false);
     } catch (err) {
       log(`gemini: drop unsupported payload: ${(err as Error).message}`);
+    }
+  };
+
+  const recordCodexHook = (body: string, truncated: boolean): void => {
+    if (truncated) {
+      const capturedAt = new Date().toISOString();
+      scoreAndPersist(store.append(normalize({ hook_event_name: 'OversizedHook', session_id: 'unknown', _truncated: true, _blackbox_adapter: 'codex-cli' }, capturedAt)));
+      log('recorded oversized/truncated Codex hook as marker');
+      return;
+    }
+    let payload: unknown;
+    try { payload = JSON.parse(body) as unknown; }
+    catch { log('codex: drop invalid JSON body'); return; }
+    if (!isPlainObject(payload)) { log('codex: drop non-object payload'); return; }
+    try {
+      const adapted = adaptCodexHook(payload);
+      recordHook(JSON.stringify(adapted.payload), false);
+    } catch (err) {
+      log(`codex: drop unsupported payload: ${(err as Error).message}`);
     }
   };
 
@@ -728,7 +748,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
         }
 
         // Reject browser-forged writes to both recording routes (CSRF to localhost).
-        if (req.method === 'POST' && (path === '/hook' || path === '/hook/gemini' || path === '/git') && isBrowserForged(req.headers)) {
+        if (req.method === 'POST' && (path === '/hook' || path === '/hook/gemini' || path === '/hook/codex' || path === '/git') && isBrowserForged(req.headers)) {
           log(`rejected browser-forged POST ${path}`);
           sendJson(res, 403, { ok: false, error: 'forbidden' });
           return;
@@ -761,6 +781,19 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           const { body, truncated } = await readBody(req, maxBody);
           try { recordGeminiHook(body, truncated); }
           catch (err) { log(`gemini append error: ${(err as Error).message}`); }
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        if (req.method === 'POST' && path === '/hook/codex') {
+          const ct = hdr(req.headers, 'content-type');
+          if (!ct.includes('application/json')) {
+            log('rejected /hook/codex with non-JSON content-type');
+            sendJson(res, 415, { ok: false, error: 'expected application/json' });
+            return;
+          }
+          const { body, truncated } = await readBody(req, maxBody);
+          try { recordCodexHook(body, truncated); }
+          catch (err) { log(`codex append error: ${(err as Error).message}`); }
           sendJson(res, 200, { ok: true });
           return;
         }

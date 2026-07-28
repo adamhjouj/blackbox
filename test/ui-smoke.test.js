@@ -201,6 +201,7 @@ test('the viewer ships responsive layouts and the settings page', () => {
   for (const needle of ['evidence-drawer', 'Health & privacy', 'blackbox erase --all --yes', '.settings-grid', '.readiness-list', '.onboarding-panel', '@media (max-width: 900px)', '@media (max-width: 1100px)', 'prefers-reduced-motion']) {
     assert.ok(html.indexOf(needle) >= 0, 'page should include ' + needle);
   }
+  assert.match(html, /\.readiness-heading \{ align-items: flex-start; flex-direction: column;/);
   const js = clientJs(html);
   for (const needle of ['/api/setup-status', 'readinessChecklist', 'Finish connecting Blackbox', 'Raw evidence stays on this computer by default.']) {
     assert.ok(js.indexOf(needle) >= 0, 'first-run readiness should include ' + needle);

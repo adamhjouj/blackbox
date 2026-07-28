@@ -521,7 +521,11 @@ main { min-height: 100dvh; margin-left: var(--sidebar); }
   .turn-body { padding-left: 16px; }
   .settings-grid { grid-template-columns: 1fr; }
   .settings-wide { grid-column: auto; }
+  .settings-hero { display: grid; gap: 14px; }
+  .settings-panel { padding: 18px; }
   .readiness-list { grid-template-columns: 1fr; }
+  .readiness-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .readiness-heading h2 { min-width: 0; margin-bottom: 0; }
   .onboarding-top { display: grid; gap: 14px; }
   .onboarding-actions { align-items: flex-start; flex-direction: column; }
   .inbox-hero, .inbox-session-head { align-items: flex-start; flex-direction: column; }

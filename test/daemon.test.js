@@ -63,6 +63,22 @@ test('daemon: recording, read API, and the security gauntlet', async () => {
     assert.equal(geminiBash.source, 'gemini-cli');
     assert.equal(geminiBash.outcome, 'succeeded');
 
+    // ---- Codex adapter: native stable tool ids + explicit outcome evidence ----
+    for (const codex of [
+      { hook_event_name: 'UserPromptSubmit', session_id: 'CODEX1', turn_id: 'TURN1', prompt: 'inspect the repository', cwd: '/repo' },
+      { hook_event_name: 'PreToolUse', session_id: 'CODEX1', turn_id: 'TURN1', tool_name: 'Bash', tool_use_id: 'call-1', tool_input: { command: 'printf ok' }, cwd: '/repo' },
+      { hook_event_name: 'PostToolUse', session_id: 'CODEX1', turn_id: 'TURN1', tool_name: 'Bash', tool_use_id: 'call-1', tool_input: { command: 'printf ok' }, tool_response: { exit_code: 0, output: 'ok' }, cwd: '/repo' },
+    ]) {
+      const body = JSON.stringify(codex);
+      const response = await req(TEST_PORT, 'POST', '/hook/codex', { headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, body });
+      assert.equal(response.status, 200);
+    }
+    const codexActions = JSON.parse((await req(TEST_PORT, 'GET', '/api/session/CODEX1/events')).body);
+    const codexBash = codexActions.find((action) => action.tool === 'Bash');
+    assert.equal(codexBash.source, 'codex-cli');
+    assert.equal(codexBash.outcome, 'succeeded');
+    assert.equal(codexBash.prompt_id, 'TURN1');
+
     // ---- Review Inbox: findings stay immutable; decisions append outside chain ----
     const reviewProject = join(home, 'review-project');
     mkdirSync(reviewProject);
@@ -164,6 +180,8 @@ test('daemon: recording, read API, and the security gauntlet', async () => {
     assert.equal(badCt.status, 415);
     const badGeminiCt = await req(TEST_PORT, 'POST', '/hook/gemini', { headers: { 'content-type': 'text/plain' }, body: 'x' });
     assert.equal(badGeminiCt.status, 415);
+    const badCodexCt = await req(TEST_PORT, 'POST', '/hook/codex', { headers: { 'content-type': 'text/plain' }, body: 'x' });
+    assert.equal(badCodexCt.status, 415);
 
     // ---- Host allowlist: a non-loopback Host is rejected (anti-DNS-rebinding) ----
     const badHost = await req(TEST_PORT, 'GET', '/api/sessions', { headers: { host: 'evil.example.com' } });

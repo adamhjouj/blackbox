@@ -15,6 +15,8 @@
     "ai-agents",
     "claude-code",
     "gemini-cli",
+    "codex-cli",
+    "openai-codex",
     "code-review",
     "attestation",
     "forensics",
@@ -48,6 +50,7 @@
     "verify": "node dist/cli.js verify",
     "test": "npm run build && node --test test/*.test.js",
     "test:packed-install": "node scripts/test-packed-install.mjs",
+    "test:codex-live": "npm run build && node scripts/test-codex-live.mjs",
     "demo": "npm run build && node scripts/demo.mjs"
   },
   "dependencies": {

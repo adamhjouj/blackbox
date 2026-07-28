@@ -49,16 +49,19 @@ try {
   const fakeBin = join(scratch, 'fake-bin');
   const claudeSettings = join(scratch, 'claude', 'settings.json');
   const geminiSettings = join(scratch, 'gemini', 'settings.json');
+  const codexHooks = join(scratch, 'codex', 'hooks.json');
   mkdirSync(fakeBin, { recursive: true });
   mkdirSync(dirname(claudeSettings), { recursive: true });
   mkdirSync(dirname(geminiSettings), { recursive: true });
-  for (const name of ['claude', 'gemini']) {
+  mkdirSync(dirname(codexHooks), { recursive: true });
+  for (const name of ['claude', 'gemini', 'codex']) {
     const fake = join(fakeBin, name);
     writeFileSync(fake, `#!/bin/sh\nprintf '${name} 99.0.0\\n'\n`);
     chmodSync(fake, 0o755);
   }
   writeFileSync(claudeSettings, JSON.stringify({ theme: 'dark' }));
   writeFileSync(geminiSettings, JSON.stringify({ theme: 'dark' }));
+  writeFileSync(codexHooks, JSON.stringify({ theme: 'dark' }));
   activationEnv = {
     ...isolatedEnv,
     PATH: fakeBin + delimiter + (process.env.PATH ?? ''),
@@ -66,6 +69,7 @@ try {
     BLACKBOX_DB: join(state, 'events.db'),
     BLACKBOX_CLAUDE_SETTINGS: claudeSettings,
     BLACKBOX_GEMINI_SETTINGS: geminiSettings,
+    BLACKBOX_CODEX_HOOKS: codexHooks,
   };
 
   const help = execFileSync(installedBin, ['help'], {
@@ -78,7 +82,7 @@ try {
   const activationPort = await availableLoopbackPort();
   const durablePrefix = join(scratch, 'durable-prefix');
   activationEnv.BLACKBOX_INSTALL_SPEC = tarball;
-  execFileSync(installedBin, ['install', '--prefix', durablePrefix, '--agents', 'claude,gemini', '--local-only-anchor', '--yes', '--no-open', '--port', String(activationPort)], {
+  execFileSync(installedBin, ['install', '--prefix', durablePrefix, '--agents', 'claude,gemini,codex', '--local-only-anchor', '--yes', '--no-open', '--port', String(activationPort)], {
     cwd: scratch, env: activationEnv, stdio: 'inherit', timeout: 60_000,
   });
   activated = true;
@@ -87,6 +91,8 @@ try {
   if (!existsSync(installedBin)) throw new Error('one-command installer did not create a durable CLI runtime');
   const geminiHookSettings = readFileSync(geminiSettings, 'utf8');
   if (!geminiHookSettings.includes(installedBin)) throw new Error('Gemini command hooks do not point at the durable CLI');
+  const codexHookSettings = readFileSync(codexHooks, 'utf8');
+  if (!codexHookSettings.includes(installedBin)) throw new Error('Codex command hooks do not point at the durable CLI');
   let status;
   try {
     status = execFileSync(installedBin, ['status'], { cwd: scratch, env: activationEnv, encoding: 'utf8' });
@@ -99,12 +105,12 @@ try {
   if (!/No failures/.test(doctor)) throw new Error(`packed doctor did not report readiness:\n${doctor}`);
   execFileSync(installedBin, ['self-test'], { cwd: scratch, env: activationEnv, stdio: 'inherit', timeout: 20_000 });
   execFileSync(installedBin, ['verify'], { cwd: scratch, env: activationEnv, stdio: 'inherit' });
-  execFileSync(installedBin, ['uninit', '--agents', 'claude,gemini', '--erase-data', '--yes'], {
+  execFileSync(installedBin, ['uninit', '--agents', 'claude,gemini,codex', '--erase-data', '--yes'], {
     cwd: scratch, env: activationEnv, stdio: 'inherit', timeout: 15_000,
   });
   activated = false;
   if (existsSync(state)) throw new Error('uninit left the isolated Blackbox state directory behind');
-  for (const settingsPath of [claudeSettings, geminiSettings]) {
+  for (const settingsPath of [claudeSettings, geminiSettings, codexHooks]) {
     const settings = readFileSync(settingsPath, 'utf8');
     if (!settings.includes('"theme": "dark"')) throw new Error(`uninit did not preserve unrelated settings in ${settingsPath}`);
     if (/blackbox/i.test(settings)) throw new Error(`uninit left Blackbox hooks in ${settingsPath}`);
@@ -115,7 +121,7 @@ try {
   process.stdout.write(`packed install OK: ${filename} on Node ${process.versions.node}\n`);
 } finally {
   if (activated && installedBin) {
-    try { execFileSync(installedBin, ['uninit', '--agents', 'claude,gemini', '--erase-data', '--yes'], { cwd: scratch, env: activationEnv, stdio: 'ignore', timeout: 10_000 }); }
+    try { execFileSync(installedBin, ['uninit', '--agents', 'claude,gemini,codex', '--erase-data', '--yes'], { cwd: scratch, env: activationEnv, stdio: 'ignore', timeout: 10_000 }); }
     catch { /* best-effort cleanup after a failed activation assertion */ }
   }
   rmSync(scratch, { recursive: true, force: true });

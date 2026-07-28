@@ -1,7 +1,7 @@
 /**
  * R7.1 — the environment/toolchain snapshot captured once at SessionStart. It
- * fixes the agent's capability/attack surface at capture time: what version of
- * Claude Code + Node, which OS, which MCP servers were configured, and content
+ * fixes the agent's capability/attack surface at capture time: what versions of
+ * the supported agent CLIs + Node, which OS, which MCP servers were configured, and content
  * hashes of the hook config + project manifests. Pairs with R5 anti-forensics
  * (the hooks_hash proves the hook config at start) and sharpens tool-poisoning
  * (a server "in config at start" vs one that "appeared mid-session").
@@ -24,6 +24,8 @@ const MAX_MANIFEST_BYTES = 8 * 1024 * 1024;
 
 export interface EnvSnapshot {
   claude_version: string | null;
+  gemini_version: string | null;
+  codex_version: string | null;
   node_version: string;
   os: string;
   /** "name (command-word)" per MCP server — names + command word ONLY. */
@@ -53,6 +55,16 @@ function readCappedJson(path: string, cap = MAX_CONFIG_BYTES): Record<string, un
   }
 }
 
+function readCappedText(path: string, cap = MAX_CONFIG_BYTES): string | null {
+  try {
+    if (!existsSync(path)) return null;
+    const buf = readFileSync(path);
+    return buf.length <= cap ? buf.toString('utf8') : null;
+  } catch {
+    return null;
+  }
+}
+
 function sha256(buf: Buffer): string {
   return 'sha256:' + createHash('sha256').update(buf).digest('hex');
 }
@@ -74,12 +86,27 @@ function extractMcp(servers: unknown, into: Set<string>): void {
 /** sha256 over the concatenated `hooks` blocks of the user + project + local
  *  settings — so project-scope hook tampering is visible, not just user scope. */
 function hooksHash(cwd: string | null): string | null {
-  const paths = [join(homedir(), '.claude', 'settings.json')];
-  if (cwd) paths.push(join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json'));
+  const paths = [
+    join(homedir(), '.claude', 'settings.json'),
+    join(homedir(), '.gemini', 'settings.json'),
+    join(homedir(), '.codex', 'hooks.json'),
+  ];
+  if (cwd) paths.push(
+    join(cwd, '.claude', 'settings.json'),
+    join(cwd, '.claude', 'settings.local.json'),
+    join(cwd, '.gemini', 'settings.json'),
+    join(cwd, '.codex', 'hooks.json'),
+  );
   const blocks: string[] = [];
   for (const p of paths) {
     const j = readCappedJson(p, MAX_MANIFEST_BYTES);
     if (j && j.hooks) blocks.push(JSON.stringify(j.hooks));
+  }
+  const tomlPaths = [join(homedir(), '.codex', 'config.toml')];
+  if (cwd) tomlPaths.push(join(cwd, '.codex', 'config.toml'));
+  for (const path of tomlPaths) {
+    const text = readCappedText(path, MAX_MANIFEST_BYTES);
+    if (text && /\[\[?hooks(?:\.|\])/.test(text)) blocks.push(text);
   }
   return blocks.length ? 'sha256:' + createHash('sha256').update(blocks.join('\n')).digest('hex') : null;
 }
@@ -117,6 +144,8 @@ export function collectEnv(cwd: string | null): EnvSnapshot {
   }
   return {
     claude_version: safeExec('claude', ['--version']),
+    gemini_version: safeExec('gemini', ['--version']),
+    codex_version: safeExec('codex', ['--version']),
     node_version: process.version,
     os: `${platform()} ${release()} ${arch()}`,
     mcp_servers: [...mcp].sort(),

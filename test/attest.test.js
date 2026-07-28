@@ -45,7 +45,7 @@ function seed(store) {
         },
       }),
     }),
-    source: 'claude-code',
+    source: 'codex-cli',
   });
   store.append({
     ...normEv({
@@ -185,7 +185,7 @@ test('attestation signs a current aggregate projection and verifies standalone/l
       Object.values(envelope.payload.review.unresolved_by_severity).reduce((sum, n) => sum + n, 0),
       envelope.payload.review.unresolved,
     );
-    assert.deepEqual(envelope.payload.agent_sources, ['claude-code', 'gemini-cli']);
+    assert.deepEqual(envelope.payload.agent_sources, ['claude-code', 'codex-cli', 'gemini-cli']);
     assert.deepEqual(envelope.payload.revision, {
       commit: 'b'.repeat(40),
       branch: 'feature/final-revision',

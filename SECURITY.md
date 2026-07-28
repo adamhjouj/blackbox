@@ -30,7 +30,7 @@ The daemon binds to `127.0.0.1`, validates loopback Host headers, keeps browser 
 
 Blackbox redacts known secret shapes before persistence and elides tool-output bodies to hashes by default. Redaction is defense in depth: a novel, context-free credential format can escape rules, and `--capture-output` intentionally retains more redacted material.
 
-Claude's asynchronous HTTP hooks and Gemini's fail-open command bridge are observational. If the daemon is unavailable or an agent does not expose a field/event, the action is not made safer or blocked. Missing evidence must not be interpreted as proof that an action did not occur.
+Claude's asynchronous HTTP hooks and the fail-open Gemini/Codex command bridges are observational. If the daemon is unavailable, a Codex hook has not been trusted, or an agent does not expose a field/event, the action is not made safer or blocked. Missing evidence must not be interpreted as proof that an action did not occur.
 
 ### Evidence integrity
 

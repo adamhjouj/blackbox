@@ -4,9 +4,9 @@ This document describes the implemented `0.1.x` architecture. Files named `PHASE
 
 ## Product boundary
 
-Blackbox is a passive, local-first forensic recorder and review layer for AI coding agents. It currently has first-party adapters for Claude Code and Gemini CLI. It observes hook-visible activity, stores redacted evidence in one tamper-evident chain, derives deterministic findings, and exposes a local investigation and pre-merge review workflow.
+Blackbox is a passive, local-first forensic recorder and review layer for AI coding agents. It currently has first-party adapters for Claude Code, Gemini CLI, and Codex CLI. It observes hook-visible activity, stores redacted evidence in one tamper-evident chain, derives deterministic findings, and exposes a local investigation and pre-merge review workflow.
 
-It is not in the model request path and does not block tools, enforce policy, sandbox a process, restore files, or claim kernel-level attribution.
+It does not proxy model requests and its own handlers never block tools, enforce policy, sandbox a process, restore files, or claim kernel-level attribution. Gemini and Codex command hooks do run synchronously at documented lifecycle points, so their bridges use bounded loopback requests and always return a non-blocking response.
 
 The architecture is governed by six invariants:
 
@@ -24,14 +24,17 @@ flowchart LR
     subgraph Agents["Supported agent CLIs"]
         C["Claude Code"]
         G["Gemini CLI"]
+        X["Codex CLI"]
     end
 
     C -->|"async HTTP hooks"| HC["/hook"]
     G -->|"command hook bridge"| HG["/hook/gemini"]
+    X -->|"trusted command hook bridge"| HX["/hook/codex"]
     GR["Git hooks and worktree snapshots"] -->|"authenticated facts"| GI["/git"]
 
     HC --> N["Adapter-normalized input"]
     HG --> N
+    HX --> N
     GI --> N
     N --> R["Capture-time redaction"]
     R --> S[("SQLite event chain")]
@@ -76,6 +79,16 @@ Gemini does not provide Blackbox's established tool-use join key. A bounded in-m
 
 The internal `blackbox hook gemini` bridge reads bounded stdin, attempts a bounded loopback post, prints exactly Gemini's allow response, and exits zero on all recorder/input errors. Recorder failure therefore cannot deny the tool call. Command-hook process startup can still add more overhead than Claude's asynchronous HTTP callback.
 
+### Codex CLI
+
+`src/codex-init.ts` atomically merges Blackbox command handlers into `~/.codex/hooks.json`. It preserves unrelated top-level keys, matcher groups, hook handlers, and unknown future fields; existing files receive private versioned backups. New or changed hooks remain subject to Codex's own hash-bound trust review through `/hooks`.
+
+The adapter in `src/adapters/codex.ts` records `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PreCompact`, `PostCompact`, `SubagentStart`, `SubagentStop`, and `Stop`. Codex supplies stable session, turn, and tool-use ids, so no synthetic correlator is needed. `turn_id` becomes the normalized prompt/turn join key. `apply_patch` and `spawn_agent` are mapped into the existing edit and task-control vocabulary while their original tool names remain in the redacted raw payload.
+
+Codex emits `PostToolUse` even for some failed tools. The adapter therefore accepts only explicit response signals such as a success/error flag or exit code. Explicit failure maps to `PostToolUseFailure`, explicit success maps to success, and an opaque response remains `success = null` so downstream findings say unknown instead of succeeded.
+
+The internal `blackbox hook codex` bridge reads bounded stdin, attempts a bounded loopback post, emits `{}`, and exits zero on all recorder/input errors. Codex command hooks are synchronous today, so configuration uses the documented three-second ceiling while the actual loopback request is bounded to one second. Hosted tool paths that Codex does not expose to local lifecycle hooks remain outside capture coverage. Codex transcript paths are not treated as a stable parsing interface.
+
 ### Git facts
 
 `src/watch.ts` installs repository or global Git hooks. `/git` requires a generated collector token unless the daemon is deliberately started with `--allow-insecure-git`. `src/git-collector.ts` validates object ids before invoking Git, classifies ref changes, and correlates them to a session when the available evidence supports that attribution.
@@ -95,7 +108,7 @@ At session boundaries, `src/worktree.ts` captures a Git anchor, dirty-worktree b
 - a redacted raw payload, output commitment/size, redaction count, and structured detail;
 - previous hash and row hash.
 
-`source` is `claude-code`, `gemini-cli`, `git`, or `blackbox` on new adapter/internal rows. It is nullable so stores created before source attribution can be opened without rewriting any old event.
+`source` is `claude-code`, `gemini-cli`, `codex-cli`, `git`, or `blackbox` on new adapter/internal rows. It is nullable so stores created before source attribution can be opened without rewriting any old event.
 
 Normalization is deliberately tolerant. A vendor field rename can reduce a normalized projection to `null`, but does not justify inventing a value or rejecting an otherwise recordable event. Oversized hooks become bounded marker events. Malformed or unsupported payloads are logged and dropped without crashing the daemon.
 

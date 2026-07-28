@@ -7,11 +7,13 @@ All notable changes are documented here. The project follows [Semantic Versionin
 ### Added
 
 - Durable one-command bootstrap: `npx --yes blackbox-recorder@beta install` installs the exact running package globally before first-run setup, preventing hooks and autostart from pointing into an `npx` cache.
-- First-run agent selection for Claude Code, Gemini CLI, or both, with a privacy disclosure, custody decision, daemon health gate, isolated recorder self-test, hook rollback, and direct Health & Privacy navigation.
+- First-run agent selection for Claude Code, Gemini CLI, Codex CLI, or any combination, with a privacy disclosure, custody decision, daemon health gate, isolated recorder self-test, hook rollback, and direct Health & Privacy navigation.
 - `blackbox self-test` for isolated capture, redaction, deterministic risk, signing, and verification checks without touching the user's evidence chain.
 - Recorder readiness and Health & Privacy UI with adapter-hook, runtime, key, daemon, custody, database, retention, and chain checks at `#/settings`.
 - First-party Gemini CLI adapter using the shared normalized event schema, bounded redacted FIFO tool correlation, non-destructive settings merge/backups, and a fail-open command-hook bridge.
-- Event-source attribution for Claude Code, Gemini CLI, Git, and Blackbox-generated events.
+- First-party Codex CLI adapter using native lifecycle hooks and stable session/turn/tool ids, strict outcome mapping, non-destructive `hooks.json` merge/backups, trust guidance, and a fail-open command-hook bridge.
+- Opt-in `test:codex-live` coverage that runs an authenticated Codex turn against temporary Codex/Blackbox homes and verifies real lifecycle and tool correlation without modifying user settings or evidence.
+- Event-source attribution for Claude Code, Gemini CLI, Codex CLI, Git, and Blackbox-generated events.
 - Pre-merge Review Inbox at `#/review`, grouped by project/revision/session with severity, action outcome, local notes, and acknowledged/expected/false-positive/reopen decisions.
 - Append-only `review_actions` ledger. Decisions bind to the evidence head and policy hash and become stale when either changes.
 - Strict project baselines at `.blackbox/policy.json`, with normalized fingerprints and selectors for finding ids, rule ids, hosts, paths, command prefixes, and MCP servers.
@@ -27,11 +29,12 @@ All notable changes are documented here. The project follows [Semantic Versionin
 - Supported Node engines are now `^22 || ^24 || ^26`; unsupported Node `18` and `20` guidance was removed.
 - `blackbox init` starts and health-checks the daemon and passes an isolated self-test before modifying agent settings.
 - Gemini hook configuration uses absolute paths to the durable Node runtime and Blackbox CLI.
+- Codex's command bridge now uses its documented silent success response and an absolute transport watchdog so a stalled loopback connection cannot block the agent.
 - Setup and Settings now state the local-evidence posture and distinguish local-only receipts from off-machine custody.
 - Session findings use one outcome projection—attempted, succeeded, failed, or unknown—across explanations, Review Inbox, graph, blast radius, Markdown reports, and OTLP export.
 - Dashboard and sidebar review counts now reflect unresolved Review Inbox findings rather than raw verdict/flag counts.
 - Documentation now distinguishes signed receipt egress, explicit OTLP export, GitHub Actions aggregate output, and local `--out` files.
-- Public documentation now describes Claude Code and Gemini CLI as supported adapters and treats historical phase documents as design records rather than the current product contract.
+- Public documentation now describes Claude Code, Gemini CLI, and Codex CLI as supported adapters and treats historical phase documents as design records rather than the current product contract.
 
 ### Fixed
 
@@ -43,7 +46,7 @@ All notable changes are documented here. The project follows [Semantic Versionin
 - Review decisions automatically reopen when the session head or baseline policy changes.
 - Invalid baseline state is no longer confused with no baseline; it invalidates prior decisions and blocks new decisions/attestations until corrected.
 - Review Inbox cards no longer render absent optional baseline metadata as literal `null` text.
-- First-run config, key, and adapter settings writes are atomic and preserve unrelated/unknown fields; Claude and Gemini settings changes use private, versioned, no-clobber backups.
+- First-run config, key, and adapter settings writes are atomic and preserve unrelated/unknown fields; Claude, Gemini, and Codex settings changes use private, versioned, no-clobber backups.
 
 ### Security
 

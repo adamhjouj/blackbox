@@ -16,6 +16,7 @@ const { tempStore, normEv } = require('./util.js');
 function scratchProject() {
   const cwd = mkdtempSync(join(tmpdir(), 'bb-env-'));
   mkdirSync(join(cwd, '.claude'), { recursive: true });
+  mkdirSync(join(cwd, '.codex'), { recursive: true });
   // an MCP server whose args + env carry secrets that must NEVER be captured
   writeFileSync(
     join(cwd, '.mcp.json'),
@@ -27,6 +28,7 @@ function scratchProject() {
     }),
   );
   writeFileSync(join(cwd, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [] }] } }));
+  writeFileSync(join(cwd, '.codex', 'hooks.json'), JSON.stringify({ hooks: { PostToolUse: [{ hooks: [] }] } }));
   writeFileSync(join(cwd, 'package.json'), JSON.stringify({ name: 'proj', version: '1.0.0' }));
   return cwd;
 }
@@ -70,7 +72,7 @@ test('collectEnv on a null cwd still yields versions (no crash, no project field
 });
 
 test('envSnapshotEvent has the rule-inert synthetic shape', () => {
-  const ev = envSnapshotEvent('S', { node_version: process.version, os: 'x', mcp_servers: [], hooks_hash: null, file_hashes: {} }, '2026-02-01T00:00:00.000Z');
+  const ev = envSnapshotEvent('S', { claude_version: null, gemini_version: null, codex_version: null, node_version: process.version, os: 'x', mcp_servers: [], hooks_hash: null, file_hashes: {} }, '2026-02-01T00:00:00.000Z');
   assert.equal(ev.phase, 'session_start');
   assert.equal(ev.action_type, 'session');
   assert.equal(ev.hook_event, 'EnvSnapshot');

@@ -355,7 +355,7 @@ function renderDashboard() {
       readinessChecklist(),
       h('div', { className: 'onboarding-actions' },
         h('a', { className: 'secondary-button', href: '#/settings', textContent: 'Open Health & privacy' }),
-        h('code', { textContent: S.setup.ready ? 'Start Claude Code or Gemini CLI' : 'blackbox doctor' })
+        h('code', { textContent: S.setup.ready ? 'Start Claude Code, Gemini CLI, or Codex CLI' : 'blackbox doctor' })
       )
     ));
     return;

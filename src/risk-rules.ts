@@ -221,12 +221,12 @@ const BLACKBOX_KILL = /\b(pkill|killall|kill)\b[^\n|&;]*\bblackbox\b/;
 const BLACKBOX_LAUNCHCTL = /\blaunchctl\s+(unload|bootout|remove|disable)\b[^\n]*\bcom\.blackbox/;
 const BLACKBOX_CLI = /\bblackbox\s+(stop|uninit|prune)\b/;
 const SQLITE_DB = /\bsqlite3\b[^\n]*\bblackbox\.db\b/;
-const SETTINGS_HOOKS = /\/\.claude\/settings(\.local)?\.json$/;
+const SETTINGS_HOOKS = /\/(?:\.claude\/settings(?:\.local)?\.json|\.gemini\/settings\.json|\.codex\/(?:hooks\.json|config\.toml))$/;
 const GIT_HOOK_ATTACK = /(\.git\/hooks\/(reference-transaction|pre-push)\b|\bgit\s+config\b[^\n]*\bcore\.hooksPath\b)/;
 
 /** The agent tampering with the RECORDER itself: writing/deleting `~/.blackbox`
  *  (the DB, signing keys, config), killing the daemon, disabling its hooks
- *  (editing `~/.claude/settings.json`, deleting the git-forensics hook, moving
+ *  (editing supported agent hook settings, deleting the git-forensics hook, moving
  *  `core.hooksPath`), or running `blackbox stop|uninit|prune`. This is the one
  *  attack the recorder must always flag — it's an attempt to blind the evidence. */
 export function isRecorderTamper(e: BlackboxEvent): boolean {

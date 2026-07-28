@@ -9,7 +9,9 @@ import { loadPublicKey, loadWatermark } from './sign';
 import type { Store } from './store';
 import { verify } from './verify';
 import { GEMINI_HOOK_EVENTS } from './adapters/gemini';
+import { CODEX_HOOK_EVENTS } from './adapters/codex';
 import { GEMINI_HOOK_NAME } from './gemini-init';
+import { codexHooksPath, isBlackboxCodexHook } from './codex-init';
 
 export type ReadinessStatus = 'pass' | 'warn' | 'fail' | 'pending';
 
@@ -23,7 +25,7 @@ export interface ReadinessCheck {
 }
 
 export interface AdapterReadiness {
-  id: 'claude-code' | 'gemini-cli';
+  id: 'claude-code' | 'gemini-cli' | 'codex-cli';
   label: string;
   installed: boolean;
   connected: boolean;
@@ -164,6 +166,28 @@ export function geminiAdapterReadiness(): AdapterReadiness {
   }
 }
 
+export function codexAdapterReadiness(): AdapterReadiness {
+  const hooksPath = codexHooksPath();
+  const installed = commandOnPath('codex');
+  if (!existsSync(hooksPath)) return { id: 'codex-cli', label: 'Codex CLI', installed, connected: false, detail: 'hooks file not found' };
+  try {
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf8')) as { hooks?: Record<string, unknown> };
+    const missing = CODEX_HOOK_EVENTS.filter((event) => {
+      const groups = parsed.hooks?.[event];
+      if (!Array.isArray(groups)) return true;
+      return !groups.some((group) => {
+        const hooks = group && typeof group === 'object' ? (group as { hooks?: unknown }).hooks : null;
+        return Array.isArray(hooks) && hooks.some(isBlackboxCodexHook);
+      });
+    });
+    return missing.length
+      ? { id: 'codex-cli', label: 'Codex CLI', installed, connected: false, detail: `${missing.length} required lifecycle hook${missing.length === 1 ? '' : 's'} missing` }
+      : { id: 'codex-cli', label: 'Codex CLI', installed, connected: installed, detail: installed ? `all ${CODEX_HOOK_EVENTS.length} hooks configured; Codex trust is managed with /hooks` : 'hooks are configured but `codex` is not on PATH' };
+  } catch {
+    return { id: 'codex-cli', label: 'Codex CLI', installed, connected: false, detail: 'hooks JSON is malformed' };
+  }
+}
+
 export function selfTestMarkerPath(): string {
   return join(blackboxDir(), 'self-test.json');
 }
@@ -216,11 +240,11 @@ export function buildSetupStatus(store: Store, opts: { db: string; port: number 
     ? check('signing', 'Signing identity', 'pass', signing.detail, true)
     : check('signing', 'Signing identity', 'fail', signing.detail, true, 'blackbox doctor'));
 
-  const adapters = [claudeAdapterReadiness(opts.port), geminiAdapterReadiness()];
+  const adapters = [claudeAdapterReadiness(opts.port), geminiAdapterReadiness(), codexAdapterReadiness()];
   const connected = adapters.filter((adapter) => adapter.connected);
   checks.push(connected.length
     ? check('adapter', 'Agent adapter connected', 'pass', connected.map((adapter) => adapter.label).join(', '), true)
-    : check('adapter', 'Agent adapter connected', 'fail', 'no complete Claude Code or Gemini CLI adapter is configured', true, 'blackbox init'));
+    : check('adapter', 'Agent adapter connected', 'fail', 'no complete Claude Code, Gemini CLI, or Codex CLI adapter is configured', true, 'blackbox init'));
 
   checks.push(check('daemon', 'Recorder health', 'pass', `healthy on loopback port ${opts.port}`, true));
 
