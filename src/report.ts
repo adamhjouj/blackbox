@@ -13,8 +13,9 @@
  */
 import type { AnchorReceipt } from './anchor';
 import { blastRadius } from './blast';
-import { explainEvent, type Danger } from './explain';
+import { explainEvent, explanationForOutcome, type Danger } from './explain';
 import { hashString } from './hash';
+import { actionOutcome, projectFindings } from './findings';
 import { INTENT_VERSION } from './intent';
 import { safeParse } from './json';
 import { isPre, isPost, sessionCards, sessionName, sessionStory } from './read-api';
@@ -141,14 +142,14 @@ export function buildReport(store: Store, sessionId: string, ruleset?: RulesetVe
   // ── overall verdict + combos ──────────────────────────────────────────────
   const sr = store.sessionRisk(sessionId, rs);
   const verdict = sr?.verdict ?? 'unscored';
-  const combos = safeParse<ComboFire[]>(sr?.combos ?? null, []);
+  const combos = projectFindings(events, safeParse<ComboFire[]>(sr?.combos ?? null, []));
   L.push(`## Overall verdict: ${verdict.toUpperCase()}${sr ? ` (score ${sr.score}/100)` : ''}`, '');
   L.push(sr ? `Scored under ruleset \`${sr.ruleset_version}\`.` : `Not yet scored — run \`blackbox rescore\`.`, '');
   if (combos.length) {
     L.push('Flagged combinations:', '');
     for (const c of combos) {
       const label = COMBO_LABEL[c.id] ?? c.id;
-      L.push(`- **${c.severity.toUpperCase()} — ${label}:** ${c.note} _(seq ${c.antecedent_seq} → ${c.consequent_seq})_`);
+      L.push(`- **${c.severity.toUpperCase()} — ${label}:** ${c.display_note} **Outcome: ${c.outcome.toUpperCase()}.** _(seq ${c.antecedent_seq} → ${c.consequent_seq})_`);
     }
     L.push('');
   }
@@ -170,7 +171,7 @@ export function buildReport(store: Store, sessionId: string, ruleset?: RulesetVe
   const checklist = new Map<string, string>(); // danger.what → danger.what (dedup by statement)
   for (const g of groups.values()) {
     const flags = [...g.flags];
-    const ex = explainEvent(g.e, flags, toolInputOf(g.e.raw));
+    const ex = explanationForOutcome(explainEvent(g.e, flags, toolInputOf(g.e.raw)), actionOutcome(events, g.e));
     for (const d of ex.dangers) checklist.set(d.what, d.what);
     const riskFlags = flags.filter((f) => RISK_FLAGS.has(f));
     if (riskFlags.length) flagged.push({ seq: g.seq, ts: g.e.ts, summary: ex.summary, flags: riskFlags, dangers: ex.dangers });

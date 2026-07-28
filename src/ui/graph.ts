@@ -246,7 +246,7 @@ function graphEmpty(title, copy) {
 }
 
 function edgeDanger(edge, byId) {
-  if (edge.rel === 'flagged' || edge.rel === 'sent') return true;
+  if (edge.rel === 'flagged' || edge.rel === 'sent' || edge.rel === 'targeted') return true;
   const from = byId[edge.from], to = byId[edge.to];
   return !!(from && to && from.risk && to.risk);
 }
@@ -427,7 +427,7 @@ function renderGraphDetail(scoped) {
   function relationRow(edge, otherId) {
     const other = byId[otherId];
     if (!other) return null;
-    const danger = edge.rel === 'flagged' || edge.rel === 'sent';
+    const danger = edge.rel === 'flagged' || edge.rel === 'sent' || edge.rel === 'targeted';
     return h('button', { className: 'gd-rel', type: 'button', onclick: function() { selectGraphNode(otherId, true); } },
       h('span', { className: 'gd-via' + (danger ? ' danger' : ''), textContent: graphRelationLabel(edge.rel) }),
       h('span', { className: 'gd-rel-label', textContent: other.label }));
@@ -455,7 +455,7 @@ function graphKindLabel(kind) {
 }
 
 function graphRelationLabel(rel) {
-  return { caused: 'caused', wrote: 'wrote', committed: 'recorded with', flagged: 'triggered', sent: 'sent to' }[rel] || rel;
+  return { caused: 'caused', wrote: 'wrote', committed: 'recorded with', flagged: 'triggered', sent: 'tool reported sent to', targeted: 'attempted to send to' }[rel] || rel;
 }
 
 /* ── pan / zoom canvas (wheel zooms toward the cursor) ────────────────────── */

@@ -101,7 +101,7 @@ function sparkline(card) {
   if (!density.length) return h('span', { className: 'spark', 'aria-hidden': 'true' });
   const max = Math.max.apply(null, density.concat([1]));
   const spark = h('span', { className: 'spark', 'aria-hidden': 'true' });
-  const flagged = Number(card.flagged || 0) > 0;
+  const flagged = Number(card.review_count || 0) > 0;
   density.forEach(function(value, index) {
     const bar = h('i', { className: flagged && index >= density.length - 3 ? 'hot' : '' });
     bar.style.height = (4 + Math.round((value / max) * 22)) + 'px';
@@ -130,7 +130,7 @@ function reviewRow(card) {
     sparkline(card),
     h('span', { className: 'review-nums' },
       h('span', { className: 'ev', textContent: fmtInt(card.events) + ' events' }),
-      h('span', { className: 'fl', textContent: fmtInt(card.flagged) + ' flagged' })),
+      h('span', { className: 'fl', textContent: fmtInt(card.findings || 0) + ' finding' + (Number(card.findings || 0) === 1 ? '' : 's') + ' · ' + fmtInt(card.flagged || 0) + ' flagged action' + (Number(card.flagged || 0) === 1 ? '' : 's') })),
     h('span', { className: 'review-rel', textContent: fmtRel(card.ended) }),
     h('span', { className: 'review-arrow', 'aria-hidden': 'true', textContent: '→' })
   );
@@ -145,7 +145,7 @@ function allSessionsTable() {
     h('span', { textContent: 'Session' }),
     h('span', { className: 'h-proj', textContent: 'Project' }),
     h('span', { className: 'r h-ev', textContent: 'Events' }),
-    h('span', { className: 'r', textContent: 'Flags' }),
+    h('span', { className: 'r', textContent: 'Review' }),
     h('span', { className: 'r', textContent: 'Risk' }),
     h('span', { className: 'r h-last', textContent: 'Last' })
   ));
@@ -154,7 +154,7 @@ function allSessionsTable() {
       h('span', { className: 't-title', textContent: sessionTitle(card, null) }),
       h('span', { className: 't-proj', textContent: basename(card.cwd) }),
       h('span', { className: 'r t-num ev-col', textContent: fmtInt(card.events) }),
-      h('span', { className: 'r t-num' + (Number(card.flagged || 0) ? ' red' : ' dim'), textContent: Number(card.flagged || 0) ? fmtInt(card.flagged) : '—' }),
+      h('span', { className: 'r t-num' + (Number(card.review_count || 0) ? ' red' : ' dim'), textContent: Number(card.review_count || 0) ? fmtInt(card.review_count) : '—' }),
       verdictChip(card),
       h('span', { className: 'r t-last', textContent: fmtRel(card.ended) })
     ));

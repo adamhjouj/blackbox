@@ -83,6 +83,8 @@ test('the session overview walks 01 what happened through 04 trust', () => {
     "numLabel('03', 'How to respond')",
     "numLabel('04', 'Can you trust this record')",
     'deterministicSummary',
+    'No elevated-risk finding or action was detected.',
+    'session finding',
     'blast-strip',
     'overviewFindings',
     'reviewedMap',
@@ -164,6 +166,9 @@ test('the evidence drawer retains the complete forensic dossier and routable con
     'Chain position',
     'Raw redacted record',
     'risk-score-bar',
+    'Session finding participation',
+    'Individual action score ',
+    "addKv(dl, 'Outcome'",
     'Show in graph'
   ]) assert.ok(js.indexOf(needle) >= 0, 'forensic dossier should include ' + needle);
 });

@@ -10,6 +10,8 @@
  * attributed to individual files.
  */
 import { safeParse } from './json';
+import { projectFindings, type FindingOutcome } from './findings';
+import type { ComboFire } from './risk-engine';
 import { isSensitivePath } from './redact-rules';
 import { KNOWN_RULESETS, commandReadsSensitiveFile, isAuthPath, rulesetNum } from './risk-rules';
 import type { BlackboxEvent } from './types';
@@ -42,7 +44,7 @@ export interface BlastRadius {
   verdict: string;
   files: { path: string; insertions: number; deletions: number; auth: boolean; seqs: number[] }[];
   secrets: { path: string; seq: number }[];
-  hosts: { host: string; via: string | null; seq: number; confirmed: boolean }[];
+  hosts: { host: string; via: string | null; seq: number; confirmed: boolean; correlated: boolean; outcome: FindingOutcome }[];
   commits: { sha: string; subject: string | null; seq: number; force: boolean }[];
   checklist: ContainmentItem[];
 }
@@ -58,14 +60,15 @@ export function blastRadius(store: Store, sessionId: string): BlastRadius {
   const rs = resolveRs(store, sessionId);
   const sr = store.sessionRisk(sessionId, rs);
   const verdict = sr?.verdict ?? 'none';
-  const combos = safeParse<{ id: string; host?: string }[]>(sr?.combos ?? null) ?? [];
-  const confirmedHosts = new Set(combos.map((c) => c.host).filter((h): h is string => !!h));
+  const events = store.eventsLight(sessionId);
+  const combos = projectFindings(events, safeParse<ComboFire[]>(sr?.combos ?? null) ?? []);
+  const findingByHost = new Map(combos.filter((combo) => combo.host).map((combo) => [combo.host!, combo]));
 
   // ── B1 files + B4 git artifacts (from the immutable events) ───────────────
   const files = new Map<string, { path: string; insertions: number; deletions: number; auth: boolean; seqs: number[] }>();
   const commits: BlastRadius['commits'] = [];
   const secrets = new Map<string, number>();
-  for (const e of store.eventsLight(sessionId)) {
+  for (const e of events) {
     // B2 secrets — independent of detail (a shell `curl @/app/.env` carries none).
     const sp = sensitivePathOf(e);
     if (sp && !secrets.has(sp)) secrets.set(sp, e.seq);
@@ -95,9 +98,21 @@ export function blastRadius(store: Store, sessionId: string): BlastRadius {
 
   // ── the ordered containment checklist ─────────────────────────────────────
   const checklist: ContainmentItem[] = [];
-  for (const [path, seq] of secrets) checklist.push({ order: 0, severity: 'high', kind: 'rotate-secret', action: `Rotate the credential exposed via ${path}`, seqs: [seq] });
+  const anyReportedSend = combos.some((combo) => combo.outcome === 'succeeded' && (combo.id === 'exfil-chain' || combo.id === 'injected-exfil' || combo.id === 'tool-poisoning'));
+  for (const [path, seq] of secrets) checklist.push({
+    order: 0,
+    severity: anyReportedSend ? 'high' : 'medium',
+    kind: 'rotate-secret',
+    action: anyReportedSend ? `Rotate the credential that may have been exposed via ${path}` : `Review whether ${path} was exposed; rotate its credentials if confirmed`,
+    seqs: [seq],
+  });
   for (const c of commits) checklist.push({ order: 0, severity: c.force ? 'high' : 'medium', kind: 'revert-commit', action: `${c.force ? 'Investigate/undo' : 'Review'} commit ${c.sha.slice(0, 10)}${c.subject ? ` — ${c.subject}` : ''}`, seqs: [c.seq] });
-  for (const [host, info] of hosts) checklist.push({ order: 0, severity: confirmedHosts.has(host) ? 'high' : 'medium', kind: 'inspect-host', action: `Inspect the outbound transfer to ${host}${info.via ? ` (via ${info.via})` : ''}${confirmedHosts.has(host) ? ' — combo-confirmed exfil' : ''}`, seqs: [info.seq] });
+  for (const [host, info] of hosts) {
+    const finding = findingByHost.get(host);
+    const outcome = finding?.outcome ?? 'unknown';
+    const wording = outcome === 'succeeded' ? 'tool-reported outbound transfer' : outcome === 'failed' ? 'failed outbound-transfer attempt' : outcome === 'attempted' ? 'outbound-transfer attempt' : 'outbound action with unknown outcome';
+    checklist.push({ order: 0, severity: outcome === 'succeeded' ? 'high' : 'medium', kind: 'inspect-host', action: `Inspect the ${wording} to ${host}${info.via ? ` (via ${info.via})` : ''}${finding ? ' — correlated session finding' : ''}`, seqs: [info.seq] });
+  }
   for (const f of files.values()) if (f.auth) checklist.push({ order: 0, severity: 'medium', kind: 'review-file', action: `Review the auth-path change to ${f.path} (+${f.insertions} −${f.deletions})`, seqs: f.seqs });
 
   checklist.sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity] || a.seqs[0]! - b.seqs[0]!);
@@ -108,7 +123,10 @@ export function blastRadius(store: Store, sessionId: string): BlastRadius {
     verdict,
     files: [...files.values()],
     secrets: [...secrets.entries()].map(([path, seq]) => ({ path, seq })),
-    hosts: [...hosts.entries()].map(([host, info]) => ({ host, via: info.via, seq: info.seq, confirmed: confirmedHosts.has(host) })),
+    hosts: [...hosts.entries()].map(([host, info]) => {
+      const finding = findingByHost.get(host);
+      return { host, via: info.via, seq: info.seq, confirmed: !!finding, correlated: !!finding, outcome: finding?.outcome ?? 'unknown' };
+    }),
     commits,
     checklist,
   };

@@ -11,6 +11,7 @@
  * already-stored facts; it never touches the hash chain.
  */
 import { isSensitivePath } from './redact-rules';
+import type { FindingOutcome } from './findings';
 import type { FlagId } from './risk-rules';
 import type { BlackboxEvent } from './types';
 
@@ -33,6 +34,26 @@ export interface Explanation {
   steps: ExplainStep[];
   /** What was done that's dangerous, and why. Empty when nothing stands out. */
   dangers: Danger[];
+}
+
+export function summaryForOutcome(summary: string, outcome: FindingOutcome): string {
+  const base = summary.replace(/\.$/, '');
+  if (outcome === 'failed') return `${base} — the tool reported failure.`;
+  if (outcome === 'attempted') return `${base} — completion was not recorded.`;
+  if (outcome === 'unknown') return `${base} — outcome unknown.`;
+  return summary;
+}
+
+/** Apply completion truth to user-facing copy without changing stored evidence. */
+export function explanationForOutcome(explanation: Explanation, outcome: FindingOutcome): Explanation {
+  const dangers = explanation.dangers.map((danger) => {
+    if (danger.what !== 'Sent data to an external server.') return danger;
+    if (outcome === 'failed') return { what: 'Attempted to send data to an external server; the tool reported failure.', why: 'Blackbox observed the external-send attempt but no successful tool completion. It does not provide packet-level confirmation, so inspect the destination and tool output.' };
+    if (outcome === 'attempted') return { what: 'Attempted to send data to an external server.', why: 'The attempt was recorded, but no completion event was captured. Blackbox cannot determine whether the destination received data.' };
+    if (outcome === 'succeeded') return { what: 'The tool reported sending data to an external server.', why: 'The tool reported success, but Blackbox does not provide packet-level delivery confirmation. Check that the destination and payload were expected.' };
+    return { what: 'An external-send action was recorded with unknown outcome.', why: 'Blackbox could not determine completion from the recorded events. Inspect the destination and tool output.' };
+  });
+  return { ...explanation, summary: summaryForOutcome(explanation.summary, outcome), dangers };
 }
 
 // ---- helpers -------------------------------------------------------------

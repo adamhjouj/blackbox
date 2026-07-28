@@ -257,7 +257,7 @@ function sidebarSessionButton(card, review) {
     h('span', null,
       h('span', { className: 'sb-item-title', textContent: title }),
       h('span', { className: 'sb-item-sub', textContent: basename(card.cwd) })),
-    h('span', { className: 'sb-flag', textContent: Number(card.flagged || 0) + '⚑' })
+    h('span', { className: 'sb-flag', textContent: Number(card.review_count || 0) + '⚑' })
   );
   else button.append(
     h('span', { className: 'sb-recent-title', textContent: title }),
