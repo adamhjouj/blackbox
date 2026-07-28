@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { readConfig, writeConfig, writePrivateFileAtomic } from './config';
@@ -46,24 +46,44 @@ interface HookGroup {
   matcher?: string;
   hooks: HookHandler[];
 }
-interface Settings {
+export interface Settings {
   hooks?: Record<string, HookGroup[]>;
   [k: string]: unknown;
 }
 
-function readSettings(path: string): Settings {
+export function readClaudeSettings(path: string): Settings {
   if (!existsSync(path)) return {};
+  let parsed: unknown;
   try {
-    return JSON.parse(readFileSync(path, 'utf8')) as Settings;
+    parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
   } catch {
     throw new Error(`could not parse ${path} as JSON — refusing to modify it`);
   }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${path} must contain a JSON object — refusing to modify it`);
+  }
+  return parsed as Settings;
 }
 
-function writeSettings(path: string, settings: Settings): void {
+function nextSettingsBackupPath(path: string): string {
+  const first = `${path}.blackbox-bak`;
+  if (!existsSync(first)) return first;
+  let n = 2;
+  while (existsSync(`${first}.${n}`)) n++;
+  return `${first}.${n}`;
+}
+
+/** Atomically replace Claude settings and preserve every prior version in a
+ * private, no-clobber backup. Returns null only when no prior file existed. */
+export function writeClaudeSettings(path: string, settings: Settings): string | null {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  if (existsSync(path)) copyFileSync(path, path + '.blackbox-bak');
+  let backupPath: string | null = null;
+  if (existsSync(path)) {
+    backupPath = nextSettingsBackupPath(path);
+    writePrivateFileAtomic(backupPath, readFileSync(path, 'utf8'), { overwrite: false });
+  }
   writePrivateFileAtomic(path, JSON.stringify(settings, null, 2) + '\n');
+  return backupPath;
 }
 
 /** One blackbox hook handler. `timeout` is in SECONDS (Claude Code's unit) and
@@ -122,17 +142,18 @@ export function mergeHooks(existing: Settings, port: number): { settings: Settin
 }
 
 /** Merge blackbox http hooks into ~/.claude/settings.json, idempotently, never clobbering. */
-export function init(port: number): { settingsPath: string; addedEvents: string[]; updatedEvents: string[]; token: string } {
+export function init(port: number): { settingsPath: string; backupPath: string | null; addedEvents: string[]; updatedEvents: string[]; token: string } {
   const path = claudeSettingsPath();
   // Preflight both user settings and signing state before installing hooks. A
   // malformed config or half-present keypair is a custody failure, not a reason to
   // silently finish setup with recording/signing weakened.
-  const existing = readSettings(path);
+  const existing = readClaudeSettings(path);
   ensureKeypair();
   const token = ensureConfig(port);
   const { settings, addedEvents, updatedEvents } = mergeHooks(existing, port);
-  writeSettings(path, settings);
-  return { settingsPath: path, addedEvents, updatedEvents, token };
+  const changed = addedEvents.length > 0 || updatedEvents.length > 0;
+  const backupPath = changed ? writeClaudeSettings(path, settings) : null;
+  return { settingsPath: path, backupPath, addedEvents, updatedEvents, token };
 }
 
 export type InitAnchorDecision =
@@ -176,10 +197,10 @@ export function decideInitAnchor(opts: { cwd: string; localOnly?: boolean; cfgPa
 }
 
 /** Remove blackbox http hooks; leave every other hook untouched. */
-export function uninit(): { settingsPath: string; removed: number } {
+export function uninit(): { settingsPath: string; backupPath: string | null; removed: number } {
   const path = claudeSettingsPath();
-  if (!existsSync(path)) return { settingsPath: path, removed: 0 };
-  const settings = readSettings(path);
+  if (!existsSync(path)) return { settingsPath: path, backupPath: null, removed: 0 };
+  const settings = readClaudeSettings(path);
   let removed = 0;
   for (const [event, groups] of Object.entries(settings.hooks ?? {})) {
     const kept: HookGroup[] = [];
@@ -192,8 +213,8 @@ export function uninit(): { settingsPath: string; removed: number } {
     if (kept.length) settings.hooks![event] = kept;
     else delete settings.hooks![event];
   }
-  writeSettings(path, settings);
-  return { settingsPath: path, removed };
+  const backupPath = removed ? writeClaudeSettings(path, settings) : null;
+  return { settingsPath: path, backupPath, removed };
 }
 
 /** Ensure ~/.blackbox/config.json has a /git auth token (generated once if absent,

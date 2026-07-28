@@ -1,11 +1,12 @@
 'use strict';
-// Packaging / one-command setup: the PURE, filesystem-free config generators.
-// Tests require the COMPILED output (dist/) — run `npm run build` first. Nothing
-// here touches ~/.claude, ~/.blackbox, or launchctl; every assertion is on the
-// value a pure function returns.
+// Packaging / one-command setup. Filesystem tests use isolated temporary paths;
+// nothing here touches ~/.claude, ~/.blackbox, or launchctl.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildHookConfig, mergeHooks } = require('../dist/init.js');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { buildHookConfig, mergeHooks, readClaudeSettings, writeClaudeSettings } = require('../dist/init.js');
 const { buildLaunchAgentPlist } = require('../dist/autostart.js');
 
 const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'];
@@ -109,6 +110,45 @@ test('mergeHooks: does not mutate the input settings object', () => {
   const before = JSON.stringify(input);
   mergeHooks(input, 7842);
   assert.equal(JSON.stringify(input), before);
+});
+
+test('Claude settings reject malformed and non-object JSON without modifying it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bb-claude-bad-'));
+  try {
+    for (const [index, raw] of ['{ nope', '[]', 'null', '"string"'].entries()) {
+      const settingsPath = path.join(dir, `settings-${index}.json`);
+      fs.writeFileSync(settingsPath, raw);
+      assert.throws(() => readClaudeSettings(settingsPath), /refusing to modify/);
+      assert.equal(fs.readFileSync(settingsPath, 'utf8'), raw);
+    }
+    assert.equal(fs.readdirSync(dir).some((name) => name.includes('blackbox-bak')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Claude settings writes are atomic with private, versioned, no-clobber backups', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bb-claude-settings-'));
+  const settingsPath = path.join(dir, '.claude', 'settings.json');
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  const original = '{"theme":"dark"}\n';
+  fs.writeFileSync(settingsPath, original, { mode: 0o644 });
+  try {
+    const first = writeClaudeSettings(settingsPath, { theme: 'light' });
+    assert.equal(first, `${settingsPath}.blackbox-bak`);
+    assert.equal(fs.readFileSync(first, 'utf8'), original);
+    assert.equal(fs.statSync(first).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(settingsPath).mode & 0o777, 0o600);
+
+    const firstWritten = fs.readFileSync(settingsPath, 'utf8');
+    const second = writeClaudeSettings(settingsPath, { theme: 'system' });
+    assert.equal(second, `${settingsPath}.blackbox-bak.2`);
+    assert.equal(fs.readFileSync(first, 'utf8'), original);
+    assert.equal(fs.readFileSync(second, 'utf8'), firstWritten);
+    assert.equal(fs.statSync(second).mode & 0o777, 0o600);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ---- buildLaunchAgentPlist: pure macOS autostart generator ------------------
