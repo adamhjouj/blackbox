@@ -1,5 +1,8 @@
 # Phase 3 — The Risk Engine (ruleset r2)
 
+> [!NOTE]
+> Historical implementation record. The current ruleset is `r4`; use the [README](../README.md) and [current architecture](ARCHITECTURE.md) as the product contract.
+
 Phase 2 showed *ephemeral* signals. Phase 3 makes them a real risk engine: versioned, scored, **persisted**, with **combination logic** (the flagship) and a session-level verdict surfaced in the timeline. **r1** shipped the exfil-chain combo. **r2** (this update) recalibrates scoring to kill per-event noise and adds two combo families: **injected-tamper** and **tool-poisoning**.
 
 ## The load-bearing rule

@@ -1,5 +1,8 @@
 # Phase 5 — The Re-Traceable Provenance Graph (the "session story")
 
+> [!NOTE]
+> Historical implementation record. Commands and capability boundaries may be superseded; use the [README](../README.md) and [current architecture](ARCHITECTURE.md) as the product contract.
+
 Phases 0–4 made blackbox a tamper-evident recorder with a risk engine and a flat timeline. But a flat list of tool events reads like a *log printer*: you can't retrace **cause**. Phase 5 turns the stream into a causal narrative — **user prompt → the steps the agent took → the files it changed → the commit** — rendered as a scrubbable per-turn story. It also, as a side effect, cures the findability problem (a single file change was a needle in a 1,600-event haystack).
 
 ## The load-bearing rule (unchanged)

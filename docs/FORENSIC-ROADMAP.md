@@ -1,5 +1,8 @@
 # Forensic Roadmap — the next four systems (R1–R4)
 
+> [!NOTE]
+> Historical roadmap retained for design rationale. It is not a list of missing or current features; use the [README](../README.md) and [current architecture](ARCHITECTURE.md) for implemented behavior.
+
 Build spec for the four remaining forensic systems on top of the shipped provenance graph
 (`docs/PHASE5-PROVENANCE.md`). Each obeys the same architecture the codebase already
 enforces. The copy-paste `/goal` prompt is at the very bottom.

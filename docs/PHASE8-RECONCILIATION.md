@@ -1,5 +1,8 @@
 # Phase 8 (R2) — Git-anchored reconciliation ("the agent can't lie")
 
+> [!NOTE]
+> Historical implementation record. Commands and capability boundaries may be superseded; use the [README](../README.md) and [current architecture](ARCHITECTURE.md) as the product contract.
+
 The hook stream is the agent's *self-report*. R2 independently checks it against **git ground truth**: at SessionEnd, diff the worktree vs the session's start HEAD and reconcile that against the file-write/edit mutations the hooks recorded. Deterministic, unprivileged, near-zero false positives. **No OS collectors** — the earlier fs.watch/lsof/ppid design was cut (it can't attribute, and a 1 s poll can't see a sub-second exfil, so it would cry wolf exactly where the product must be believed).
 
 ## The load-bearing rule (unchanged)

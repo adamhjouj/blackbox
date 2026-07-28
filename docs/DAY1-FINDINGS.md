@@ -1,5 +1,8 @@
 # Day-1 hook verification — findings
 
+> [!NOTE]
+> Historical Claude Code adapter research. The product now also supports Gemini CLI; use the [current architecture](ARCHITECTURE.md) for the implemented adapter contract.
+
 **Date:** 2026-07-11 · **Claude Code version tested:** 2.1.206 · **Method:** live headless sessions with real hooks registered (see `experiments/day1-hooks/`), cross-checked against the official hooks reference (code.claude.com/docs/en/hooks) and the Claude Code changelog by four parallel research agents.
 
 This is the Section 2.3 test from `ARCHITECTURE.md`, executed. **Verdict: the collector design is GO as specified.** Every load-bearing claim held. Two field-naming discrepancies between docs and live payloads were found (details below) — build the normalizer tolerant to both names.

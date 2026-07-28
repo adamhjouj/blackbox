@@ -1,5 +1,8 @@
 # Phase 7 (R1) — Deep intent capture (the "why")
 
+> [!NOTE]
+> Historical implementation record. Commands and capability boundaries may be superseded; use the [README](../README.md) and [current architecture](ARCHITECTURE.md) as the product contract.
+
 The provenance graph captured the user's *prompt* (the turn's request). R1 adds the agent's side: **what it decided and what it cost** — surfaced per turn in the Story view, so a step can answer *"why did the agent do this?"*.
 
 ## The load-bearing rule (unchanged)

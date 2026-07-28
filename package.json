@@ -1,7 +1,7 @@
 {
   "name": "blackbox-recorder",
   "version": "0.1.0-beta.1",
-  "description": "Forensic black-box recorder for AI coding agents (Claude Code first)",
+  "description": "Local-first forensic recorder and pre-merge review for AI coding agents",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -14,6 +14,9 @@
   "keywords": [
     "ai-agents",
     "claude-code",
+    "gemini-cli",
+    "code-review",
+    "attestation",
     "forensics",
     "observability",
     "security",

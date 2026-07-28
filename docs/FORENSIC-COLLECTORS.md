@@ -1,5 +1,8 @@
 # Forensic collectors — what we capture, how, and at what friction
 
+> [!NOTE]
+> Historical collector research, not a statement that every listed collector ships. The current product contract is the [README](../README.md) and [architecture](ARCHITECTURE.md); Blackbox does not currently claim kernel/process/network telemetry.
+
 Synthesis of the collector research + empirical tests run 2026-07-11 on macOS 26.5.1 (Apple Silicon), Claude Code 2.1.206. Decision: **V1 ships Tier 1 only.** Tier 2/3 are documented here so the roadmap is captured, not to build now.
 
 The mental model: **hooks record what the agent *said* it did; every OS-level collector records what the machine *actually did*, so the two can be reconciled and the agent can't quietly lie.**

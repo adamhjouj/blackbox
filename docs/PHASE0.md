@@ -1,5 +1,8 @@
 # Phase 0 — the store + hash chain (built)
 
+> [!NOTE]
+> Historical implementation record. Commands, support ranges, and capability boundaries may be superseded; use the [README](../README.md) and [current architecture](ARCHITECTURE.md) as the product contract.
+
 The tamper-evident storage spine. No agent observation yet — this proves we can record events and later prove none were altered. Phase 1 bolts the live hook receiver onto this store.
 
 Hardened after an adversarial review (see the decision log at the bottom): the fixes below closed a false-positive class, an ingest crash, and a tail-truncation blind spot.
