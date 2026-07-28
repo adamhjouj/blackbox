@@ -352,8 +352,12 @@ cd blackbox
 npm ci
 npm test
 npm run test:packed-install
+# Optional: one authenticated, isolated Codex CLI turn
+npm run test:codex-live
 npm run demo
 ```
+
+The live Codex check requires a logged-in `codex` binary. It copies the existing auth file into a private temporary home, runs one constrained command in a throwaway repository, verifies real lifecycle/tool events in a temporary Blackbox database, and removes the entire fixture afterward. It does not modify the user's Codex hooks or normal Blackbox evidence store.
 
 CI builds, tests, and exercises the packed installer on Node `22`, `24`, and `26` across macOS and Linux. Tagged release automation builds an npm-compatible tarball and checksum, but contributors must not publish packages or create releases as part of an ordinary change.
 

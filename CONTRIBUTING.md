@@ -21,6 +21,7 @@ Useful commands:
 npm run build                 # clean TypeScript build into dist/
 npm test                      # build + all node:test files
 npm run test:packed-install   # pack, install, initialize, diagnose, verify, uninstall
+npm run test:codex-live       # opt-in authenticated Codex turn in temporary homes
 npm run demo                  # isolated synthetic UI on port 7843
 node dist/cli.js help --all   # run the compiled CLI without npm link
 ```
@@ -32,6 +33,8 @@ npm run build
 node --test test/baseline.test.js
 node --test --test-name-pattern 'failed exfil' test/findings.test.js
 ```
+
+`test:codex-live` is intentionally not part of CI: it needs an installed, authenticated Codex CLI and makes one model request. The harness copies `auth.json` to a private temporary home, uses installer-generated hooks, records only to a temporary database, and deletes the fixture without changing the normal Codex or Blackbox homes.
 
 When exercising CLI commands by hand, isolate state so you do not touch your real recorder:
 
