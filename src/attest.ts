@@ -486,7 +486,8 @@ function createSessionAttestationSnapshot(
     issued_at: issuedAt,
   };
 
-  // Detect a writer extending this same session while the projection was built.
+  // Re-read inside the same SQLite snapshot before signing. WAL writers may
+  // continue, but they cannot mix a newer session head into this projection.
   const finalEvents = store.eventsLight(sessionId);
   const finalLast = finalEvents[finalEvents.length - 1];
   if (

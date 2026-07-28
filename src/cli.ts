@@ -349,7 +349,7 @@ Options:
   --fail-on <severity> attest: exit 1 for current unresolved high, medium+, or low+ findings
   --commit/--branch    attest: override captured revision metadata
   --trusted-key <file> attest verify: require a specific recorder public key
-  --expected-commit    attest in Actions: bind output to this full commit SHA (defaults to GITHUB_SHA)
+  --expected-commit <sha> attest in Actions: bind output to this full commit SHA (defaults to GITHUB_SHA)
   --older-than <dur>   Retention cutoff for prune (e.g. 30d, 12h; default 30d)
   -h, --help           Show this help (--all for every command)
 
