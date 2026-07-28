@@ -17,11 +17,13 @@ test('current product documentation matches the shipped capability contract', ()
 
   for (const text of [readme, architecture]) {
     assert.match(text, /Gemini CLI/);
+    assert.match(text, /Codex CLI/);
     assert.match(text, /Review Inbox/);
     assert.match(text, /attestation/i);
     assert.match(text, /local/i);
   }
   assert.match(security, /Gemini/);
+  assert.match(security, /Codex/);
   assert.match(security, /review/i);
   assert.match(security, /attestation/i);
   assert.match(security, /local/i);
@@ -34,6 +36,7 @@ test('current product documentation matches the shipped capability contract', ()
   assert.match(changelog, /Review Inbox/);
   assert.doesNotMatch(pkg.description, /Claude Code first/i);
   assert.ok(pkg.keywords.includes('gemini-cli'));
+  assert.ok(pkg.keywords.includes('codex-cli'));
   assert.ok(pkg.keywords.includes('attestation'));
 });
 
@@ -52,6 +55,7 @@ test('website is semantic, self-contained, responsive, and internally navigable'
   assert.match(html, /@media\s*\([^)]*max-width/i);
   assert.match(html, /synthetic/i);
   assert.match(html, /Gemini CLI/);
+  assert.match(html, /Codex CLI/);
   assert.match(html, /Review Inbox/);
   assert.match(html, /blackbox-recorder@beta install/);
   assert.match(html, /published under the npm/);

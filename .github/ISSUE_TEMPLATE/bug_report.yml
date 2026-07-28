@@ -25,14 +25,14 @@ body:
     attributes:
       label: Node.js and agent CLI versions
       description: Blackbox supports Node 22, 24, and 26. Include every configured adapter.
-      placeholder: Node 24.5.0; Claude Code 2.1.119; Gemini CLI 0.x
+      placeholder: Node 24.5.0; Claude Code 2.1.119; Gemini CLI 0.x; Codex CLI 0.x
     validations:
       required: true
   - type: dropdown
     id: adapter
     attributes:
       label: Recording adapter
-      options: [Claude Code, Gemini CLI, Both, Import or internal event, Not adapter-related]
+      options: [Claude Code, Gemini CLI, Codex CLI, Multiple adapters, Import or internal event, Not adapter-related]
     validations:
       required: true
   - type: textarea

@@ -104,8 +104,8 @@
     </g>
     <g transform="translate(60 838)">
       <rect width="260" height="120" rx="7" fill="#0f0f0f" stroke="#565656" stroke-width="2"/>
-      <text x="130" y="39" fill="#f2f2f2" font-size="25" font-weight="700" text-anchor="middle">Claude Code hooks</text>
-      <text x="130" y="73" fill="#a6a6a6" font-size="20" text-anchor="middle">prompts · tools · MCP</text>
+      <text x="130" y="39" fill="#f2f2f2" font-size="25" font-weight="700" text-anchor="middle">Agent CLI hooks</text>
+      <text x="130" y="73" fill="#a6a6a6" font-size="18" text-anchor="middle">Claude · Gemini · Codex</text>
       <text x="130" y="99" fill="#a6a6a6" font-size="20" text-anchor="middle">lifecycle</text>
     </g>
   </g>

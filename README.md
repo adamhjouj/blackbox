@@ -6,7 +6,7 @@
 
 **A local-first forensic flight recorder and pre-merge review inbox for AI coding agents.**
 
-Record Claude Code and Gemini CLI activity, explain deterministic risk, acknowledge findings before merge, and export a signed summary without uploading the raw evidence.
+Record Claude Code, Gemini CLI, and Codex CLI activity, explain deterministic risk, acknowledge findings before merge, and export a signed summary without uploading the raw evidence.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-f2f2f2.svg?labelColor=111)](LICENSE)
 [![Node 22 · 24 · 26](https://img.shields.io/badge/node-22%20%C2%B7%2024%20%C2%B7%2026-f2f2f2.svg?labelColor=111)](package.json)
@@ -49,7 +49,7 @@ Blackbox sits beside the agent as a passive recorder. Supported hooks are normal
 ### Prerequisites
 
 - Node.js `22`, `24`, or `26`
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), and/or [Codex CLI](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
 - Git, recommended for revision metadata, worktree reconciliation, and Git-based external receipts
 - macOS for managed LaunchAgent autostart; Linux lifecycle commands are supported without managed autostart
 
@@ -63,7 +63,7 @@ Run this from the repository you want Blackbox to associate with setup:
 npx --yes blackbox-recorder@beta install
 ```
 
-The bootstrap installs the exact Blackbox version it is running into a durable npm global location, then launches first-run setup from that durable copy. This matters for Gemini CLI command hooks and autostart entries, which must not point into a disposable `npx` cache.
+The bootstrap installs the exact Blackbox version it is running into a durable npm global location, then launches first-run setup from that durable copy. This matters for Gemini and Codex command hooks and autostart entries, which must not point into a disposable `npx` cache.
 
 The command requires a published npm `beta` dist-tag. An unpublished source checkout does not create or update that tag; use the source workflow below when testing local changes.
 
@@ -81,7 +81,8 @@ By default, setup detects installed agents. Select adapters explicitly when need
 ```bash
 blackbox init --agents claude
 blackbox init --agents gemini
-blackbox init --agents claude,gemini
+blackbox init --agents codex
+blackbox init --agents claude,gemini,codex
 ```
 
 If the current Git repository has no usable remote, setup refuses to silently weaken custody. Choose local-only receipts explicitly:
@@ -114,9 +115,13 @@ Run `npm ci` again after changing Node major versions because Blackbox includes 
 claude
 # or
 gemini
+# or
+codex
 ```
 
-Blackbox records the events each adapter exposes. Both adapters feed the same normalized event schema, risk engine, evidence chain, Review Inbox, reports, and attestation format. Adapter coverage is not identical: a missing source field degrades to `null` or an unmatched correlation state rather than being invented.
+Blackbox records the events each adapter exposes. All three adapters feed the same normalized event schema, risk engine, evidence chain, Review Inbox, reports, and attestation format. Adapter coverage is not identical: a missing source field degrades to `null`, an unknown outcome, or an unmatched correlation state rather than being invented.
+
+After first configuring Codex, open `/hooks` in Codex CLI and review/trust the Blackbox command hooks. Codex binds trust to the exact hook definition and skips new or changed non-managed hooks until they are trusted.
 
 ### 3. Confirm recorder health
 
@@ -127,7 +132,7 @@ blackbox self-test
 blackbox verify --anchors
 ```
 
-`doctor` checks the Node runtime, state-directory permissions, signing identity, configured Claude/Gemini hooks, daemon health, collector authentication, custody posture, event store, and chain integrity. `self-test` uses an isolated temporary store and never appends to the real evidence chain.
+`doctor` checks the Node runtime, state-directory permissions, signing identity, configured Claude/Gemini/Codex hooks, daemon health, collector authentication, custody posture, event store, and chain integrity. `self-test` uses an isolated temporary store and never appends to the real evidence chain.
 
 ### 4. Open the investigation UI
 
@@ -155,9 +160,10 @@ The demo builds an isolated store under `.blackbox-demo/`, ingests fully synthet
 
 - **Claude Code:** asynchronous HTTP hooks post lifecycle, prompt, tool, compaction, notification, and stop events to `127.0.0.1:7842/hook`.
 - **Gemini CLI:** command hooks bridge lifecycle, agent, tool, notification, compression, and session-end events to `127.0.0.1:7842/hook/gemini`. The bridge always returns Gemini's allow response; recorder failure does not block the agent.
+- **Codex CLI:** trusted command hooks bridge session, prompt, tool, approval, compaction, subagent, stop, and session-end events to `127.0.0.1:7842/hook/codex`. Stable Codex session, turn, and tool-use ids are retained. Explicit result signals become succeeded/failed outcomes; opaque result shapes remain unknown.
 - **Git collector:** optional repository hooks submit authenticated ref-change facts to `/git`, while session boundaries capture worktree state for reconciliation.
 
-Inputs are normalized tolerantly, redacted before persistence, and appended to one SQLite chain. New rows identify their source as `claude-code`, `gemini-cli`, `git`, or `blackbox`; legacy rows keep a `null` source so their existing hashes remain valid.
+Inputs are normalized tolerantly, redacted before persistence, and appended to one SQLite chain. New rows identify their source as `claude-code`, `gemini-cli`, `codex-cli`, `git`, or `blackbox`; legacy rows keep a `null` source so their existing hashes remain valid.
 
 ### Outcome-aware findings
 
@@ -324,14 +330,14 @@ blackbox uninit
 blackbox uninit --erase-data --yes
 ```
 
-The first command removes only Blackbox handlers from both supported agent settings and preserves unrelated configuration. The second also stops the daemon, disables managed autostart, and removes local Blackbox state. External receipts or workflow artifacts must be removed according to the destination's own retention policy.
+The first command removes only Blackbox handlers from supported agent settings and preserves unrelated configuration. The second also stops the daemon, disables managed autostart, and removes local Blackbox state. External receipts or workflow artifacts must be removed according to the destination's own retention policy.
 
 ## Platform support
 
 | Capability | macOS | Linux | Windows |
 | --- | :---: | :---: | :---: |
 | Recorder, local UI, reports, verification | Supported | Supported | Experimental |
-| Claude Code and Gemini CLI adapters | Supported | Supported | Experimental |
+| Claude Code, Gemini CLI, and Codex CLI adapters | Supported | Supported | Experimental |
 | Git reconciliation and ref collector | Supported | Supported | Experimental |
 | Managed autostart | LaunchAgent | Manual | Manual |
 | CI coverage | Node 22/24/26 | Node 22/24/26 | Not covered |
@@ -357,7 +363,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for evidence-integrity, adapter, review, 
 
 ```text
 src/
-├── adapters/                     normalized agent adapters (including Gemini CLI)
+├── adapters/                     normalized Claude, Gemini, and Codex agent inputs
 ├── daemon.ts                     loopback receiver, read/review API, UI serving
 ├── store.ts · hash.ts            append-only SQLite evidence chain and additive migration
 ├── normalize.ts · redact.ts      tolerant normalization and fail-closed redaction
@@ -389,7 +395,7 @@ Not automatically. Event evidence remains in the local store. External anchors s
 <details>
 <summary><strong>Does it slow the agent down?</strong></summary>
 
-Claude uses asynchronous HTTP hooks. Gemini invokes a short command bridge with a bounded local post and an unconditional allow response. Busy systems can still experience resource contention, and Gemini's hook process has more overhead than an in-process asynchronous callback.
+Claude uses asynchronous HTTP hooks. Gemini and Codex invoke short command bridges with bounded local posts and fail-open responses. Their process startup adds more overhead than Claude's asynchronous callback. Codex does not currently execute command hooks asynchronously, so Blackbox keeps its bridge silent and bounded.
 
 </details>
 
