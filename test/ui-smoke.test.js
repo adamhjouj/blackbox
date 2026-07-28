@@ -73,6 +73,7 @@ test('the Review Inbox supports local acknowledgements and baseline labels', () 
   for (const needle of ['.inbox-group', '.inbox-finding', '.review-controls', '.finding-state.expected']) {
     assert.ok(html.indexOf(needle) >= 0, 'review styles should include ' + needle);
   }
+  assert.ok(js.indexOf('append(card, [') >= 0, 'optional Review Inbox children must use the null-filtering append helper');
 });
 
 test('the dashboard reads as stat tiles, a review queue, and the sessions table', () => {

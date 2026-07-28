@@ -153,7 +153,10 @@ function reviewFindingCard(session, finding) {
     'aria-label': 'Optional local review note for ' + finding.title
   });
   const card = h('article', { className: 'inbox-finding' + (finding.resolved ? ' resolved' : '') + (finding.stale ? ' stale' : '') });
-  card.append(
+  // Use the null-filtering append helper. Native Element.append() stringifies an
+  // optional null child, which previously painted a literal "null" whenever a
+  // finding had a target but no matching baseline.
+  append(card, [
     h('div', { className: 'inbox-finding-head' },
       h('div', null,
         h('div', { className: 'finding-badges' },
@@ -181,7 +184,7 @@ function reviewFindingCard(session, finding) {
         finding.resolved ? h('button', { className: 'quiet-button', type: 'button', textContent: 'Reopen', onclick: function() { submitReviewDecision(session.session_id, finding.key, 'unreviewed', note); } }) : null
       )
     )
-  );
+  ]);
   return card;
 }
 
