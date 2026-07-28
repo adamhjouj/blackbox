@@ -3,7 +3,7 @@ import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import { anchorDisplayDestination, loadAnchorConfig } from './anchor';
 import { readConfig } from './config';
 import { blackboxDir, configPath } from './paths';
-import { claudeAdapterReadiness, geminiAdapterReadiness, privatePathStatus, signingIdentityStatus, supportedNodeMajor } from './readiness';
+import { claudeAdapterReadiness, codexAdapterReadiness, geminiAdapterReadiness, privatePathStatus, signingIdentityStatus, supportedNodeMajor } from './readiness';
 
 export type DoctorStatus = 'pass' | 'warn' | 'fail';
 
@@ -54,7 +54,14 @@ export function staticDoctorChecks(dbPath: string): DoctorCheck[] {
       ? check('Gemini CLI', 'pass', `${gemini}; ${geminiHooks.detail}`)
       : check('Gemini CLI', 'warn', gemini ? `${gemini}; ${geminiHooks.detail}` : '`gemini` was not found on PATH'),
   );
-  const completeAdapters = [!!claude && claudeHooks.connected, !!gemini && geminiHooks.connected].filter(Boolean).length;
+  const codex = readableVersion('codex', ['--version']);
+  const codexHooks = codexAdapterReadiness();
+  checks.push(
+    codex && codexHooks.connected
+      ? check('Codex CLI', 'pass', `${codex}; ${codexHooks.detail}`)
+      : check('Codex CLI', 'warn', codex ? `${codex}; ${codexHooks.detail}` : '`codex` was not found on PATH'),
+  );
+  const completeAdapters = [!!claude && claudeHooks.connected, !!gemini && geminiHooks.connected, !!codex && codexHooks.connected].filter(Boolean).length;
   checks.push(
     completeAdapters
       ? check('Agent adapters', 'pass', `${completeAdapters} complete adapter${completeAdapters === 1 ? '' : 's'}`)
