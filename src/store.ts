@@ -23,6 +23,7 @@ const COLUMN_TYPES: Record<string, string> = {
   action_type: 'TEXT',
   target: 'TEXT',
   agent_id: 'TEXT',
+  source: 'TEXT',
   agent_type: 'TEXT',
   cwd: 'TEXT',
   permission_mode: 'TEXT',
@@ -485,7 +486,7 @@ export class Store {
       const prev_hash = head?.hash ?? GENESIS;
 
       // Everything except `hash`, in a fixed shape; canonical() sorts keys.
-      const withoutHash = { ...sanitize(n), seq, prev_hash };
+      const withoutHash = { source: null, ...sanitize(n), seq, prev_hash };
       const hash = hashEvent(withoutHash);
       const full: BlackboxEvent = { ...withoutHash, hash };
 

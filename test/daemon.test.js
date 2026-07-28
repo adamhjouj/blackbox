@@ -48,6 +48,21 @@ test('daemon: recording, read API, and the security gauntlet', async () => {
     assert.equal(sessions.status, 200);
     assert.ok(sessions.body.includes('SESS1'), 'the recorded session should appear in the read API');
 
+    // ---- Gemini adapter: vendor hook schema → shared normalized action schema ----
+    for (const gemini of [
+      { hook_event_name: 'BeforeAgent', session_id: 'GEMS1', prompt: 'inspect the repository', cwd: '/repo' },
+      { hook_event_name: 'BeforeTool', session_id: 'GEMS1', tool_name: 'run_shell_command', tool_input: { command: 'printf ok' }, cwd: '/repo' },
+      { hook_event_name: 'AfterTool', session_id: 'GEMS1', tool_name: 'run_shell_command', tool_input: { command: 'printf ok' }, tool_response: { output: 'ok' }, cwd: '/repo' },
+    ]) {
+      const body = JSON.stringify(gemini);
+      const response = await req(TEST_PORT, 'POST', '/hook/gemini', { headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }, body });
+      assert.equal(response.status, 200);
+    }
+    const geminiActions = JSON.parse((await req(TEST_PORT, 'GET', '/api/session/GEMS1/events')).body);
+    const geminiBash = geminiActions.find((action) => action.tool === 'Bash');
+    assert.equal(geminiBash.source, 'gemini-cli');
+    assert.equal(geminiBash.outcome, 'succeeded');
+
     // ---- local-only dashboard profile suggestion ----
     const profile = await req(TEST_PORT, 'GET', '/api/profile');
     assert.equal(profile.status, 200);
@@ -85,6 +100,8 @@ test('daemon: recording, read API, and the security gauntlet', async () => {
     // ---- content-type gate: /hook requires application/json ----
     const badCt = await req(TEST_PORT, 'POST', '/hook', { headers: { 'content-type': 'text/plain' }, body: 'x' });
     assert.equal(badCt.status, 415);
+    const badGeminiCt = await req(TEST_PORT, 'POST', '/hook/gemini', { headers: { 'content-type': 'text/plain' }, body: 'x' });
+    assert.equal(badGeminiCt.status, 415);
 
     // ---- Host allowlist: a non-loopback Host is rejected (anti-DNS-rebinding) ----
     const badHost = await req(TEST_PORT, 'GET', '/api/sessions', { headers: { host: 'evil.example.com' } });

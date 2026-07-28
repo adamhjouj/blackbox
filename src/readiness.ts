@@ -8,6 +8,8 @@ import { blackboxDir, configPath, ensureBlackboxDir } from './paths';
 import { loadPublicKey, loadWatermark } from './sign';
 import type { Store } from './store';
 import { verify } from './verify';
+import { GEMINI_HOOK_EVENTS } from './adapters/gemini';
+import { GEMINI_HOOK_NAME } from './gemini-init';
 
 export type ReadinessStatus = 'pass' | 'warn' | 'fail' | 'pending';
 
@@ -115,7 +117,7 @@ export function signingIdentityStatus(): { ok: boolean; detail: string } {
 }
 
 export function claudeAdapterReadiness(port: number): AdapterReadiness {
-  const settingsPath = join(homedir(), '.claude', 'settings.json');
+  const settingsPath = process.env.BLACKBOX_CLAUDE_SETTINGS ?? join(homedir(), '.claude', 'settings.json');
   const installed = commandOnPath('claude');
   if (!existsSync(settingsPath)) return { id: 'claude-code', label: 'Claude Code', installed, connected: false, detail: 'settings file not found' };
   try {
@@ -138,17 +140,27 @@ export function claudeAdapterReadiness(port: number): AdapterReadiness {
 }
 
 export function geminiAdapterReadiness(): AdapterReadiness {
-  const settingsPath = join(homedir(), '.gemini', 'settings.json');
+  const settingsPath = process.env.BLACKBOX_GEMINI_SETTINGS ?? join(homedir(), '.gemini', 'settings.json');
   const installed = commandOnPath('gemini');
   if (!existsSync(settingsPath)) return { id: 'gemini-cli', label: 'Gemini CLI', installed, connected: false, detail: 'settings file not found' };
   try {
-    const raw = readFileSync(settingsPath, 'utf8');
-    const connected = raw.includes('blackbox') && raw.includes('hook') && raw.includes('gemini');
-    return connected
-      ? { id: 'gemini-cli', label: 'Gemini CLI', installed, connected: installed, detail: installed ? 'Blackbox command hooks detected' : 'hooks are configured but `gemini` is not on PATH' }
-      : { id: 'gemini-cli', label: 'Gemini CLI', installed, connected: false, detail: 'Blackbox command hooks are incomplete' };
+    const parsed = JSON.parse(readFileSync(settingsPath, 'utf8')) as { hooks?: Record<string, unknown> };
+    const missing = GEMINI_HOOK_EVENTS.filter((event) => {
+      const groups = parsed.hooks?.[event];
+      if (!Array.isArray(groups)) return true;
+      return !groups.some((group) => {
+        const hooks = group && typeof group === 'object' ? (group as { hooks?: unknown }).hooks : null;
+        return Array.isArray(hooks) && hooks.some((hook) => hook && typeof hook === 'object' &&
+          (hook as { name?: string }).name === GEMINI_HOOK_NAME &&
+          typeof (hook as { command?: unknown }).command === 'string' &&
+          /\bhook\s+gemini\b/.test((hook as { command: string }).command));
+      });
+    });
+    return missing.length
+      ? { id: 'gemini-cli', label: 'Gemini CLI', installed, connected: false, detail: `${missing.length} required command hook${missing.length === 1 ? '' : 's'} missing` }
+      : { id: 'gemini-cli', label: 'Gemini CLI', installed, connected: installed, detail: installed ? `all ${GEMINI_HOOK_EVENTS.length} hooks connected` : 'hooks are configured but `gemini` is not on PATH' };
   } catch {
-    return { id: 'gemini-cli', label: 'Gemini CLI', installed, connected: false, detail: 'settings JSON could not be read' };
+    return { id: 'gemini-cli', label: 'Gemini CLI', installed, connected: false, detail: 'settings JSON is malformed' };
   }
 }
 

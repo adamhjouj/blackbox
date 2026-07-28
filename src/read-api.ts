@@ -9,7 +9,7 @@ import { recoverSessionTurns, sessionTitleFromTranscript } from './transcript';
 import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, KNOWN_RULESETS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
 import { loadPublicKey, loadWatermark } from './sign';
 import type { SessionRiskRow, Store } from './store';
-import type { BlackboxEvent } from './types';
+import type { BlackboxEvent, EventSource } from './types';
 import { verify } from './verify';
 
 /** One row in the timeline: a Pre/Post tool pair collapsed into a single action,
@@ -35,6 +35,7 @@ export interface Action {
   score: number;
   prompt_id: string | null;
   agent_type: string | null;
+  source: EventSource | null;
 }
 
 export type ComboEvidence = FindingView;
@@ -298,6 +299,7 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
         score: scoreFor(e.seq),
         prompt_id: e.prompt_id,
         agent_type: e.agent_type,
+        source: e.source,
       };
       open.set(e.tool_use_id, a);
       actions.push(a);
@@ -336,6 +338,7 @@ export function sessionActions(store: Store, sessionId: string): Action[] {
         score: scoreFor(e.seq),
         prompt_id: e.prompt_id,
         agent_type: e.agent_type,
+        source: e.source,
       });
     }
   }

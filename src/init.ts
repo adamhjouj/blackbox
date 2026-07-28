@@ -18,7 +18,7 @@ const OTHER_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd', 
 const MIN_VERSION = [2, 1, 119]; // duration_ms floor
 
 function claudeSettingsPath(): string {
-  return join(homedir(), '.claude', 'settings.json');
+  return process.env.BLACKBOX_CLAUDE_SETTINGS ?? join(homedir(), '.claude', 'settings.json');
 }
 
 function hookUrl(port: number): string {

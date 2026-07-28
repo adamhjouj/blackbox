@@ -264,6 +264,7 @@ export function normalizeGit(params: {
     action_type: 'git_action',
     target,
     agent_id: null,
+    source: 'git',
     agent_type: 'main',
     cwd: repoTop,
     permission_mode: null,

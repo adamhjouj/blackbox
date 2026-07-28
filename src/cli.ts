@@ -14,8 +14,9 @@ import { fileHistory, reconstructAt } from './filestate';
 import { decideInitAnchor, ensureConfig, init, uninit, versionWarning } from './init';
 import { reindexAll, search } from './search';
 import { runSelfTest } from './self-test';
-import { recordSelfTestPass } from './readiness';
+import { claudeAdapterReadiness, geminiAdapterReadiness, recordSelfTestPass } from './readiness';
 import { readConfig } from './config';
+import { initGeminiHooks, rollbackGeminiInit, uninitGeminiHooks } from './gemini-init';
 import { normalizeAndCapture } from './normalize';
 import { persistReconciliation } from './reconcile';
 import { buildForensicReport, buildReport, defaultReportSession } from './report';
@@ -56,6 +57,7 @@ interface Args {
   eraseData?: boolean;
   yes?: boolean;
   noOpen?: boolean;
+  agents?: string;
   endpoint?: string;
 }
 
@@ -91,6 +93,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--erase-data') out.eraseData = true;
     else if (a === '--yes' || a === '-y') out.yes = true;
     else if (a === '--no-open') out.noOpen = true;
+    else if (a === '--agents') out.agents = argv[++i];
     else if (a === '-h' || a === '--help') out._.push('help');
     else out._.push(a as string);
   }
@@ -162,14 +165,59 @@ function getHealth(port: number, timeoutMs = 1000): Promise<Health | null> {
     });
   });
 }
-async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
+async function waitForHealth(port: number, timeoutMs: number): Promise<Health | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const h = await getHealth(port, 500);
-    if (h?.ok) return true;
+    if (h?.ok) return h;
     await sleep(150);
   }
-  return false;
+  return null;
+}
+
+async function readHookStdin(maxBytes: number = 16 * 1024 * 1024): Promise<string | null> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > maxBytes) return null;
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function postLocalHook(port: number, path: string, body: string, timeoutMs: number = 1_000): Promise<void> {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1', port, path, method: 'POST', timeout: timeoutMs,
+        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+      },
+      (res) => { res.resume(); res.on('end', resolve); },
+    );
+    req.on('error', () => resolve());
+    req.on('timeout', () => { req.destroy(); resolve(); });
+    req.end(body);
+  });
+}
+
+/** Gemini invokes command hooks synchronously. Recording must never block the
+ * agent: every input/error path emits the exact allow response and exits zero. */
+async function cmdHook(args: Args): Promise<number> {
+  if (args._[1] !== 'gemini') return 2;
+  try {
+    const body = await readHookStdin();
+    if (body !== null) {
+      const config = readConfig(configPath());
+      const port = typeof config.port === 'number' && Number.isInteger(config.port) ? config.port : DEFAULT_PORT;
+      await postLocalHook(port, '/hook/gemini', body);
+    }
+  } catch {
+    // Recorder failures are intentionally invisible to the agent hook protocol.
+  }
+  process.stdout.write('{}');
+  return 0;
 }
 
 const HELP = `blackbox — forensic recorder for AI coding agents
@@ -190,7 +238,7 @@ const HELP_ALL = `blackbox — forensic recorder for AI coding agents
 
 Setup & lifecycle:
   blackbox init                  Install hooks, start the daemon, and begin recording (alias: setup)
-  blackbox uninit                Remove blackbox hooks from ~/.claude/settings.json
+  blackbox uninit                Remove Blackbox hooks from configured agent settings
                                  Add --erase-data --yes to also delete all local Blackbox data
   blackbox start                 Start the localhost hook-receiver daemon (background)
   blackbox stop                  Stop the daemon
@@ -201,6 +249,7 @@ Setup & lifecycle:
   blackbox autostart             Keep the daemon running across reboots (macOS LaunchAgent; --off to disable)
   blackbox watch [repo]          Install git forensics hooks in a repo (--global for all repos)
   blackbox unwatch [repo]        Remove git forensics hooks (--global to disable global)
+  blackbox hook gemini           Internal Gemini CLI command-hook bridge (stdin → local recorder)
 
 Recording & reports:
   blackbox ingest <file.jsonl>   Normalize raw hook payloads into the chained store
@@ -237,6 +286,7 @@ Options:
   --allow-insecure-git start: accept unauthenticated /git writes (INSECURE opt-out of the token requirement)
   --local-only-anchor  init: accept local-only custody instead of an off-machine anchor (reduced security)
   --no-open            init: do not open the Health & privacy screen after setup
+  --agents <list>      init: configure claude, gemini, or both (default: installed agents)
   --erase-data --yes   uninit: also permanently remove ~/.blackbox after removing hooks
   --session <id>       Filter to one session (list/audit/report)
   --out <file>         Write the report to a file instead of stdout (report)
@@ -527,6 +577,26 @@ function cmdUnwatch(args: Args): number {
   return 0;
 }
 
+type AgentAdapter = 'claude' | 'gemini';
+
+function adaptersForInit(args: Args, port: number): { adapters: AgentAdapter[]; explicit: boolean; error?: string } {
+  if (args.agents) {
+    const aliases: Record<string, AgentAdapter> = { claude: 'claude', 'claude-code': 'claude', gemini: 'gemini', 'gemini-cli': 'gemini' };
+    const adapters = [...new Set(args.agents.split(',').map((item) => aliases[item.trim().toLowerCase()]).filter((item): item is AgentAdapter => !!item))];
+    const requested = args.agents.split(',').map((item) => item.trim()).filter(Boolean);
+    if (!adapters.length || adapters.length !== new Set(requested.map((item) => item.toLowerCase().replace(/-code$|-cli$/, ''))).size) {
+      return { adapters: [], explicit: true, error: '--agents accepts claude, gemini, or claude,gemini' };
+    }
+    return { adapters, explicit: true };
+  }
+  const adapters: AgentAdapter[] = [];
+  if (claudeAdapterReadiness(port).installed) adapters.push('claude');
+  if (geminiAdapterReadiness().installed) adapters.push('gemini');
+  return adapters.length
+    ? { adapters, explicit: false }
+    : { adapters, explicit: false, error: 'no supported agent CLI was found on PATH; install Claude Code or Gemini CLI, or preconfigure one with --agents <name>' };
+}
+
 async function confirmExternalAnchor(remote: string): Promise<boolean> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
@@ -551,13 +621,21 @@ function openLocalPage(port: number, route: string): void {
 
 async function cmdInit(args: Args): Promise<number> {
   const port = args.port ?? DEFAULT_PORT;
-  const warn = versionWarning();
-  if (warn) console.error(`warning: ${warn}`);
+  const selected = adaptersForInit(args, port);
+  if (selected.error) {
+    console.error(`setup preflight failed: ${selected.error}`);
+    return 2;
+  }
+  if (selected.adapters.includes('claude')) {
+    const warn = versionWarning();
+    if (warn) console.error(`warning: ${warn}`);
+  }
 
   console.log('Blackbox privacy notice:');
   console.log('  • Records prompts, agent-stated reasoning, tool actions, paths, and redacted evidence locally.');
   console.log(`  • Local data lives under ${blackboxDir()} unless BLACKBOX_HOME/BLACKBOX_DB overrides it.`);
   console.log('  • Only signed chain-head receipts leave the machine when external anchoring is enabled.');
+  console.log(`  • Agent adapters selected: ${selected.adapters.map((adapter) => adapter === 'claude' ? 'Claude Code' : 'Gemini CLI').join(', ')}.`);
   console.log("  • Use 'blackbox prune' to age out stored file content or 'blackbox uninit --erase-data --yes' to remove everything.\n");
 
   // Decide the custody posture FIRST (pure) — init is all-or-nothing; we never
@@ -627,13 +705,34 @@ async function cmdInit(args: Args): Promise<number> {
   }
   try {
     recordSelfTestPass();
-    const { settingsPath, addedEvents, updatedEvents } = init(port);
-    if (addedEvents.length || updatedEvents.length) {
-      console.log(`registered Blackbox hooks in ${settingsPath}`);
-      if (addedEvents.length) console.log(`  added: ${addedEvents.join(', ')}`);
-      if (updatedEvents.length) console.log(`  migrated to port ${port}: ${updatedEvents.join(', ')}`);
-    } else {
-      console.log(`blackbox hooks already registered in ${settingsPath} (nothing to do)`);
+    let geminiInstall: ReturnType<typeof initGeminiHooks> | null = null;
+    try {
+      if (selected.adapters.includes('gemini')) {
+        geminiInstall = initGeminiHooks({
+          nodePath: resolvePath(process.execPath),
+          cliPath: resolvePath(process.argv[1] as string),
+        });
+        const changed = geminiInstall.addedEvents.length + geminiInstall.updatedEvents.length;
+        console.log(changed
+          ? `registered Gemini CLI hooks for ${changed} event(s) in ${geminiInstall.settingsPath}`
+          : `Gemini CLI hooks already registered in ${geminiInstall.settingsPath} (nothing to do)`);
+      }
+      if (selected.adapters.includes('claude')) {
+        const { settingsPath, addedEvents, updatedEvents } = init(port);
+        if (addedEvents.length || updatedEvents.length) {
+          console.log(`registered Claude Code hooks in ${settingsPath}`);
+          if (addedEvents.length) console.log(`  added: ${addedEvents.join(', ')}`);
+          if (updatedEvents.length) console.log(`  migrated to port ${port}: ${updatedEvents.join(', ')}`);
+        } else {
+          console.log(`Claude Code hooks already registered in ${settingsPath} (nothing to do)`);
+        }
+      }
+    } catch (err) {
+      if (geminiInstall) {
+        try { rollbackGeminiInit(geminiInstall); }
+        catch (rollbackErr) { throw new Error(`${(err as Error).message}; Gemini rollback also failed: ${(rollbackErr as Error).message}`); }
+      }
+      throw err;
     }
   } catch (err) {
     if (!reusedHealthy) await cmdStop(args);
@@ -643,7 +742,7 @@ async function cmdInit(args: Args): Promise<number> {
 
   console.log(`\n✓ recorder ready — ${selfTest.events} synthetic events passed the isolated pipeline and were deleted`);
   console.log(`  Health & privacy: http://127.0.0.1:${port}/#/settings`);
-  console.log('  New Claude Code sessions record automatically.');
+  console.log(`  New ${selected.adapters.map((adapter) => adapter === 'claude' ? 'Claude Code' : 'Gemini CLI').join(' and ')} sessions record automatically.`);
   console.log("  Stop the daemon with 'blackbox stop'; remove hooks with 'blackbox uninit'.");
   if (!args.noOpen) openLocalPage(port, '#/settings');
   return 0;
@@ -654,8 +753,29 @@ async function cmdUninit(args: Args): Promise<number> {
     console.error('refusing to erase data without --yes; this permanently deletes the event store, keys, logs, and local receipts');
     return 2;
   }
-  const { settingsPath, removed } = uninit();
-  console.log(`removed ${removed} blackbox hook(s) from ${settingsPath}`);
+  const selection = args.agents ? adaptersForInit(args, args.port ?? DEFAULT_PORT) : { adapters: ['claude', 'gemini'] as AgentAdapter[], explicit: false };
+  if (selection.error) {
+    console.error(selection.error);
+    return 2;
+  }
+  const failures: string[] = [];
+  if (selection.adapters.includes('gemini')) {
+    try {
+      const result = uninitGeminiHooks();
+      console.log(`removed ${result.removed} Blackbox Gemini hook(s) from ${result.settingsPath}`);
+    } catch (err) { failures.push(`Gemini CLI: ${(err as Error).message}`); }
+  }
+  if (selection.adapters.includes('claude')) {
+    try {
+      const { settingsPath, removed } = uninit();
+      console.log(`removed ${removed} Blackbox Claude hook(s) from ${settingsPath}`);
+    } catch (err) { failures.push(`Claude Code: ${(err as Error).message}`); }
+  }
+  if (failures.length) {
+    for (const failure of failures) console.error(`could not remove ${failure}`);
+    console.error('data was left intact because at least one active adapter may still write to it');
+    return 2;
+  }
   if (args.eraseData) {
     await cmdStop(args);
     eraseLocalData(args);
@@ -776,13 +896,19 @@ async function cmdStart(args: Args): Promise<number> {
 
   // Background: re-spawn ourselves in --foreground, detached, logging to file.
   ensureBlackboxDir();
+  const occupant = await getHealth(port, 350);
+  if (occupant?.ok) {
+    console.error(`port ${port} already hosts a Blackbox recorder (pid ${occupant.pid}, db ${occupant.db}); choose another --port or stop that recorder explicitly`);
+    return 2;
+  }
   const logFd = openSync(logPath(), 'a');
   const childArgs = [process.argv[1] as string, 'start', '--foreground', '--db', db, '--port', String(port)];
   if (args.captureOutput) childArgs.push('--capture-output');
   if (args.allowInsecureGit) childArgs.push('--allow-insecure-git');
   const child = spawn(process.execPath, childArgs, { detached: true, stdio: ['ignore', logFd, logFd] });
   child.unref();
-  if (!(await waitForHealth(port, 3000))) {
+  const started = await waitForHealth(port, 3000);
+  if (!started || child.pid === undefined || started.pid !== child.pid || started.db !== db) {
     console.error(`daemon did not become healthy on port ${port} — check ${logPath()}`);
     return 2;
   }
@@ -1324,6 +1450,8 @@ async function main(): Promise<number> {
       return cmdSelfTest();
     case 'ui':
       return cmdUi(args);
+    case 'hook':
+      return cmdHook(args);
     case 'ingest':
       return cmdIngest(args);
     case 'verify':

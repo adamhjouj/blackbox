@@ -31,6 +31,7 @@ import type { BlackboxEvent } from './types';
 import { renderPage } from './ui-page';
 import { buildSetupStatus, type SetupStatus } from './readiness';
 import { readConfig } from './config';
+import { adaptGeminiHook, GeminiCorrelator } from './adapters/gemini';
 
 export interface DaemonOptions {
   db: string;
@@ -185,6 +186,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   const store = new Store(opts.db);
   const startedAt = Date.now();
   const correlator = new Correlator();
+  const geminiCorrelator = new GeminiCorrelator();
   const riskEngine = new RiskEngine((sid) => store.eventsLight(sid));
   let setupCache: { headSeq: number; checkedAt: number; value: SetupStatus } | null = null;
   const setupStatus = (): SetupStatus => {
@@ -413,6 +415,25 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     }
   };
 
+  const recordGeminiHook = (body: string, truncated: boolean): void => {
+    if (truncated) {
+      const capturedAt = new Date().toISOString();
+      scoreAndPersist(store.append(normalize({ hook_event_name: 'OversizedHook', session_id: 'unknown', _truncated: true, _blackbox_adapter: 'gemini-cli' }, capturedAt)));
+      log('recorded oversized/truncated Gemini hook as marker');
+      return;
+    }
+    let payload: unknown;
+    try { payload = JSON.parse(body) as unknown; }
+    catch { log('gemini: drop invalid JSON body'); return; }
+    if (!isPlainObject(payload)) { log('gemini: drop non-object payload'); return; }
+    try {
+      const adapted = adaptGeminiHook(payload, geminiCorrelator);
+      recordHook(JSON.stringify(adapted.payload), false);
+    } catch (err) {
+      log(`gemini: drop unsupported payload: ${(err as Error).message}`);
+    }
+  };
+
   const recordGit = (headers: http.IncomingHttpHeaders, body: string): void => {
     if (configToken && hdr(headers, 'x-bb-token') !== configToken) {
       log('git: token mismatch — dropped');
@@ -591,7 +612,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           return;
         }
         // Reject browser-forged writes to both recording routes (CSRF to localhost).
-        if (req.method === 'POST' && (path === '/hook' || path === '/git') && isBrowserForged(req.headers)) {
+        if (req.method === 'POST' && (path === '/hook' || path === '/hook/gemini' || path === '/git') && isBrowserForged(req.headers)) {
           log(`rejected browser-forged POST ${path}`);
           sendJson(res, 403, { ok: false, error: 'forbidden' });
           return;
@@ -611,6 +632,19 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             // never let an append failure surface as a hook error
             log(`append error: ${(err as Error).message}`);
           }
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        if (req.method === 'POST' && path === '/hook/gemini') {
+          const ct = hdr(req.headers, 'content-type');
+          if (!ct.includes('application/json')) {
+            log('rejected /hook/gemini with non-JSON content-type');
+            sendJson(res, 415, { ok: false, error: 'expected application/json' });
+            return;
+          }
+          const { body, truncated } = await readBody(req, maxBody);
+          try { recordGeminiHook(body, truncated); }
+          catch (err) { log(`gemini append error: ${(err as Error).message}`); }
           sendJson(res, 200, { ok: true });
           return;
         }
