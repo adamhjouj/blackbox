@@ -35,6 +35,7 @@ export function renderPage(): string {
   <div class="sb-search"><input id="sbSearch" class="text-field" type="search" placeholder="Search sessions, prompts, evidence…" autocomplete="off" spellcheck="false" aria-label="Search sessions, prompts, and evidence"></div>
   <nav class="sb-nav">
     <a id="navDash" class="sb-dash nav-home" href="#/" aria-label="Dashboard"><span class="sb-glyph" aria-hidden="true">◈</span><span class="sb-nav-label">Dashboard</span></a>
+    <a id="navReview" class="sb-dash nav-review" href="#/review" aria-label="Review inbox"><span class="sb-glyph" aria-hidden="true">⚑</span><span class="sb-nav-label">Review inbox</span><span id="reviewNavCount" class="sb-nav-count"></span></a>
     <a id="navSettings" class="sb-dash nav-settings" href="#/settings" aria-label="Health and privacy"><span class="sb-glyph" aria-hidden="true">⌁</span><span class="sb-nav-label">Health & privacy</span></a>
   </nav>
   <div class="sb-scroll"><div id="sbReview"></div><div id="sbRecent"></div></div>

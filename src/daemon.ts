@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, statSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   Correlator,
   classify,
@@ -32,6 +33,8 @@ import { renderPage } from './ui-page';
 import { buildSetupStatus, type SetupStatus } from './readiness';
 import { readConfig } from './config';
 import { adaptGeminiHook, GeminiCorrelator } from './adapters/gemini';
+import { reviewInbox, sessionReviewView } from './review-inbox';
+import { redactText } from './redact';
 
 export interface DaemonOptions {
   db: string;
@@ -152,6 +155,28 @@ function isBrowserForged(headers: http.IncomingHttpHeaders): boolean {
   return !!s && s !== 'same-origin' && s !== 'none';
 }
 
+function nonceMatches(expected: string, supplied: string): boolean {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(supplied);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function isAllowedUiWrite(headers: http.IncomingHttpHeaders, port: number): boolean {
+  const site = headers['sec-fetch-site'];
+  const fetchSite = Array.isArray(site) ? site[0] : site;
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') return false;
+  const value = headers.origin;
+  const origin = Array.isArray(value) ? value[0] : value;
+  if (!origin) return true; // non-browser clients still need the CSRF nonce
+  try {
+    const parsed = new URL(origin);
+    const originPort = parsed.port ? Number(parsed.port) : parsed.protocol === 'http:' ? 80 : 443;
+    return parsed.protocol === 'http:' && isLoopbackHost(parsed.host) && originPort === port;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Start the receiver. Binds 127.0.0.1 ONLY (never 0.0.0.0). Single long-lived
  * Store instance → writes serialize (single-writer invariant). The request
@@ -187,6 +212,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   const startedAt = Date.now();
   const correlator = new Correlator();
   const geminiCorrelator = new GeminiCorrelator();
+  const uiCsrfToken = randomBytes(24).toString('base64url');
   const riskEngine = new RiskEngine((sid) => store.eventsLight(sid));
   let setupCache: { headSeq: number; checkedAt: number; value: SetupStatus } | null = null;
   const setupStatus = (): SetupStatus => {
@@ -511,7 +537,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             return;
           }
           if (path === '/api/sessions') {
-            sendJson(res, 200, sessionCards(store));
+            const cards = sessionCards(store).map((card) => {
+              const review = sessionReviewView(store, card.session_id);
+              return review
+                ? { ...card, review_count: review.unresolved, review_total: review.total, reviewed: review.total - review.unresolved }
+                : card;
+            });
+            sendJson(res, 200, cards);
             return;
           }
           // Local-only dashboard personalisation. The browser may override this
@@ -543,6 +575,20 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           // R8.3: fleet overview — one cached aggregation across all sessions.
           if (path === '/api/fleet') {
             sendJson(res, 200, fleetOverview(store));
+            return;
+          }
+          if (path === '/api/review-inbox') {
+            sendJson(res, 200, { sessions: reviewInbox(store), csrf_token: uiCsrfToken });
+            return;
+          }
+          const mf = path.match(/^\/api\/session\/(.+)\/findings$/);
+          if (mf) {
+            let id: string;
+            try { id = decodeURIComponent(mf[1]!); }
+            catch { sendJson(res, 400, { ok: false, error: 'bad session id' }); return; }
+            const view = sessionReviewView(store, id);
+            if (!view) { sendJson(res, 404, { ok: false, error: 'no such session' }); return; }
+            sendJson(res, 200, { ...view, csrf_token: uiCsrfToken });
             return;
           }
           // R8.1: blast radius + containment checklist for one session.
@@ -611,6 +657,52 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
           sendJson(res, 404, { ok: false, error: 'not found' });
           return;
         }
+        // The sole browser write API: append a local review decision. A random
+        // same-origin-readable nonce plus Origin/Fetch-Site validation protects
+        // localhost from cross-site form/fetch attacks. Evidence rows are never
+        // mutated; the review ledger is separate and append-only.
+        if (req.method === 'POST' && path === '/api/review') {
+          if (!isAllowedUiWrite(req.headers, port) || !nonceMatches(uiCsrfToken, hdr(req.headers, 'x-blackbox-csrf'))) {
+            sendJson(res, 403, { ok: false, error: 'forbidden' });
+            return;
+          }
+          if (!hdr(req.headers, 'content-type').includes('application/json')) {
+            sendJson(res, 415, { ok: false, error: 'expected application/json' });
+            return;
+          }
+          const { body, truncated } = await readBody(req, Math.min(maxBody, 64 * 1024));
+          if (truncated) { sendJson(res, 413, { ok: false, error: 'review payload too large' }); return; }
+          let input: unknown;
+          try { input = JSON.parse(body) as unknown; }
+          catch { sendJson(res, 400, { ok: false, error: 'invalid JSON' }); return; }
+          if (!isPlainObject(input)) { sendJson(res, 400, { ok: false, error: 'expected an object' }); return; }
+          const sessionId = typeof input.session_id === 'string' ? input.session_id : '';
+          const findingKey = typeof input.finding_key === 'string' ? input.finding_key : '';
+          const disposition = typeof input.disposition === 'string' ? input.disposition : '';
+          if (!sessionId || !findingKey || !['acknowledged', 'expected', 'false_positive', 'unreviewed'].includes(disposition)) {
+            sendJson(res, 400, { ok: false, error: 'invalid review decision' });
+            return;
+          }
+          const current = sessionReviewView(store, sessionId);
+          const finding = current?.findings.find((item) => item.key === findingKey);
+          if (!current || !finding) { sendJson(res, 404, { ok: false, error: 'finding is no longer current' }); return; }
+          const rawNote = typeof input.note === 'string' ? input.note.trim() : '';
+          const note = rawNote ? Array.from(redactText(rawNote).text).slice(0, 1_000).join('') : null;
+          store.reviewAppend({
+            id: randomUUID(),
+            session_id: sessionId,
+            finding_key: findingKey,
+            disposition: disposition as 'acknowledged' | 'expected' | 'false_positive' | 'unreviewed',
+            note,
+            reviewed_through_seq: current.last_seq,
+            reviewed_through_hash: current.last_hash,
+            policy_hash: finding.policy_hash,
+            created_at: new Date().toISOString(),
+          });
+          sendJson(res, 200, { ok: true, session: sessionReviewView(store, sessionId) });
+          return;
+        }
+
         // Reject browser-forged writes to both recording routes (CSRF to localhost).
         if (req.method === 'POST' && (path === '/hook' || path === '/hook/gemini' || path === '/git') && isBrowserForged(req.headers)) {
           log(`rejected browser-forged POST ${path}`);

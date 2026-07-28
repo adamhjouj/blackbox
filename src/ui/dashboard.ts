@@ -119,6 +119,123 @@ function renderSettingsPage() {
   app.append(page);
 }
 
+/* ── pre-merge Review Inbox ─────────────────────────────────────────────── */
+
+function reviewOutcomeLabel(outcome) {
+  if (outcome === 'succeeded') return 'Tool reported success';
+  if (outcome === 'failed') return 'Failed';
+  if (outcome === 'attempted') return 'Attempted';
+  return 'Unknown outcome';
+}
+
+async function submitReviewDecision(sessionId, findingKey, disposition, noteInput) {
+  if (!S.reviewCsrf) { showToast('Review session expired; refreshing'); await loadReviewInbox(true); return; }
+  try {
+    await apiWrite('/api/review', {
+      session_id: sessionId,
+      finding_key: findingKey,
+      disposition: disposition,
+      note: noteInput && noteInput.value || ''
+    });
+    showToast(disposition === 'unreviewed' ? 'Finding returned to inbox' : 'Review decision saved');
+    await loadReviewInbox(true);
+    await refreshBase();
+  } catch (_) { showToast('Review decision could not be saved'); }
+}
+
+function reviewFindingCard(session, finding) {
+  const note = h('input', {
+    className: 'review-note text-field',
+    type: 'text',
+    value: finding.review && finding.review.note || '',
+    maxlength: 1000,
+    placeholder: 'Optional local review note',
+    'aria-label': 'Optional local review note for ' + finding.title
+  });
+  const card = h('article', { className: 'inbox-finding' + (finding.resolved ? ' resolved' : '') + (finding.stale ? ' stale' : '') });
+  card.append(
+    h('div', { className: 'inbox-finding-head' },
+      h('div', null,
+        h('div', { className: 'finding-badges' },
+          h('span', { className: 'risk-badge ' + finding.severity, textContent: finding.severity }),
+          h('span', { className: 'finding-state', textContent: reviewOutcomeLabel(finding.outcome) }),
+          finding.expected ? h('span', { className: 'finding-state expected', textContent: 'Expected by baseline' }) : null,
+          finding.stale ? h('span', { className: 'finding-state stale', textContent: 'Review stale' }) : null,
+          finding.resolved && !finding.stale ? h('span', { className: 'finding-state resolved', textContent: cap(finding.disposition.replace('_', ' ')) }) : null
+        ),
+        h('h3', { textContent: finding.title }),
+        h('p', { textContent: finding.note })
+      ),
+      h('span', { className: 'inbox-score', textContent: String(finding.score) })
+    ),
+    finding.target ? h('code', { className: 'inbox-target', textContent: finding.target }) : null,
+    finding.baseline_matches && finding.baseline_matches.length
+      ? h('div', { className: 'baseline-reasons' }, finding.baseline_matches.map(function(match) { return h('span', { textContent: match.id + ' · ' + match.reason }); }))
+      : null,
+    h('div', { className: 'review-controls' },
+      note,
+      h('div', { className: 'review-buttons' },
+        h('button', { className: 'quiet-button', type: 'button', textContent: 'Acknowledge', onclick: function() { submitReviewDecision(session.session_id, finding.key, 'acknowledged', note); } }),
+        h('button', { className: 'quiet-button', type: 'button', textContent: 'Expected', onclick: function() { submitReviewDecision(session.session_id, finding.key, 'expected', note); } }),
+        h('button', { className: 'quiet-button', type: 'button', textContent: 'False positive', onclick: function() { submitReviewDecision(session.session_id, finding.key, 'false_positive', note); } }),
+        finding.resolved ? h('button', { className: 'quiet-button', type: 'button', textContent: 'Reopen', onclick: function() { submitReviewDecision(session.session_id, finding.key, 'unreviewed', note); } }) : null
+      )
+    )
+  );
+  return card;
+}
+
+function renderReviewInbox() {
+  const app = document.getElementById('app');
+  if (S.route.page !== 'review') return;
+  app.textContent = '';
+  app.append(h('header', { className: 'inbox-hero' },
+    h('div', null,
+      h('div', { className: 'panel-label', textContent: 'Pre-merge control' }),
+      h('h1', { textContent: 'Review Inbox' }),
+      h('p', { textContent: 'Acknowledge elevated findings before merge. Decisions stay local, bind to the evidence head and baseline policy, and become stale when either changes.' })
+    ),
+    h('span', { className: 'readiness-progress', textContent: S.reviewInbox.reduce(function(total, session) { return total + Number(session.unresolved || 0); }, 0) + ' open' })
+  ));
+  if (!S.reviewFp) {
+    app.append(h('div', { className: 'skeleton-card', style: 'height:220px' }));
+    return;
+  }
+  if (!S.reviewInbox.length) {
+    app.append(h('section', { className: 'empty-state inbox-clear' },
+      h('div', { className: 'empty-symbol', textContent: '✓' }),
+      h('h2', { textContent: 'Review Inbox is clear' }),
+      h('p', { textContent: 'No current finding is waiting for acknowledgement. New evidence or a policy change will reopen stale reviews automatically.' })
+    ));
+    return;
+  }
+  const groups = new Map();
+  S.reviewInbox.forEach(function(session) {
+    const key = session.project + '|' + (session.branch || 'detached') + '|' + (session.commit || 'no-commit');
+    const group = groups.get(key) || [];
+    group.push(session); groups.set(key, group);
+  });
+  groups.forEach(function(sessions) {
+    const first = sessions[0];
+    const group = h('section', { className: 'inbox-group' });
+    group.append(h('div', { className: 'inbox-group-head' },
+      h('div', null, h('h2', { textContent: first.project }), h('p', { textContent: (first.branch || 'detached HEAD') + (first.commit ? ' · ' + shortId(first.commit) : '') })),
+      h('span', { textContent: sessions.reduce(function(total, session) { return total + Number(session.unresolved || 0); }, 0) + ' open' })
+    ));
+    sessions.forEach(function(session) {
+      const section = h('div', { className: 'inbox-session' });
+      section.append(h('div', { className: 'inbox-session-head' },
+        h('div', null, h('h3', { textContent: session.title }), h('p', { textContent: fmtRel(session.ended) + ' · ' + session.unresolved + ' unresolved' + (session.stale ? ' · ' + session.stale + ' stale' : '') })),
+        h('a', { className: 'quiet-button', href: sessionHref(session.session_id, 'overview'), textContent: 'Open session →' })
+      ));
+      if (session.baseline_error) section.append(h('div', { className: 'baseline-error', textContent: 'Baseline ignored: ' + session.baseline_error }));
+      session.findings.forEach(function(finding) { section.append(reviewFindingCard(session, finding)); });
+      group.append(section);
+    });
+    app.append(group);
+  });
+}
+
 /* ── dashboard ────────────────────────────────────────────────────────────── */
 
 function verdictChip(card) {

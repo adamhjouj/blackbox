@@ -229,6 +229,25 @@ CREATE TABLE IF NOT EXISTS search_meta (
 );
 `;
 
+/** Human review state is local, append-only, and deliberately outside the
+ * forensic event chain. Every decision binds to the evidence head and policy
+ * hash it reviewed so later evidence/policy changes become visibly stale. */
+const REVIEW_SCHEMA = `
+CREATE TABLE IF NOT EXISTS review_actions (
+  id                    TEXT PRIMARY KEY,
+  session_id            TEXT NOT NULL,
+  finding_key           TEXT NOT NULL,
+  disposition           TEXT NOT NULL CHECK (disposition IN ('acknowledged', 'expected', 'false_positive', 'unreviewed')),
+  note                  TEXT,
+  reviewed_through_seq  INTEGER NOT NULL,
+  reviewed_through_hash TEXT NOT NULL,
+  policy_hash           TEXT,
+  created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_review_session_created ON review_actions(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_review_finding ON review_actions(session_id, finding_key);
+`;
+
 export interface ChainMeta {
   count: number;
   head_seq: number;
@@ -314,6 +333,18 @@ export interface SessionIntentRow {
   computed_at: string;
 }
 
+export interface ReviewActionRow {
+  id: string;
+  session_id: string;
+  finding_key: string;
+  disposition: 'acknowledged' | 'expected' | 'false_positive' | 'unreviewed';
+  note: string | null;
+  reviewed_through_seq: number;
+  reviewed_through_hash: string;
+  policy_hash: string | null;
+  created_at: string;
+}
+
 export interface SessionSummary {
   session_id: string;
   events: number;
@@ -385,6 +416,7 @@ export class Store {
     this.db.exec(IDENTITY_SCHEMA);
     this.db.exec(INTENT_SCHEMA);
     this.db.exec(SEARCH_SCHEMA);
+    this.db.exec(REVIEW_SCHEMA);
     this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
     // Evidence and derived tables contain private local activity. Tighten an
     // existing permissive database during the additive open migration as well as
@@ -650,6 +682,27 @@ export class Store {
 
   sessionRiskAll(ruleset: string): SessionRiskRow[] {
     return this.db.prepare('SELECT * FROM session_risk WHERE ruleset_version = ?').all(ruleset) as SessionRiskRow[];
+  }
+
+  // ---- local review ledger (append-only, outside the evidence chain) ------
+
+  reviewAppend(row: ReviewActionRow): void {
+    this.db.prepare(
+      `INSERT INTO review_actions
+        (id, session_id, finding_key, disposition, note, reviewed_through_seq, reviewed_through_hash, policy_hash, created_at)
+       VALUES
+        (@id, @session_id, @finding_key, @disposition, @note, @reviewed_through_seq, @reviewed_through_hash, @policy_hash, @created_at)`,
+    ).run(row);
+  }
+
+  reviewsForSession(sessionId: string): ReviewActionRow[] {
+    return this.db
+      .prepare('SELECT * FROM review_actions WHERE session_id = ? ORDER BY rowid ASC')
+      .all(sessionId) as ReviewActionRow[];
+  }
+
+  reviewCount(): number {
+    return (this.db.prepare('SELECT COUNT(*) AS count FROM review_actions').get() as { count: number }).count;
   }
 
   /** Delete a ruleset's risk rows (whole ruleset, or one session of it). */

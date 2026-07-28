@@ -31,7 +31,7 @@ test('renderPage emits a complete, self-contained HTML document', () => {
 
 test('the persistent console rail ships in the static shell', () => {
   const html = renderPage();
-  for (const needle of ['class="sidebar"', 'id="sbSearch"', 'id="navDash"', 'id="navSettings"', 'href="#/settings"', 'id="sbReview"', 'id="sbRecent"', 'BLACKBOX', 'id="connectionLabel"']) {
+  for (const needle of ['class="sidebar"', 'id="sbSearch"', 'id="navDash"', 'id="navReview"', 'href="#/review"', 'id="navSettings"', 'href="#/settings"', 'id="sbReview"', 'id="sbRecent"', 'BLACKBOX', 'id="connectionLabel"']) {
     assert.ok(html.indexOf(needle) >= 0, 'sidebar shell should include ' + needle);
   }
   const js = clientJs(html);
@@ -57,11 +57,22 @@ test('CLIENT_JS honours the template-literal safety convention', () => {
 
 test('the emitted page carries the dashboard, routing, and evidence controls', () => {
   const js = clientJs(renderPage());
-  for (const needle of ['parseRoute', 'renderDashboard', 'renderSettingsPage', "parts[0] === 'settings'", '/api/privacy', 'renderSessionPage', 'renderOverview', 'renderActivityView', 'renderGraphView', 'renderGraphPanel', 'openEvidence', 'renderSearchView', 'runDeepSearch']) {
+  for (const needle of ['parseRoute', 'renderDashboard', 'renderSettingsPage', "parts[0] === 'settings'", "parts[0] === 'review'", '/api/privacy', '/api/review-inbox', 'renderReviewInbox', 'renderSessionPage', 'renderOverview', 'renderActivityView', 'renderGraphView', 'renderGraphPanel', 'openEvidence', 'renderSearchView', 'runDeepSearch']) {
     assert.ok(js.indexOf(needle) >= 0, 'CLIENT_JS should reference ' + needle);
   }
   // Pre-merge evidence-tab links must still resolve (into Activity).
   assert.ok(js.indexOf("tab === 'evidence'") >= 0, 'old evidence routes should alias into activity');
+});
+
+test('the Review Inbox supports local acknowledgements and baseline labels', () => {
+  const html = renderPage();
+  const js = clientJs(html);
+  for (const needle of ['Review Inbox', 'Pre-merge control', 'Expected by baseline', 'Review stale', 'Acknowledge', 'False positive', "apiWrite('/api/review'", 'x-blackbox-csrf', 'finding_key', 'baseline_error']) {
+    assert.ok(js.indexOf(needle) >= 0, 'review workflow should include ' + needle);
+  }
+  for (const needle of ['.inbox-group', '.inbox-finding', '.review-controls', '.finding-state.expected']) {
+    assert.ok(html.indexOf(needle) >= 0, 'review styles should include ' + needle);
+  }
 });
 
 test('the dashboard reads as stat tiles, a review queue, and the sessions table', () => {

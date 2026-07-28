@@ -2,6 +2,7 @@ export const CORE_JS = String.raw`
 'use strict';
 const S = {
   cards: [], cardsFp: '', fleet: null, health: null, profile: null, privacy: null, setup: null, setupFp: '', displayName: 'there',
+  reviewInbox: [], reviewFp: '', reviewCsrf: '', loadingReview: false,
   route: { page: 'home', id: null, tab: null, eventSeq: null }, currentId: null,
   story: null, blast: null, verify: null, sessionFp: '', loadingSession: false,
   query: '', deepHits: [], searching: false, searchTimer: null, dashboardSort: 'recent',
@@ -35,6 +36,16 @@ function append(node, child) {
 
 async function api(path) {
   const response = await fetch(path, { headers: { accept: 'application/json' } });
+  if (!response.ok) throw new Error('Request failed with status ' + response.status);
+  return response.json();
+}
+
+async function apiWrite(path, body) {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'x-blackbox-csrf': S.reviewCsrf },
+    body: JSON.stringify(body)
+  });
   if (!response.ok) throw new Error('Request failed with status ' + response.status);
   return response.json();
 }
@@ -161,6 +172,7 @@ function parseRoute() {
     return { page: 'session', id: id, tab: tab, eventSeq: eventSeq };
   }
   if (parts[0] === 'settings') return { page: 'settings', id: null, tab: null, eventSeq: null };
+  if (parts[0] === 'review') return { page: 'review', id: null, tab: null, eventSeq: null };
   return { page: 'home', id: null, tab: null, eventSeq: null };
 }
 
@@ -217,6 +229,13 @@ function routeChanged() {
     loadPrivacy();
     return;
   }
+  if (next.page === 'review') {
+    closeDrawerNodes(); S.selectedSeq = null;
+    renderReviewInbox();
+    if (changedView) setWindowScroll(0);
+    loadReviewInbox(false);
+    return;
+  }
   if (!changedView && changedEvidence) {
     if (next.eventSeq != null) openEvidence(next.eventSeq, true);
     else { S.selectedSeq = null; closeDrawerNodes(); }
@@ -242,9 +261,11 @@ function routeChanged() {
 
 function sidebarActive() {
   const dash = document.getElementById('navDash');
+  const review = document.getElementById('navReview');
   const settings = document.getElementById('navSettings');
   if (dash) dash.classList.toggle('active', S.route.page === 'home' && !S.query.trim());
   if (settings) settings.classList.toggle('active', S.route.page === 'settings');
+  if (review) review.classList.toggle('active', S.route.page === 'review');
   document.querySelectorAll('.sb-item, .sb-recent').forEach(function(item) {
     item.classList.toggle('active', S.route.page === 'session' && item.getAttribute('data-id') === S.route.id);
   });
@@ -324,6 +345,26 @@ async function loadPrivacy() {
   } catch (_) { S.offline = true; }
   updateChrome();
   if (S.route.page === 'settings') renderSettingsPage();
+}
+
+async function loadReviewInbox(force) {
+  if (S.loadingReview) return;
+  S.loadingReview = true;
+  try {
+    const data = await api('/api/review-inbox');
+    const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+    const fp = JSON.stringify(sessions);
+    S.reviewCsrf = data.csrf_token || S.reviewCsrf;
+    if (force || fp !== S.reviewFp) {
+      S.reviewFp = fp; S.reviewInbox = sessions;
+      if (S.route.page === 'review') renderPreservingScroll(renderReviewInbox);
+    }
+    const count = sessions.reduce(function(total, session) { return total + Number(session.unresolved || 0); }, 0);
+    const badge = document.getElementById('reviewNavCount');
+    if (badge) badge.textContent = count ? String(count) : '';
+  } catch (_) {
+    if (S.route.page === 'review') showToast('Review Inbox could not be loaded');
+  } finally { S.loadingReview = false; }
 }
 
 function openProfile() {
@@ -417,6 +458,7 @@ function schedulePoll() {
   clearTimeout(S.pollTimer);
   S.pollTimer = setTimeout(async function tick() {
     await refreshBase();
+    await loadReviewInbox(false);
     if (S.route.page === 'session' && S.route.id) {
       await loadSessionData(S.route.id, false);
       if (S.route.tab === 'graph') await loadGraph(false);
@@ -481,5 +523,5 @@ window.addEventListener('hashchange', routeChanged);
 if (!location.hash) history.replaceState(null, '', '#/');
 S.route = parseRoute();
 loadProfile();
-refreshBase().finally(function() { routeChanged(); schedulePoll(); });
+refreshBase().finally(function() { loadReviewInbox(false); routeChanged(); schedulePoll(); });
 `;
