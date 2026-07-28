@@ -237,21 +237,33 @@ async function readHookStdin(maxBytes: number = 16 * 1024 * 1024): Promise<strin
 
 function postLocalHook(port: number, path: string, body: string, timeoutMs: number = 1_000): Promise<void> {
   return new Promise((resolve) => {
+    let settled = false;
+    let watchdog: NodeJS.Timeout;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      resolve();
+    };
     const req = http.request(
       {
         host: '127.0.0.1', port, path, method: 'POST', timeout: timeoutMs,
         headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
       },
-      (res) => { res.resume(); res.on('end', resolve); },
+      (res) => { res.resume(); res.on('end', finish); },
     );
-    req.on('error', () => resolve());
-    req.on('timeout', () => { req.destroy(); resolve(); });
+    // `ClientRequest.timeout` starts after a socket is assigned. A sandbox can
+    // leave connect pending before that point, so enforce an absolute deadline too.
+    watchdog = setTimeout(() => { req.destroy(); finish(); }, timeoutMs);
+    req.on('error', finish);
+    req.on('timeout', () => { req.destroy(); finish(); });
     req.end(body);
   });
 }
 
 /** Gemini and Codex invoke command hooks synchronously. Recording must never
- * block the agent: every input/error path emits an empty JSON response and exits zero. */
+ * block the agent. Gemini receives its empty JSON response; Codex's documented
+ * success response is exit zero with no stdout. */
 async function cmdHook(args: Args): Promise<number> {
   const adapter = args._[1];
   if (adapter !== 'gemini' && adapter !== 'codex') return 2;
@@ -265,7 +277,7 @@ async function cmdHook(args: Args): Promise<number> {
   } catch {
     // Recorder failures are intentionally invisible to the agent hook protocol.
   }
-  process.stdout.write('{}');
+  if (adapter === 'gemini') process.stdout.write('{}');
   return 0;
 }
 

@@ -8,7 +8,7 @@ const { join } = require('node:path');
 
 const cli = join(__dirname, '..', 'dist', 'cli.js');
 
-test('Codex command bridge always emits valid empty JSON and exits zero', () => {
+test('Codex command bridge stays silent and exits zero', () => {
   const home = mkdtempSync(join(tmpdir(), 'bb-codex-hook-cli-'));
   try {
     writeFileSync(join(home, 'config.json'), JSON.stringify({ token: 'test-token-123456', port: 9 }));
@@ -19,7 +19,7 @@ test('Codex command bridge always emits valid empty JSON and exits zero', () => 
       timeout: 3_000,
     });
     assert.equal(result.status, 0);
-    assert.equal(result.stdout, '{}');
+    assert.equal(result.stdout, '');
     assert.equal(result.stderr, '');
 
     writeFileSync(join(home, 'config.json'), '{ malformed');
@@ -30,7 +30,7 @@ test('Codex command bridge always emits valid empty JSON and exits zero', () => 
       timeout: 3_000,
     });
     assert.equal(degraded.status, 0);
-    assert.equal(degraded.stdout, '{}');
+    assert.equal(degraded.stdout, '');
     assert.equal(degraded.stderr, '');
   } finally {
     rmSync(home, { recursive: true, force: true });
