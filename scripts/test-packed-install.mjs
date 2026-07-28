@@ -76,10 +76,17 @@ try {
   if (!/forensic recorder for AI coding agents/.test(help)) throw new Error('installed CLI help did not run');
 
   const activationPort = await availableLoopbackPort();
-  execFileSync(installedBin, ['init', '--agents', 'claude,gemini', '--local-only-anchor', '--yes', '--no-open', '--port', String(activationPort)], {
-    cwd: scratch, env: activationEnv, stdio: 'inherit', timeout: 30_000,
+  const durablePrefix = join(scratch, 'durable-prefix');
+  activationEnv.BLACKBOX_INSTALL_SPEC = tarball;
+  execFileSync(installedBin, ['install', '--prefix', durablePrefix, '--agents', 'claude,gemini', '--local-only-anchor', '--yes', '--no-open', '--port', String(activationPort)], {
+    cwd: scratch, env: activationEnv, stdio: 'inherit', timeout: 60_000,
   });
   activated = true;
+  const durableRoot = execFileSync(npm, ['root', '--global', '--prefix', durablePrefix], { cwd: scratch, env: activationEnv, encoding: 'utf8' }).trim();
+  installedBin = join(durableRoot, 'blackbox-recorder', 'dist', 'cli.js');
+  if (!existsSync(installedBin)) throw new Error('one-command installer did not create a durable CLI runtime');
+  const geminiHookSettings = readFileSync(geminiSettings, 'utf8');
+  if (!geminiHookSettings.includes(installedBin)) throw new Error('Gemini command hooks do not point at the durable CLI');
   let status;
   try {
     status = execFileSync(installedBin, ['status'], { cwd: scratch, env: activationEnv, encoding: 'utf8' });

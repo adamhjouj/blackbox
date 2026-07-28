@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { resolve as resolvePath, sep } from 'node:path';
@@ -59,6 +59,7 @@ interface Args {
   noOpen?: boolean;
   agents?: string;
   endpoint?: string;
+  installPrefix?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -76,6 +77,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--prune') out.prune = argv[++i];
     else if (a === '--out') out.out = argv[++i];
     else if (a === '--endpoint') out.endpoint = argv[++i];
+    else if (a === '--prefix') out.installPrefix = argv[++i];
     else if (a === '--off') out.off = true;
     else if (a === '--older-than') out.olderThan = argv[++i];
     else if (a === '--forensic') out.forensic = true;
@@ -222,6 +224,7 @@ async function cmdHook(args: Args): Promise<number> {
 
 const HELP = `blackbox — forensic recorder for AI coding agents
 
+  blackbox install     Permanently install the CLI, then run first-time setup
   blackbox init        Install hooks, start the daemon, and begin recording
   blackbox status      Show whether it's recording (+ security posture)
   blackbox doctor      Diagnose setup, runtime, hooks, custody, and data-store health
@@ -237,6 +240,7 @@ Run \`blackbox help --all\` for forensic & advanced commands.
 const HELP_ALL = `blackbox — forensic recorder for AI coding agents
 
 Setup & lifecycle:
+  blackbox install               Persist an npx/bootstrap copy globally, then run init in one command
   blackbox init                  Install hooks, start the daemon, and begin recording (alias: setup)
   blackbox uninit                Remove Blackbox hooks from configured agent settings
                                  Add --erase-data --yes to also delete all local Blackbox data
@@ -287,6 +291,7 @@ Options:
   --local-only-anchor  init: accept local-only custody instead of an off-machine anchor (reduced security)
   --no-open            init: do not open the Health & privacy screen after setup
   --agents <list>      init: configure claude, gemini, or both (default: installed agents)
+  --prefix <path>      install: use a custom npm global prefix
   --erase-data --yes   uninit: also permanently remove ~/.blackbox after removing hooks
   --session <id>       Filter to one session (list/audit/report)
   --out <file>         Write the report to a file instead of stdout (report)
@@ -302,6 +307,80 @@ Exit codes:
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+function npmInvocation(args: string[]): { command: string; args: string[] } {
+  const npmCli = process.env.npm_execpath;
+  if (npmCli && existsSync(npmCli)) return { command: process.execPath, args: [npmCli, ...args] };
+  return { command: process.platform === 'win32' ? 'npm.cmd' : 'npm', args };
+}
+
+function runInherited(command: string, args: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { env, stdio: 'inherit' });
+    child.once('error', (error) => {
+      console.error(`could not run ${command}: ${error.message}`);
+      resolve(2);
+    });
+    child.once('exit', (code, signal) => {
+      if (signal) {
+        console.error(`${command} stopped by ${signal}`);
+        resolve(2);
+      } else resolve(code ?? 2);
+    });
+  });
+}
+
+/** Durable one-command bootstrap. `npx ... install` otherwise leaves Gemini
+ * command hooks and autostart pointing into npm's disposable execution cache.
+ * Install the exact running version into a stable npm prefix, then invoke that
+ * copy's `init` so every persisted path points at the durable runtime. */
+async function cmdInstall(args: Args): Promise<number> {
+  let version: string;
+  try {
+    const pkg = JSON.parse(readFileSync(resolvePath(__dirname, '..', 'package.json'), 'utf8')) as { version?: unknown };
+    if (typeof pkg.version !== 'string' || !pkg.version) throw new Error('package version is missing');
+    version = pkg.version;
+  } catch (error) {
+    console.error(`install: cannot identify this Blackbox package: ${(error as Error).message}`);
+    return 2;
+  }
+  const prefix = args.installPrefix ?? process.env.BLACKBOX_INSTALL_PREFIX;
+  const spec = process.env.BLACKBOX_INSTALL_SPEC ?? `blackbox-recorder@${version}`;
+  const installArgs = ['install', '--global', '--no-audit', '--no-fund'];
+  if (prefix) installArgs.push('--prefix', resolvePath(prefix));
+  installArgs.push(spec);
+  const install = npmInvocation(installArgs);
+  console.log(`Installing a durable Blackbox ${version} runtime${prefix ? ` under ${resolvePath(prefix)}` : ''}…`);
+  const installed = await runInherited(install.command, install.args);
+  if (installed !== 0) {
+    console.error('install: npm could not persist the CLI; no agent hooks were changed');
+    return installed;
+  }
+
+  const rootArgs = ['root', '--global'];
+  if (prefix) rootArgs.push('--prefix', resolvePath(prefix));
+  const rootInvocation = npmInvocation(rootArgs);
+  let globalRoot: string;
+  try {
+    globalRoot = execFileSync(rootInvocation.command, rootInvocation.args, { encoding: 'utf8' }).trim();
+  } catch (error) {
+    console.error(`install: could not locate the durable npm runtime: ${(error as Error).message}`);
+    return 2;
+  }
+  const durableCli = resolvePath(globalRoot, 'blackbox-recorder', 'dist', 'cli.js');
+  if (!existsSync(durableCli)) {
+    console.error(`install: npm completed but ${durableCli} is missing`);
+    return 2;
+  }
+  const rawInitArgs = process.argv.slice(3);
+  const initArgs: string[] = [];
+  for (let i = 0; i < rawInitArgs.length; i++) {
+    if (rawInitArgs[i] === '--prefix') { i += 1; continue; }
+    initArgs.push(rawInitArgs[i]!);
+  }
+  console.log('Durable CLI installed. Starting first-run setup…\n');
+  return runInherited(process.execPath, [durableCli, 'init', ...initArgs]);
 }
 
 function cmdIngest(args: Args): number {
@@ -1425,6 +1504,8 @@ async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0];
   switch (cmd) {
+    case 'install':
+      return cmdInstall(args);
     case 'init':
     case 'setup':
       return cmdInit(args);
