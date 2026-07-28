@@ -546,6 +546,12 @@ export class Store {
     return (this.db.prepare('SELECT COUNT(*) AS c FROM events').get() as { c: number }).c;
   }
 
+  /** Run a group of reads against one SQLite snapshot. WAL writers may continue,
+   * but every query in the callback observes the same committed database state. */
+  readSnapshot<T>(read: () => T): T {
+    return this.db.transaction(read).deferred();
+  }
+
   /** One event by its chain position, or null. */
   get(seq: number): BlackboxEvent | null {
     return (this.db.prepare('SELECT * FROM events WHERE seq = ?').get(seq) as BlackboxEvent | undefined) ?? null;

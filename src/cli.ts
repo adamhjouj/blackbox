@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { resolve as resolvePath, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { ANCHOR_REF, anchorDisplayDestination, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAnchor, readReceipts, receiptFromSignature, setAnchorLocalOnly, setAnchorTarget, type AnchorTarget } from './anchor';
+import { compareSessionAttestationToStore, createSessionAttestation, SessionAttestationError, verifySessionAttestation } from './attest';
 import { disableAutostart, enableAutostart } from './autostart';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { staticDoctorChecks, type DoctorCheck } from './doctor';
@@ -15,9 +16,10 @@ import { decideInitAnchor, ensureConfig, init, uninit, versionWarning } from './
 import { reindexAll, search } from './search';
 import { runSelfTest } from './self-test';
 import { claudeAdapterReadiness, geminiAdapterReadiness, recordSelfTestPass } from './readiness';
-import { readConfig } from './config';
+import { readConfig, writePrivateFileAtomic } from './config';
 import { initGeminiHooks, rollbackGeminiInit, uninitGeminiHooks } from './gemini-init';
 import { normalizeAndCapture } from './normalize';
+import { attestationFailsAt, emitGitHubCheckOutput, type FindingThreshold } from './github-check';
 import { persistReconciliation } from './reconcile';
 import { buildForensicReport, buildReport, defaultReportSession } from './report';
 import { INTENT_VERSION, persistIntent } from './intent';
@@ -26,12 +28,14 @@ import { ensureKeypair, loadPublicKey, loadWatermark, recorderId, signHead } fro
 import { backfill, computeSession, rescoreSession } from './risk-engine';
 import { isKnownRuleset, KNOWN_RULESETS, RULESET_VERSION, rulesFingerprint, type RulesetVersion } from './risk-rules';
 import { unwatchGlobal, unwatchRepo, watchGlobal, watchRepo } from './watch';
-import { blackboxDir, configPath, ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
+import { blackboxDir, configPath, defaultDbPath, ensureBlackboxDir, logPath, pidPath, resolveDb } from './paths';
 import { Store } from './store';
 import { verify } from './verify';
 
 interface Args {
   _: string[];
+  parseErrors: string[];
+  provided: Set<string>;
   db?: string;
   session?: string;
   port?: number;
@@ -60,30 +64,70 @@ interface Args {
   agents?: string;
   endpoint?: string;
   installPrefix?: string;
+  force?: boolean;
+  githubOutput?: boolean;
+  failOn?: string;
+  commit?: string;
+  branch?: string;
+  trustedKey?: string;
+  expectedCommit?: string;
 }
 
 function parseArgs(argv: string[]): Args {
-  const out: Args = { _: [] };
+  const out: Args = { _: [], parseErrors: [], provided: new Set() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--db') out.db = argv[++i] ?? out.db;
-    else if (a === '--session') out.session = argv[++i];
-    else if (a === '--port') out.port = Number(argv[++i]);
+    if (a === '--') {
+      out._.push(...argv.slice(i + 1));
+      break;
+    }
+    if (a?.startsWith('--')) out.provided.add(a);
+    const take = (flag: string): string | undefined => {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) {
+        out.parseErrors.push(`${flag} requires a value`);
+        return undefined;
+      }
+      i += 1;
+      return value;
+    };
+    if (a === '--db') out.db = take(a);
+    else if (a === '--session') out.session = take(a);
+    else if (a === '--port') {
+      const value = take(a);
+      if (value !== undefined) {
+        out.port = Number(value);
+        if (!Number.isFinite(out.port)) out.parseErrors.push('--port requires a number');
+      }
+    }
     else if (a === '--foreground') out.foreground = true;
     else if (a === '--capture-output') out.captureOutput = true;
     else if (a === '--global') out.global = true;
-    else if (a === '--ruleset') out.ruleset = argv[++i];
+    else if (a === '--ruleset') out.ruleset = take(a);
     else if (a === '--check') out.check = true;
-    else if (a === '--prune') out.prune = argv[++i];
-    else if (a === '--out') out.out = argv[++i];
-    else if (a === '--endpoint') out.endpoint = argv[++i];
-    else if (a === '--prefix') out.installPrefix = argv[++i];
+    else if (a === '--prune') out.prune = take(a);
+    else if (a === '--out') out.out = take(a);
+    else if (a === '--endpoint') out.endpoint = take(a);
+    else if (a === '--prefix') out.installPrefix = take(a);
+    else if (a === '--force') out.force = true;
+    else if (a === '--github-output') out.githubOutput = true;
+    else if (a === '--fail-on') out.failOn = take(a);
+    else if (a === '--commit') out.commit = take(a);
+    else if (a === '--branch') out.branch = take(a);
+    else if (a === '--trusted-key') out.trustedKey = take(a);
+    else if (a === '--expected-commit') out.expectedCommit = take(a);
     else if (a === '--off') out.off = true;
-    else if (a === '--older-than') out.olderThan = argv[++i];
+    else if (a === '--older-than') out.olderThan = take(a);
     else if (a === '--forensic') out.forensic = true;
-    else if (a === '--anchor') out.anchor = argv[++i];
-    else if (a === '--to') out.to = argv[++i];
-    else if (a === '--at') out.at = Number(argv[++i]);
+    else if (a === '--anchor') out.anchor = take(a);
+    else if (a === '--to') out.to = take(a);
+    else if (a === '--at') {
+      const value = take(a);
+      if (value !== undefined) {
+        out.at = Number(value);
+        if (!Number.isFinite(out.at)) out.parseErrors.push('--at requires a number');
+      }
+    }
     else if (a === '--rebuild') out.rebuild = true;
     else if (a === '--allow-insecure-git') out.allowInsecureGit = true;
     else if (a === '--local-only-anchor') out.localOnlyAnchor = true;
@@ -95,8 +139,9 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--erase-data') out.eraseData = true;
     else if (a === '--yes' || a === '-y') out.yes = true;
     else if (a === '--no-open') out.noOpen = true;
-    else if (a === '--agents') out.agents = argv[++i];
+    else if (a === '--agents') out.agents = take(a);
     else if (a === '-h' || a === '--help') out._.push('help');
+    else if (a?.startsWith('-')) out.parseErrors.push(`unknown option: ${a}`);
     else out._.push(a as string);
   }
   return out;
@@ -231,6 +276,7 @@ const HELP = `blackbox — forensic recorder for AI coding agents
   blackbox self-test   Exercise capture, redaction, risk, signing, and verification in isolation
   blackbox ui          Open the timeline UI (http://127.0.0.1:7842)
   blackbox report      Export a shareable session report (--forensic for a case-file)
+  blackbox attest      Export or verify a signed, metadata-only session attestation
   blackbox stop        Stop the daemon
   blackbox uninit      Remove blackbox hooks
 
@@ -260,7 +306,10 @@ Recording & reports:
   blackbox report                Export a shareable Markdown session report (--session, --ruleset, --out <file>)
                                  Add --forensic for an evidentiary case-file (custody + signature + manifest)
   blackbox otel                  Export the session as OTLP/JSON traces for a SIEM (--session, --all, --out <file>)
-                                 Add --endpoint <url> to POST to an OTLP/HTTP collector (the only egress)
+                                 Add --endpoint <url> to explicitly POST to an OTLP/HTTP collector
+  blackbox attest                Sign aggregate session metadata (--session, --out, --fail-on high|medium|low)
+                                 Verify with: attest verify <file> [--trusted-key <public.pem> | --check]
+                                 Add --github-output to either form inside GitHub Actions
 
 Chain & custody:
   blackbox verify                Verify the hash chain; report the first break
@@ -294,7 +343,13 @@ Options:
   --prefix <path>      install: use a custom npm global prefix
   --erase-data --yes   uninit: also permanently remove ~/.blackbox after removing hooks
   --session <id>       Filter to one session (list/audit/report)
-  --out <file>         Write the report to a file instead of stdout (report)
+  --out <file>         Write a report or attestation to a file instead of stdout
+  --force              attest: replace an existing output file
+  --github-output      attest: append a GitHub Actions job summary and step outputs
+  --fail-on <severity> attest: exit 1 for current unresolved high, medium+, or low+ findings
+  --commit/--branch    attest: override captured revision metadata
+  --trusted-key <file> attest verify: require a specific recorder public key
+  --expected-commit    attest in Actions: bind output to this full commit SHA (defaults to GITHUB_SHA)
   --older-than <dur>   Retention cutoff for prune (e.g. 30d, 12h; default 30d)
   -h, --help           Show this help (--all for every command)
 
@@ -551,7 +606,7 @@ async function cmdAnchor(args: Args): Promise<number> {
     return 1;
   }
   console.log(`anchor target set to ${args.to}; receipt for head seq ${s.seq} written.`);
-  if (target.kind === 'https') console.log('  note: https anchoring sends signed head receipts off-machine — the one exception to blackbox staying local.');
+  if (target.kind === 'https') console.log('  note: this configured https anchor sends signed head receipts off-machine; raw evidence stays local.');
   console.log('  the daemon will emit a fresh receipt at each session boundary (restart it to pick up this target).');
   return 0;
 }
@@ -713,7 +768,7 @@ async function cmdInit(args: Args): Promise<number> {
   console.log('Blackbox privacy notice:');
   console.log('  • Records prompts, agent-stated reasoning, tool actions, paths, and redacted evidence locally.');
   console.log(`  • Local data lives under ${blackboxDir()} unless BLACKBOX_HOME/BLACKBOX_DB overrides it.`);
-  console.log('  • Only signed chain-head receipts leave the machine when external anchoring is enabled.');
+  console.log('  • No raw evidence leaves automatically; enabled anchors send signed chain-head receipts only.');
   console.log(`  • Agent adapters selected: ${selected.adapters.map((adapter) => adapter === 'claude' ? 'Claude Code' : 'Gemini CLI').join(', ')}.`);
   console.log("  • Use 'blackbox prune' to age out stored file content or 'blackbox uninit --erase-data --yes' to remove everything.\n");
 
@@ -1421,7 +1476,7 @@ function cmdIntent(args: Args): number {
 }
 
 /** R8 (AARM) — emit the session as OTLP/JSON traces. Writes locally by default;
- *  `--endpoint` is the only way bytes leave the machine, and it is always explicit. */
+ *  `--endpoint` is the explicit network-export form of this command. */
 async function cmdOtel(args: Args): Promise<number> {
   const store = new Store(resolveDb(args.db));
   try {
@@ -1500,8 +1555,234 @@ function cmdReport(args: Args): number {
   }
 }
 
+const MAX_ATTESTATION_BYTES = 1024 * 1024;
+
+function readBoundedRegularFile(path: string, maxBytes: number): string {
+  let fd: number | null = null;
+  try {
+    const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+    const before = noFollow === 0 ? lstatSync(path) : null;
+    if (before && (!before.isFile() || before.isSymbolicLink())) throw new Error('not a regular file');
+    fd = openSync(path, constants.O_RDONLY | noFollow);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || (before && (before.dev !== stat.dev || before.ino !== stat.ino))) {
+      throw new Error('not a stable regular file');
+    }
+    if (stat.size > maxBytes) {
+      throw new Error(`larger than ${maxBytes} bytes`);
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (total <= maxBytes) {
+      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes + 1 - total));
+      const bytes = readSync(fd, buffer, 0, buffer.length, null);
+      if (bytes === 0) break;
+      total += bytes;
+      chunks.push(buffer.subarray(0, bytes));
+    }
+    if (total > maxBytes) throw new Error(`larger than ${maxBytes} bytes`);
+    return Buffer.concat(chunks, total).toString('utf8');
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+function parseFindingThreshold(value: string | undefined): FindingThreshold | null {
+  if (value === undefined) return null;
+  return value === 'high' || value === 'medium' || value === 'low' ? value : null;
+}
+
+function localAttestationDbPath(args: Args): string {
+  return args.db ?? process.env.BLACKBOX_DB ?? defaultDbPath();
+}
+
+function rejectAttestOptions(args: Args, allowed: ReadonlySet<string>): boolean {
+  const rejected = [...args.provided].filter((flag) => !allowed.has(flag));
+  if (!rejected.length) return false;
+  console.error(`attest: option(s) not valid in this mode: ${rejected.join(', ')}`);
+  return true;
+}
+
+function cmdAttest(args: Args): number {
+  const threshold = parseFindingThreshold(args.failOn);
+  if (args.failOn !== undefined && threshold === null) {
+    console.error('attest: --fail-on must be high, medium, or low');
+    return 2;
+  }
+  if (args._[1] === 'verify') {
+    if (args._.length !== 3) {
+      console.error('usage: blackbox attest verify <file> [--trusted-key <public.pem> | --check] [--github-output] [--fail-on high|medium|low]');
+      return 2;
+    }
+    if (rejectAttestOptions(args, new Set(['--db', '--check', '--trusted-key', '--github-output', '--fail-on', '--expected-commit']))) {
+      return 2;
+    }
+    if (args.expectedCommit && !args.githubOutput) {
+      console.error('attest verify: --expected-commit requires --github-output');
+      return 2;
+    }
+    if ((args.githubOutput || threshold) && !args.check && !args.trustedKey) {
+      console.error('attest verify: gating or GitHub output requires --trusted-key <public.pem> or --check; a self-signature alone does not establish recorder identity');
+      return 2;
+    }
+    const file = args._[2];
+    if (!file) {
+      console.error('usage: blackbox attest verify <file> [--trusted-key <public.pem> | --check] [--github-output] [--fail-on high|medium|low]');
+      return 2;
+    }
+    let raw: string;
+    let pinnedKey: string | null = null;
+    try {
+      raw = readBoundedRegularFile(file, MAX_ATTESTATION_BYTES);
+      if (args.trustedKey) pinnedKey = readBoundedRegularFile(args.trustedKey, 16 * 1024);
+    } catch (error) {
+      console.error(`attest verify: cannot safely read input: ${(error as Error).message}`);
+      return 2;
+    }
+    const standalone = verifySessionAttestation(raw, { trustedPublicKey: pinnedKey });
+    if (!standalone.ok) {
+      console.error(`✗ invalid session attestation — ${standalone.reason}`);
+      return 1;
+    }
+    const envelope = standalone.envelope;
+    console.log(
+      `✓ signature valid — session ${envelope.payload.session_id} · recorder ${envelope.payload.recorder.id} · ` +
+      `${envelope.payload.evidence.event_count} event(s)`,
+    );
+    let trust: 'self-signed' | 'pinned-key' | 'local-recorder' = pinnedKey ? 'pinned-key' : 'self-signed';
+    if (args.check) {
+      const dbPath = localAttestationDbPath(args);
+      const trustedPublicKey = loadPublicKey();
+      if (!existsSync(dbPath)) {
+        console.error(`✗ local comparison unavailable — evidence store not found at ${dbPath}`);
+        return 2;
+      }
+      if (!trustedPublicKey) {
+        console.error('✗ local comparison unavailable — no trusted signing.pub exists for this recorder');
+        return 2;
+      }
+      const store = new Store(dbPath);
+      try {
+        const compared = compareSessionAttestationToStore(store, envelope, {
+          trustedPublicKey,
+          watermark: loadWatermark(),
+        });
+        if (!compared.ok) {
+          console.error(`✗ local attestation comparison failed — ${compared.reason ?? 'unknown mismatch'}`);
+          return 1;
+        }
+        trust = 'local-recorder';
+        console.log('✓ trusted local recorder key, evidence chain, and signed session range match');
+      } finally {
+        store.close();
+      }
+    } else if (pinnedKey) {
+      console.log('✓ signature matches the pinned recorder public key');
+    } else {
+      console.log('  self-contained signature check only; add --trusted-key to pin identity or --check to compare local evidence');
+    }
+    if (args.githubOutput) {
+      try {
+        const emitted = emitGitHubCheckOutput(envelope, {
+          threshold,
+          attestationPath: resolvePath(file),
+          trust,
+          expectedCommit: args.expectedCommit,
+        });
+        console.error(
+          `GitHub Actions summary${emitted.outputs_written ? ' and step outputs' : ''} written · result ${emitted.conclusion}`,
+        );
+      } catch (error) {
+        console.error(`attest verify: ${(error as Error).message}`);
+        return 2;
+      }
+    }
+    if (threshold && attestationFailsAt(envelope, threshold)) {
+      console.error(`review gate failed: unresolved ${threshold}+ finding(s) remain`);
+      return 1;
+    }
+    return 0;
+  }
+
+  if (args._.length !== 1) {
+    console.error('usage: blackbox attest [--session <id>] [--out <file>] [--force] [--fail-on high|medium|low] [--github-output]');
+    return 2;
+  }
+  if (rejectAttestOptions(args, new Set(['--db', '--session', '--out', '--force', '--fail-on', '--github-output', '--commit', '--branch', '--expected-commit']))) {
+    return 2;
+  }
+  if (args.trustedKey) {
+    console.error('attest: --trusted-key is only valid with `attest verify`');
+    return 2;
+  }
+  if (args.expectedCommit && !args.githubOutput) {
+    console.error('attest: --expected-commit requires --github-output');
+    return 2;
+  }
+  if (args.githubOutput && !args.out) {
+    console.error('attest: --github-output requires --out so attestation metadata is not printed into Actions logs');
+    return 2;
+  }
+
+  const store = new Store(resolveDb(args.db));
+  try {
+    const sessionId = args.session ?? defaultReportSession(store);
+    if (!sessionId) {
+      console.error('attest: no sessions recorded (pass --session)');
+      return 2;
+    }
+    const envelope = createSessionAttestation(store, sessionId, ensureKeypair(), {
+      watermark: loadWatermark(),
+      commit: args.commit,
+      branch: args.branch,
+    });
+    const sanity = verifySessionAttestation(envelope);
+    if (!sanity.ok) throw new Error(`generated attestation failed verification: ${sanity.reason}`);
+    const json = JSON.stringify(envelope, null, 2) + '\n';
+
+    let outputPath: string | null = null;
+    if (args.out) {
+      outputPath = resolvePath(args.out);
+      if (existsSync(outputPath) && !args.force) {
+        console.error(`attest: refusing to replace existing file ${outputPath} (add --force)`);
+        return 2;
+      }
+      writePrivateFileAtomic(outputPath, json, { overwrite: args.force === true });
+      console.log(`wrote signed attestation for session ${sessionId} to ${outputPath}`);
+    } else {
+      process.stdout.write(json);
+    }
+
+    if (args.githubOutput) {
+      const emitted = emitGitHubCheckOutput(envelope, {
+        threshold,
+        attestationPath: outputPath,
+        trust: 'local-recorder',
+        expectedCommit: args.expectedCommit,
+      });
+      console.error(
+        `GitHub Actions summary${emitted.outputs_written ? ' and step outputs' : ''} written · result ${emitted.conclusion}`,
+      );
+    }
+    if (threshold && attestationFailsAt(envelope, threshold)) {
+      console.error(`review gate failed: unresolved ${threshold}+ finding(s) remain`);
+      return 1;
+    }
+    return 0;
+  } catch (error) {
+    console.error(`attest: ${(error as Error).message}`);
+    return error instanceof SessionAttestationError && (error.code === 'chain-invalid' || error.code === 'session-changed') ? 1 : 2;
+  } finally {
+    store.close();
+  }
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
+  if (args.parseErrors.length) {
+    for (const error of args.parseErrors) console.error(`blackbox: ${error}`);
+    return 2;
+  }
   const cmd = args._[0];
   switch (cmd) {
     case 'install':
@@ -1553,6 +1834,8 @@ async function main(): Promise<number> {
       return cmdBlast(args);
     case 'report':
       return cmdReport(args);
+    case 'attest':
+      return cmdAttest(args);
     case 'otel':
       return cmdOtel(args);
     case 'intent':

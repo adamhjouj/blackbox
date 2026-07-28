@@ -138,7 +138,7 @@ export async function emitReceipt(target: AnchorTarget, receipt: AnchorReceipt, 
       }
       return { ok: true };
     }
-    // https — the only path that leaves the machine.
+    // https — an explicitly configured signed-receipt egress.
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (opts.token) headers.authorization = `Bearer ${opts.token}`;
     const res = await fetch(target.url, { method: 'POST', headers, body: JSON.stringify(receipt), signal: AbortSignal.timeout(2000) });
