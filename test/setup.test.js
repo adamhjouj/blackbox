@@ -87,6 +87,17 @@ test('mergeHooks: does not append a second blackbox hook when one is already pre
   assert.equal(second.addedEvents.length, 0);
 });
 
+test('mergeHooks: migrates every existing Blackbox hook when the daemon port changes', () => {
+  const first = mergeHooks({}, 7842);
+  const moved = mergeHooks(first.settings, 7999);
+  assert.deepEqual(moved.addedEvents, []);
+  assert.equal(moved.updatedEvents.length, Object.keys(first.settings.hooks).length);
+  for (const groups of Object.values(moved.settings.hooks)) {
+    const urls = groups.flatMap((group) => group.hooks).filter((hook) => hook.type === 'http').map((hook) => hook.url);
+    assert.deepEqual(urls, ['http://127.0.0.1:7999/hook']);
+  }
+});
+
 test('mergeHooks: preserves unrelated top-level settings keys', () => {
   const { settings } = mergeHooks({ model: 'opus', permissions: { allow: ['Bash'] } }, 7842);
   assert.equal(settings.model, 'opus');

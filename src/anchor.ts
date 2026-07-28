@@ -15,7 +15,8 @@
  */
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { readConfig, writeConfig } from './config';
 import { GIT_SAFE_FLAGS } from './git-safe';
 import { hashString } from './hash';
 import { configPath } from './paths';
@@ -43,13 +44,34 @@ export type AnchorTarget =
   | { kind: 'https'; url: string }
   | { kind: 'git'; repo: string };
 
-/** Parse a config target string: `file:<path>`, `git:<repo>`, or an http(s) URL. */
+/** Parse a config target string: `file:<path>`, `git:<repo>`, or an HTTPS URL. */
 export function parseAnchorTarget(spec: string | null | undefined): AnchorTarget | null {
-  if (!spec) return null;
+  if (!spec || typeof spec !== 'string') return null;
   if (spec.startsWith('file:')) return { kind: 'file', path: spec.slice(5) };
   if (spec.startsWith('git:')) return { kind: 'git', repo: spec.slice(4) };
-  if (/^https?:\/\//.test(spec)) return { kind: 'https', url: spec };
+  if (spec.startsWith('https://')) {
+    try {
+      const url = new URL(spec);
+      return url.protocol === 'https:' && url.hostname ? { kind: 'https', url: spec } : null;
+    } catch {
+      return null;
+    }
+  }
   return null;
+}
+
+/** A disclosure-safe destination for status/settings surfaces. HTTPS endpoint
+ * paths, credentials, queries, and fragments may carry tokens, so the UI gets only
+ * the origin. The raw target remains available to the emitter and never leaves the
+ * local process except when an explicitly configured receipt is posted. */
+export function anchorDisplayDestination(target: AnchorTarget): string {
+  if (target.kind === 'file') return `file:${target.path}`;
+  if (target.kind === 'git') return `git:${target.repo}`;
+  try {
+    return new URL(target.url).origin;
+  } catch {
+    return 'https://[invalid anchor]';
+  }
 }
 
 /** Short, stable, human-comparable id for a PEM public key (matches report.ts). */
@@ -131,14 +153,16 @@ export async function emitReceipt(target: AnchorTarget, receipt: AnchorReceipt, 
  *  default-on anchoring; disable with `anchor_push:false` for a local-secondary ref),
  *  and whether the user explicitly accepted the reduced-security local-only mode. */
 export function loadAnchorConfig(cfgPath: string = configPath()): { target: AnchorTarget | null; token: string | null; push: boolean; localOnly: boolean } {
-  try {
-    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as { anchor?: string; anchor_token?: string; anchor_push?: boolean; anchor_local_only?: boolean };
-    const target = parseAnchorTarget(cfg.anchor);
-    const push = target?.kind === 'git' && cfg.anchor_push !== false;
-    return { target, token: typeof cfg.anchor_token === 'string' ? cfg.anchor_token : null, push, localOnly: cfg.anchor_local_only === true };
-  } catch {
-    return { target: null, token: null, push: false, localOnly: false };
+  const cfg = readConfig(cfgPath);
+  if (cfg.anchor !== undefined && typeof cfg.anchor !== 'string') {
+    throw new Error(`invalid anchor setting in ${cfgPath}: expected a string`);
   }
+  const target = parseAnchorTarget(cfg.anchor as string | undefined);
+  if (typeof cfg.anchor === 'string' && cfg.anchor && !target) {
+    throw new Error(`invalid anchor target in ${cfgPath}: use file:<path>, git:<repo>, or https://<url>`);
+  }
+  const push = target?.kind === 'git' && cfg.anchor_push !== false;
+  return { target, token: typeof cfg.anchor_token === 'string' ? cfg.anchor_token : null, push, localOnly: cfg.anchor_local_only === true };
 }
 
 /** Persist an anchor target into config.json (validating it first). Returns the
@@ -146,14 +170,9 @@ export function loadAnchorConfig(cfgPath: string = configPath()): { target: Anch
 export function setAnchorTarget(spec: string, cfgPath: string = configPath()): AnchorTarget {
   const target = parseAnchorTarget(spec);
   if (!target) throw new Error(`invalid anchor target "${spec}" — use file:<path>, git:<repo>, or https://<url>`);
-  let cfg: Record<string, unknown> = {};
-  try {
-    cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
-  } catch {
-    /* fresh/absent config */
-  }
+  const cfg = readConfig(cfgPath);
   cfg.anchor = spec;
-  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  writeConfig(cfg, cfgPath);
   return target;
 }
 
@@ -162,15 +181,10 @@ export function setAnchorTarget(spec: string, cfgPath: string = configPath()): A
  *  that off-machine tamper-evidence is OFF as an ACKNOWLEDGED choice, not a silent
  *  one. Anchoring on by default means this flag should be the exception. */
 export function setAnchorLocalOnly(on: boolean, cfgPath: string = configPath()): void {
-  let cfg: Record<string, unknown> = {};
-  try {
-    cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
-  } catch {
-    /* fresh/absent config */
-  }
+  const cfg = readConfig(cfgPath);
   if (on) cfg.anchor_local_only = true;
   else delete cfg.anchor_local_only;
-  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+  writeConfig(cfg, cfgPath);
 }
 
 /** Push the git receipt ref to the repo's default remote — the one explicit step

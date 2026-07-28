@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { chmodSync, existsSync } from 'node:fs';
 import { GENESIS, hashEvent } from './hash';
 import type { BlobInput } from './mutation';
 import { EVENT_COLUMNS, type BlackboxEvent, type NormalizedEvent } from './types';
@@ -384,6 +385,15 @@ export class Store {
     this.db.exec(INTENT_SCHEMA);
     this.db.exec(SEARCH_SCHEMA);
     this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
+    // Evidence and derived tables contain private local activity. Tighten an
+    // existing permissive database during the additive open migration as well as
+    // protecting newly-created stores. SQLite sidecars inherit the database mode
+    // on supported POSIX platforms, but enforce them when already present too.
+    if (process.platform !== 'win32') {
+      for (const file of [path, path + '-wal', path + '-shm']) {
+        try { if (existsSync(file)) chmodSync(file, 0o600); } catch { /* readiness/doctor reports failures */ }
+      }
+    }
   }
 
   /**

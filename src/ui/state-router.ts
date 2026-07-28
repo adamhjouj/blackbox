@@ -1,7 +1,7 @@
 export const CORE_JS = String.raw`
 'use strict';
 const S = {
-  cards: [], cardsFp: '', fleet: null, health: null, profile: null, privacy: null, displayName: 'there',
+  cards: [], cardsFp: '', fleet: null, health: null, profile: null, privacy: null, setup: null, setupFp: '', displayName: 'there',
   route: { page: 'home', id: null, tab: null, eventSeq: null }, currentId: null,
   story: null, blast: null, verify: null, sessionFp: '', loadingSession: false,
   query: '', deepHits: [], searching: false, searchTimer: null, dashboardSort: 'recent',
@@ -242,7 +242,9 @@ function routeChanged() {
 
 function sidebarActive() {
   const dash = document.getElementById('navDash');
+  const settings = document.getElementById('navSettings');
   if (dash) dash.classList.toggle('active', S.route.page === 'home' && !S.query.trim());
+  if (settings) settings.classList.toggle('active', S.route.page === 'settings');
   document.querySelectorAll('.sb-item, .sb-recent').forEach(function(item) {
     item.classList.toggle('active', S.route.page === 'session' && item.getAttribute('data-id') === S.route.id);
   });
@@ -355,15 +357,21 @@ function showToast(message) {
 }
 
 async function refreshBase() {
-  let health = null, cards = null, fleet = null;
+  let health = null, cards = null, fleet = null, setup = null;
   try {
-    const data = await Promise.all([api('/health'), api('/api/sessions'), api('/api/fleet').catch(function() { return null; })]);
-    health = data[0]; cards = data[1]; fleet = data[2]; S.offline = false;
+    const data = await Promise.all([api('/health'), api('/api/sessions'), api('/api/fleet').catch(function() { return null; }), api('/api/setup-status').catch(function() { return null; })]);
+    health = data[0]; cards = data[1]; fleet = data[2]; setup = data[3]; S.offline = false;
   } catch (_) { S.offline = true; }
   if (health) S.health = health;
   if (health && S.lastHead != null && Number(health.head_seq || 0) > S.lastHead) S.recordingUntil = Date.now() + 6500;
   if (health) S.lastHead = Number(health.head_seq || 0);
   if (fleet) S.fleet = fleet;
+  let setupChanged = false;
+  if (setup) {
+    const setupFp = JSON.stringify(setup);
+    setupChanged = setupFp !== S.setupFp;
+    S.setup = setup; S.setupFp = setupFp;
+  }
   updateChrome();
   if (cards) {
     const fp = JSON.stringify(cards);
@@ -372,6 +380,10 @@ async function refreshBase() {
       renderSidebarLists();
       if (S.route.page === 'home') renderPreservingScroll(renderDashboard);
       else if (S.route.page === 'session') renderPreservingScroll(renderSessionPage);
+      else if (S.route.page === 'settings') renderPreservingScroll(renderSettingsPage);
+    }
+    else if (setupChanged) {
+      if (S.route.page === 'home') renderPreservingScroll(renderDashboard);
       else if (S.route.page === 'settings') renderPreservingScroll(renderSettingsPage);
     }
   }

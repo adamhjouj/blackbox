@@ -3,7 +3,8 @@ import { spawn } from 'node:child_process';
 import { existsSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { resolve as resolvePath, sep } from 'node:path';
-import { ANCHOR_REF, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAnchor, readReceipts, receiptFromSignature, setAnchorLocalOnly, setAnchorTarget, type AnchorTarget } from './anchor';
+import { createInterface } from 'node:readline/promises';
+import { ANCHOR_REF, anchorDisplayDestination, emitReceipt, loadAnchorConfig, parseAnchorTarget, pushGitAnchor, readReceipts, receiptFromSignature, setAnchorLocalOnly, setAnchorTarget, type AnchorTarget } from './anchor';
 import { disableAutostart, enableAutostart } from './autostart';
 import { DEFAULT_PORT, startDaemon } from './daemon';
 import { staticDoctorChecks, type DoctorCheck } from './doctor';
@@ -12,6 +13,9 @@ import { blastRadius } from './blast';
 import { fileHistory, reconstructAt } from './filestate';
 import { decideInitAnchor, ensureConfig, init, uninit, versionWarning } from './init';
 import { reindexAll, search } from './search';
+import { runSelfTest } from './self-test';
+import { recordSelfTestPass } from './readiness';
+import { readConfig } from './config';
 import { normalizeAndCapture } from './normalize';
 import { persistReconciliation } from './reconcile';
 import { buildForensicReport, buildReport, defaultReportSession } from './report';
@@ -51,6 +55,7 @@ interface Args {
   all?: boolean;
   eraseData?: boolean;
   yes?: boolean;
+  noOpen?: boolean;
   endpoint?: string;
 }
 
@@ -85,6 +90,7 @@ function parseArgs(argv: string[]): Args {
     } else if (a === '--all') out.all = true;
     else if (a === '--erase-data') out.eraseData = true;
     else if (a === '--yes' || a === '-y') out.yes = true;
+    else if (a === '--no-open') out.noOpen = true;
     else if (a === '-h' || a === '--help') out._.push('help');
     else out._.push(a as string);
   }
@@ -171,6 +177,7 @@ const HELP = `blackbox — forensic recorder for AI coding agents
   blackbox init        Install hooks, start the daemon, and begin recording
   blackbox status      Show whether it's recording (+ security posture)
   blackbox doctor      Diagnose setup, runtime, hooks, custody, and data-store health
+  blackbox self-test   Exercise capture, redaction, risk, signing, and verification in isolation
   blackbox ui          Open the timeline UI (http://127.0.0.1:7842)
   blackbox report      Export a shareable session report (--forensic for a case-file)
   blackbox stop        Stop the daemon
@@ -189,6 +196,7 @@ Setup & lifecycle:
   blackbox stop                  Stop the daemon
   blackbox status                Show daemon status + security posture
   blackbox doctor                Diagnose runtime, hooks, daemon, custody, and chain health
+  blackbox self-test             Run an isolated end-to-end recorder test (never touches your evidence chain)
   blackbox ui                    Open the timeline UI in your browser (http://127.0.0.1:7842)
   blackbox autostart             Keep the daemon running across reboots (macOS LaunchAgent; --off to disable)
   blackbox watch [repo]          Install git forensics hooks in a repo (--global for all repos)
@@ -228,6 +236,7 @@ Options:
   --capture-output     Store tool output bodies (still redacted) instead of eliding to a hash
   --allow-insecure-git start: accept unauthenticated /git writes (INSECURE opt-out of the token requirement)
   --local-only-anchor  init: accept local-only custody instead of an off-machine anchor (reduced security)
+  --no-open            init: do not open the Health & privacy screen after setup
   --erase-data --yes   uninit: also permanently remove ~/.blackbox after removing hooks
   --session <id>       Filter to one session (list/audit/report)
   --out <file>         Write the report to a file instead of stdout (report)
@@ -321,7 +330,7 @@ function resolveAnchorReceipts(args: Args): { receipts: ReturnType<typeof readRe
 }
 
 function anchorLabel(t: AnchorTarget): string {
-  return t.kind === 'file' ? `file ${t.path}` : t.kind === 'git' ? `git ${t.repo}` : `url ${t.url}`;
+  return anchorDisplayDestination(t);
 }
 
 function cmdVerify(args: Args): number {
@@ -518,6 +527,28 @@ function cmdUnwatch(args: Args): number {
   return 0;
 }
 
+async function confirmExternalAnchor(remote: string): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await prompt.question(`Allow Blackbox to push signed receipt metadata to ${remote}? [y/N] `);
+    return /^(?:y|yes)$/i.test(answer.trim());
+  } finally {
+    prompt.close();
+  }
+}
+
+function openLocalPage(port: number, route: string): void {
+  const url = `http://127.0.0.1:${port}/${route}`;
+  const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+  try {
+    spawn(opener, [url], { detached: true, stdio: 'ignore' }).unref();
+    console.log(`opened ${url}`);
+  } catch {
+    console.log(`open the readiness screen: ${url}`);
+  }
+}
+
 async function cmdInit(args: Args): Promise<number> {
   const port = args.port ?? DEFAULT_PORT;
   const warn = versionWarning();
@@ -532,47 +563,89 @@ async function cmdInit(args: Args): Promise<number> {
   // Decide the custody posture FIRST (pure) — init is all-or-nothing; we never
   // silently set up recording with no off-machine anchor. Fail loudly here if none
   // resolves, before touching hooks/config, so re-running with a fix is clean.
-  ensureBlackboxDir();
-  const decision = decideInitAnchor({ cwd: process.cwd(), localOnly: args.localOnlyAnchor });
+  let decision: ReturnType<typeof decideInitAnchor>;
+  try {
+    ensureBlackboxDir();
+    decision = decideInitAnchor({ cwd: process.cwd(), localOnly: args.localOnlyAnchor });
+  } catch (err) {
+    console.error(`setup preflight failed: ${(err as Error).message}`);
+    return 2;
+  }
   if (!decision.ok) {
     console.error(decision.message);
     return 2;
   }
 
-  const { settingsPath, addedEvents } = init(port);
-  if (addedEvents.length) {
-    console.log(`registered blackbox hooks for ${addedEvents.length} event(s) in ${settingsPath}`);
-    console.log(`  ${addedEvents.join(', ')}`);
-  } else {
-    console.log(`blackbox hooks already registered in ${settingsPath} (nothing to do)`);
+  if (decision.kind === 'git' && !args.yes) {
+    console.log(`Proposed external anchor: signed receipt metadata on ${ANCHOR_REF} → ${decision.remote}`);
+    console.log('Receipts contain chain position, hash, timestamp, and signature; never prompts, paths, commands, code, or tool output.');
+    if (!(await confirmExternalAnchor(decision.remote))) {
+      console.error('setup stopped before configuring custody or hooks. Re-run and approve, pass --yes, or choose --local-only-anchor.');
+      return 2;
+    }
   }
 
   // Apply the anchor decision (writes config) and report the posture plainly.
-  if (decision.kind === 'git') {
-    setAnchorTarget(decision.spec);
-    setAnchorLocalOnly(false);
-    console.log(`external anchor: git receipts on ${ANCHOR_REF} → ${decision.remote} (auto-push ON)`);
-  } else if (decision.kind === 'local-only') {
-    setAnchorTarget(`file:${decision.path}`);
-    setAnchorLocalOnly(true);
-    console.log('⚠ external anchor: LOCAL-ONLY (reduced security)');
-    console.log(`  receipts are written to ${decision.path} — on the SAME machine as the DB`);
-    console.log('  and signing key, so a full-write attacker could rewrite history AND re-sign it');
-    console.log('  undetectably. For real tamper-evidence, point --to an off-machine target:');
-    console.log('    blackbox anchor --to git:<repo-with-remote>  |  file:</other/disk/receipts.jsonl>');
-  } else {
-    console.log(`external anchor: already configured (${anchorLabel(decision.target)})`);
+  try {
+    if (decision.kind === 'git') {
+      setAnchorTarget(decision.spec);
+      setAnchorLocalOnly(false);
+      console.log(`external anchor: git receipts on ${ANCHOR_REF} → ${decision.remote} (auto-push ON)`);
+    } else if (decision.kind === 'local-only') {
+      setAnchorTarget(`file:${decision.path}`);
+      setAnchorLocalOnly(true);
+      console.log('⚠ external anchor: LOCAL-ONLY (reduced security)');
+      console.log(`  receipts are written to ${decision.path} — on the SAME machine as the DB`);
+      console.log('  and signing key, so a full-write attacker could rewrite history AND re-sign it');
+      console.log('  undetectably. For real tamper-evidence, point --to an off-machine target:');
+      console.log('    blackbox anchor --to git:<repo-with-remote>  |  file:</other/disk/receipts.jsonl>');
+    } else {
+      console.log(`external anchor: already configured (${anchorLabel(decision.target)})`);
+    }
+  } catch (err) {
+    console.error(`setup could not configure custody: ${(err as Error).message}`);
+    return 2;
   }
 
-  // Bring the daemon up (idempotent: a healthy daemon is left as-is) and confirm /health.
+  // Bring the daemon up and confirm /health before touching agent settings. A
+  // failed startup therefore cannot leave live hooks pointing at nowhere.
+  const before = readPid();
+  const beforeHealth = before && isAlive(before.pid) ? await getHealth(before.port) : null;
+  const reusedHealthy = !!before && !!beforeHealth?.ok && beforeHealth.pid === before.pid && before.port === port && before.db === resolveDb(args.db);
   const code = await cmdStart(args);
   if (code !== 0) {
-    console.error("hooks are registered, but the daemon isn't up — run 'blackbox start' and check the log.");
+    console.error("setup stopped before installing hooks — check 'blackbox doctor' and the daemon log.");
     return code;
   }
-  console.log(`\n✓ you are recording — open the timeline UI at http://127.0.0.1:${port}/`);
+
+  const selfTest = await runSelfTest();
+  if (!selfTest.ok) {
+    for (const item of selfTest.checks.filter((item) => !item.ok)) console.error(`self-test: ${item.name}: ${item.detail}`);
+    if (!reusedHealthy) await cmdStop(args);
+    console.error('setup stopped before installing hooks because the isolated capture pipeline did not pass.');
+    return 2;
+  }
+  try {
+    recordSelfTestPass();
+    const { settingsPath, addedEvents, updatedEvents } = init(port);
+    if (addedEvents.length || updatedEvents.length) {
+      console.log(`registered Blackbox hooks in ${settingsPath}`);
+      if (addedEvents.length) console.log(`  added: ${addedEvents.join(', ')}`);
+      if (updatedEvents.length) console.log(`  migrated to port ${port}: ${updatedEvents.join(', ')}`);
+    } else {
+      console.log(`blackbox hooks already registered in ${settingsPath} (nothing to do)`);
+    }
+  } catch (err) {
+    if (!reusedHealthy) await cmdStop(args);
+    console.error(`setup could not install hooks safely: ${(err as Error).message}`);
+    return 2;
+  }
+
+  console.log(`\n✓ recorder ready — ${selfTest.events} synthetic events passed the isolated pipeline and were deleted`);
+  console.log(`  Health & privacy: http://127.0.0.1:${port}/#/settings`);
   console.log('  New Claude Code sessions record automatically.');
   console.log("  Stop the daemon with 'blackbox stop'; remove hooks with 'blackbox uninit'.");
+  if (!args.noOpen) openLocalPage(port, '#/settings');
   return 0;
 }
 
@@ -650,18 +723,29 @@ async function cmdStart(args: Args): Promise<number> {
   // token-less rather than silently regaining a token.
   let cfgInsecureGit = false;
   try {
-    cfgInsecureGit = (JSON.parse(readFileSync(configPath(), 'utf8')) as { insecure_git?: boolean }).insecure_git === true;
-  } catch {
-    /* no config yet */
+    cfgInsecureGit = readConfig(configPath()).insecure_git === true;
+  } catch (err) {
+    console.error(`failed to read secure configuration: ${(err as Error).message}`);
+    return 2;
   }
-  if (!args.allowInsecureGit && !cfgInsecureGit) ensureConfig(port);
+  if (!args.allowInsecureGit && !cfgInsecureGit) {
+    try { ensureConfig(port); }
+    catch (err) {
+      console.error(`failed to provision secure configuration: ${(err as Error).message}`);
+      return 2;
+    }
+  }
   const existing = readPid();
   if (existing && isAlive(existing.pid)) {
     // Confirm the PID is actually our daemon (not a recycled PID) via /health.
     const h = await getHealth(existing.port);
     if (h?.ok && h.pid === existing.pid) {
-      console.log(`blackbox daemon already running (pid ${existing.pid}, port ${existing.port})`);
-      return 0;
+      if (existing.port === port && existing.db === db) {
+        console.log(`blackbox daemon already running (pid ${existing.pid}, port ${existing.port})`);
+        return 0;
+      }
+      console.log(`restarting blackbox daemon to apply ${existing.port !== port ? `port ${port}` : `database ${db}`}`);
+      await cmdStop(args);
     }
   }
   if (existing) removePid(); // stale or recycled pid
@@ -762,15 +846,20 @@ async function cmdStatus(_args: Args): Promise<number> {
   // Security posture — so a weaker mode is visible now, not discovered later.
   let tok = '';
   try {
-    tok = (JSON.parse(readFileSync(configPath(), 'utf8')) as { token?: string }).token ?? '';
-  } catch {
-    /* no config */
+    const config = readConfig(configPath());
+    tok = typeof config.token === 'string' ? config.token : '';
+  } catch (err) {
+    console.log(`  configuration: INVALID (${(err as Error).message})`);
   }
-  const acfg = loadAnchorConfig();
+  let anchorPosture = 'INVALID CONFIGURATION';
+  try {
+    const acfg = loadAnchorConfig();
+    anchorPosture = acfg.target ? anchorLabel(acfg.target) + (acfg.push ? ' + auto-push' : '') : acfg.localOnly ? 'local-only (reduced security)' : 'NONE (reduced security)';
+  } catch (err) {
+    anchorPosture = `INVALID (${(err as Error).message})`;
+  }
   console.log(`  git route: ${tok ? 'authenticated' : 'UNAUTHENTICATED (insecure_git)'}`);
-  console.log(
-    `  external anchor: ${acfg.target ? anchorLabel(acfg.target) + (acfg.push ? ' + auto-push' : '') : acfg.localOnly ? 'local-only (reduced security)' : 'NONE (reduced security)'}`,
-  );
+  console.log(`  external anchor: ${anchorPosture}`);
   return 0;
 }
 
@@ -813,6 +902,24 @@ async function cmdDoctor(args: Args): Promise<number> {
   const warnings = checks.filter((item) => item.status === 'warn').length;
   console.log(`\n${failures ? `${failures} failure(s)` : 'No failures'}${warnings ? `, ${warnings} warning(s)` : ''}.`);
   return failures ? 1 : 0;
+}
+
+async function cmdSelfTest(): Promise<number> {
+  console.log('Blackbox isolated self-test\n');
+  const result = await runSelfTest();
+  for (const item of result.checks) console.log(`${item.ok ? '✓' : '✗'} ${item.name.padEnd(22)} ${item.detail}`);
+  if (result.ok) {
+    try {
+      recordSelfTestPass();
+      console.log(`\nReady: ${result.events} synthetic session events captured; temporary evidence deleted.`);
+      return 0;
+    } catch (err) {
+      console.error(`\nPipeline passed, but its local readiness marker could not be saved: ${(err as Error).message}`);
+      return 1;
+    }
+  }
+  console.log('\nSelf-test failed; no synthetic evidence was added to your store.');
+  return 1;
 }
 
 async function cmdUi(args: Args): Promise<number> {
@@ -1213,6 +1320,8 @@ async function main(): Promise<number> {
       return cmdStatus(args);
     case 'doctor':
       return cmdDoctor(args);
+    case 'self-test':
+      return cmdSelfTest();
     case 'ui':
       return cmdUi(args);
     case 'ingest':

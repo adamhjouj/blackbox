@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, statSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import {
@@ -13,7 +13,7 @@ import {
 import { sessionAnchor } from './mutation';
 import { collectEnv } from './envsnap';
 import { daemonStartEvent, daemonStopEvent, envSnapshotEvent, normalize, normalizeAndCapture, reasoningEvent, worktreeBaseEvent, worktreeDeltaEvent } from './normalize';
-import { emitReceipt, loadAnchorConfig, receiptFromSignature } from './anchor';
+import { anchorDisplayDestination, emitReceipt, loadAnchorConfig, receiptFromSignature } from './anchor';
 import { persistReconciliation } from './reconcile';
 import { readTurnIntent } from './transcript';
 import { captureWorktreeDelta } from './worktree';
@@ -29,6 +29,8 @@ import { ensureKeypair, isSignableBoundary, signHead, signIdentity, writeWaterma
 import { Store } from './store';
 import type { BlackboxEvent } from './types';
 import { renderPage } from './ui-page';
+import { buildSetupStatus, type SetupStatus } from './readiness';
+import { readConfig } from './config';
 
 export interface DaemonOptions {
   db: string;
@@ -88,7 +90,7 @@ function privacyStatus(opts: DaemonOptions): Record<string, unknown> {
     anchor: target
       ? {
           kind: target.kind,
-          destination: target.kind === 'git' ? target.repo : target.kind === 'file' ? target.path : target.url,
+          destination: anchorDisplayDestination(target),
           external: !anchor.localOnly,
           auto_push: anchor.push,
         }
@@ -156,7 +158,9 @@ function isBrowserForged(headers: http.IncomingHttpHeaders): boolean {
  * are async/fire-and-forget so we always answer 200 after logging.
  */
 export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
-  const port = opts.port ?? DEFAULT_PORT;
+  // Keep the actual bound port in the closure. `port: 0` is useful for isolated
+  // health/self-tests and asks the OS for an available ephemeral port.
+  let port = opts.port ?? DEFAULT_PORT;
   const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
 
   // /git auth is REQUIRED by default. Without a token that route would accept
@@ -165,15 +169,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   // present — before opening a Store or binding a socket. `blackbox init`/`start`
   // generate a token automatically, so this only fires on a deliberately token-less
   // config, not on a fresh install.
-  let configToken = '';
-  let cfgInsecureGit = false;
-  try {
-    const raw = JSON.parse(readFileSync(configPath(), 'utf8')) as { token?: string; insecure_git?: boolean };
-    configToken = raw.token ?? '';
-    cfgInsecureGit = raw.insecure_git === true;
-  } catch {
-    /* no config yet */
-  }
+  const rawConfig = readConfig(configPath());
+  const configToken = typeof rawConfig.token === 'string' ? rawConfig.token : '';
+  const cfgInsecureGit = rawConfig.insecure_git === true;
   const allowInsecureGit = opts.allowInsecureGit ?? cfgInsecureGit;
   if (!configToken && !allowInsecureGit) {
     throw new Error(
@@ -188,14 +186,18 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
   const startedAt = Date.now();
   const correlator = new Correlator();
   const riskEngine = new RiskEngine((sid) => store.eventsLight(sid));
-  // R3 chain-of-custody: load the signing key once (null if never keyed). Signing
-  // is off the hook path and best-effort — it can never fail a recording.
-  let signingKeys: Keypair | null = null;
-  try {
-    signingKeys = ensureKeypair();
-  } catch {
-    /* signing stays off until a key exists */
-  }
+  let setupCache: { headSeq: number; checkedAt: number; value: SetupStatus } | null = null;
+  const setupStatus = (): SetupStatus => {
+    const headSeq = store.chainMeta()?.head_seq ?? 0;
+    if (setupCache && setupCache.headSeq === headSeq && Date.now() - setupCache.checkedAt < 3_000) return setupCache.value;
+    const value = buildSetupStatus(store, { db: opts.db, port });
+    setupCache = { headSeq, checkedAt: Date.now(), value };
+    return value;
+  };
+  // A missing identity is created once. Partial, corrupt, or mismatched keys are
+  // a custody failure and must stop startup rather than silently recording an
+  // unsigned chain that the UI could mistake for healthy.
+  const signingKeys: Keypair = ensureKeypair();
 
   // R6 external anchoring: emit a signed head receipt to the configured target at
   // the same boundaries we sign at. Loaded at startup; enabling it takes effect on
@@ -498,7 +500,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             return;
           }
           if (path === '/api/privacy') {
-            sendJson(res, 200, privacyStatus(opts));
+            sendJson(res, 200, privacyStatus({ ...opts, port }));
+            return;
+          }
+          if (path === '/api/setup-status') {
+            sendJson(res, 200, setupStatus());
             return;
           }
           // R3: chain integrity + signature status for the forensic badge. Read-only
@@ -640,6 +646,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     server.once('error', onError);
     server.listen(port, '127.0.0.1', () => {
       server.removeListener('error', onError);
+      const address = server.address();
+      if (address && typeof address === 'object') port = address.port;
       log(`listening on 127.0.0.1:${port} (db ${opts.db})`);
       // Surface the security posture LOUDLY at startup so a weaker mode is never a
       // silent surprise: git-route auth + external-anchor (off-machine custody).

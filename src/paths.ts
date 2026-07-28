@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { chmodSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,7 +9,14 @@ export function blackboxDir(): string {
 
 export function ensureBlackboxDir(): string {
   const dir = blackboxDir();
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    // mkdir's mode only applies to a newly-created final component. Tighten older
+    // installs too, where ~/.blackbox may have inherited a permissive umask.
+    chmodSync(dir, 0o700);
+  } catch (err) {
+    if (process.platform !== 'win32') throw err;
+  }
   return dir;
 }
 

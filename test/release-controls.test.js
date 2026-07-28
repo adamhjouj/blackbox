@@ -14,10 +14,11 @@ test('doctor produces the complete release-health checklist', () => {
   try {
     const checks = staticDoctorChecks(join(root, 'blackbox.db'));
     const names = new Set(checks.map((item) => item.name));
-    for (const expected of ['Node.js', 'Claude Code', 'State directory', 'Claude hooks', 'Git collector auth', 'Custody anchor', 'Event store', 'Platform']) {
+    for (const expected of ['Node.js', 'Claude Code', 'Gemini CLI', 'Agent adapters', 'State directory', 'Signing identity', 'Git collector auth', 'Custody anchor', 'Event store', 'Platform']) {
       assert.ok(names.has(expected), `missing doctor check: ${expected}`);
     }
     assert.equal(checks.every((item) => ['pass', 'warn', 'fail'].includes(item.status)), true);
+    assert.equal(checks.find((item) => item.name === 'Node.js').status, 'pass');
   } finally {
     if (old === undefined) delete process.env.BLACKBOX_HOME;
     else process.env.BLACKBOX_HOME = old;

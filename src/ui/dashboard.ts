@@ -19,6 +19,29 @@ function commandRow(command, copy) {
   return h('div', { className: 'privacy-command' }, h('code', { textContent: command }), h('span', { textContent: copy }));
 }
 
+function readinessGlyph(status) {
+  if (status === 'pass') return '✓';
+  if (status === 'fail') return '×';
+  if (status === 'warn') return '!';
+  return '·';
+}
+
+function readinessChecklist() {
+  const list = h('div', { className: 'readiness-list' });
+  const checks = S.setup && S.setup.checks || [];
+  checks.forEach(function(item) {
+    list.append(h('div', { className: 'readiness-row ' + String(item.status || 'pending') },
+      h('span', { className: 'readiness-mark', 'aria-hidden': 'true', textContent: readinessGlyph(item.status) }),
+      h('span', { className: 'readiness-body' },
+        h('strong', { textContent: item.label }),
+        h('span', { textContent: item.detail }),
+        item.command ? h('code', { textContent: item.command }) : null
+      )
+    ));
+  });
+  return list;
+}
+
 function renderSettingsPage() {
   const app = document.getElementById('app');
   app.textContent = '';
@@ -83,7 +106,16 @@ function renderSettingsPage() {
       commandRow('blackbox uninit --erase-data --yes', 'Remove hooks, stop recording, and delete all local data')
     )
   );
-  page.append(h('div', { className: 'settings-grid' }, recorder, storage, custody, captured, controls));
+  const readiness = h('section', { className: 'panel settings-panel settings-wide readiness-panel' },
+    h('div', { className: 'panel-label', textContent: 'Installation readiness' }),
+    h('div', { className: 'readiness-heading' },
+      h('h2', { textContent: S.setup && S.setup.ready ? 'Recorder is ready' : 'Finish recorder setup' }),
+      h('span', { className: 'readiness-progress', textContent: S.setup ? S.setup.passed + ' / ' + S.setup.total : 'Checking…' })
+    ),
+    h('p', { className: 'settings-copy', textContent: 'These checks cover the local runtime, signing identity, adapter hooks, evidence-chain health, custody, and an isolated capture test.' }),
+    S.setup ? readinessChecklist() : h('div', { className: 'settings-loading' })
+  );
+  page.append(h('div', { className: 'settings-grid' }, readiness, recorder, storage, custody, captured, controls));
   app.append(page);
 }
 
@@ -185,7 +217,27 @@ function renderDashboard() {
     return;
   }
   if (!S.cards.length) {
-    app.append(h('section', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '□' }), h('h2', { textContent: 'No sessions recorded yet' }), h('p', { textContent: 'Start a coding session with the Blackbox hooks enabled. It will appear here automatically.' })));
+    if (!S.setup) {
+      app.append(h('section', { className: 'empty-state' }, h('div', { className: 'empty-symbol', textContent: '□' }), h('h2', { textContent: 'Checking recorder readiness' }), h('p', { textContent: 'Blackbox is verifying the local runtime, adapter hooks, signing identity, and evidence store.' })));
+      return;
+    }
+    app.append(h('section', { className: 'onboarding-panel' },
+      h('div', { className: 'onboarding-top' },
+        h('div', null,
+          h('div', { className: 'panel-label', textContent: 'First run' }),
+          h('h2', { textContent: S.setup.ready ? 'Ready for your first recorded session' : 'Finish connecting Blackbox' }),
+          h('p', { textContent: S.setup.ready
+            ? 'Start a session in a connected coding agent. Evidence will appear here automatically.'
+            : 'Complete the checks below once. Raw evidence stays on this computer by default.' })
+        ),
+        h('span', { className: 'readiness-progress', textContent: S.setup.passed + ' / ' + S.setup.total })
+      ),
+      readinessChecklist(),
+      h('div', { className: 'onboarding-actions' },
+        h('a', { className: 'secondary-button', href: '#/settings', textContent: 'Open Health & privacy' }),
+        h('code', { textContent: S.setup.ready ? 'Start Claude Code or Gemini CLI' : 'blackbox doctor' })
+      )
+    ));
     return;
   }
 

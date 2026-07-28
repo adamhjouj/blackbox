@@ -83,7 +83,7 @@ a { color: inherit; text-decoration: none; }
 .sb-logo::after { content: ""; width: 8px; height: 8px; background: var(--bg); border-radius: 2px; }
 .sb-word { font-weight: 800; font-size: 14px; letter-spacing: .22em; }
 .sb-search { padding: 14px 14px 10px; }
-.sb-nav { padding: 0 14px; }
+.sb-nav { display: grid; gap: 2px; padding: 0 14px; }
 .sb-dash { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 38px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: 600 12.5px var(--sans); cursor: pointer; text-align: left; }
 .sb-dash:hover { color: var(--text); }
 .sb-dash.active { background: var(--surface-3); color: var(--text); }
@@ -435,6 +435,26 @@ main { min-height: 100dvh; margin-left: var(--sidebar); }
 .privacy-command code { color: var(--text); font: 11.5px var(--mono); overflow-wrap: anywhere; }
 .privacy-command span { color: var(--muted); font-size: 12px; }
 .settings-loading { min-height: 180px; }
+.readiness-panel { overflow: hidden; }
+.readiness-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; }
+.readiness-heading h2 { margin-bottom: 8px; }
+.readiness-progress { flex: none; padding: 5px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font: 10px var(--mono); }
+.readiness-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin-top: 18px; overflow: hidden; border: 1px solid var(--line-2); border-radius: 9px; background: var(--line-2); }
+.readiness-row { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; min-height: 76px; padding: 14px; background: var(--surface); }
+.readiness-mark { width: 20px; height: 20px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--quiet); font: 700 11px var(--mono); }
+.readiness-row.pass .readiness-mark { border-color: rgba(86,190,122,.45); color: #75ce94; }
+.readiness-row.warn .readiness-mark, .readiness-row.pending .readiness-mark { border-color: rgba(220,171,91,.45); color: #d8b271; }
+.readiness-row.fail .readiness-mark { border-color: var(--danger-line); color: var(--danger-mid); }
+.readiness-body { min-width: 0; display: grid; align-content: start; gap: 4px; }
+.readiness-body strong { font-size: 12px; }
+.readiness-body > span { color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.readiness-body code { margin-top: 3px; color: var(--text-2); font: 10px var(--mono); overflow-wrap: anywhere; }
+.onboarding-panel { margin-top: 30px; padding: clamp(22px, 4vw, 36px); border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(150deg, #121216, #0d0d10); }
+.onboarding-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 30px; }
+.onboarding-top h2 { margin: 5px 0 8px; font-size: clamp(23px, 3vw, 32px); letter-spacing: -.03em; }
+.onboarding-top p { max-width: 650px; margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
+.onboarding-actions { display: flex; align-items: center; gap: 14px; margin-top: 20px; }
+.onboarding-actions code { color: var(--muted); font: 10.5px var(--mono); }
 
 /* ── responsive ───────────────────────────────────────────────────────────── */
 @media (max-width: 1100px) {
@@ -447,8 +467,9 @@ main { min-height: 100dvh; margin-left: var(--sidebar); }
   .sb-brand { padding: 4px 8px; border-bottom: 0; }
   .sb-word { display: none; }
   .sb-search { flex: 1; padding: 0 6px; }
-  .sb-nav { padding: 0; }
+  .sb-nav { display: flex; padding: 0; }
   .sb-dash { width: auto; padding: 0 10px; }
+  .sb-nav-label { display: none; }
   .sb-scroll, .sb-status { display: none; }
   main { margin-left: 0; min-height: 0; }
   .app-shell { padding: 24px 18px 64px; }
@@ -464,6 +485,9 @@ main { min-height: 100dvh; margin-left: var(--sidebar); }
   .turn-body { padding-left: 16px; }
   .settings-grid { grid-template-columns: 1fr; }
   .settings-wide { grid-column: auto; }
+  .readiness-list { grid-template-columns: 1fr; }
+  .onboarding-top { display: grid; gap: 14px; }
+  .onboarding-actions { align-items: flex-start; flex-direction: column; }
   .privacy-command { grid-template-columns: 1fr; gap: 7px; }
   .evidence-drawer { top: auto; bottom: 0; width: 100%; height: min(88dvh, 760px); border-top: 1px solid var(--line-strong); border-left: 0; border-radius: 16px 16px 0 0; animation-name: bbSheet; }
   .kv-grid { grid-template-columns: 1fr; gap: 2px; }

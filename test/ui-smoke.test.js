@@ -31,7 +31,7 @@ test('renderPage emits a complete, self-contained HTML document', () => {
 
 test('the persistent console rail ships in the static shell', () => {
   const html = renderPage();
-  for (const needle of ['class="sidebar"', 'id="sbSearch"', 'id="navDash"', 'id="sbReview"', 'id="sbRecent"', 'BLACKBOX', 'id="connectionLabel"']) {
+  for (const needle of ['class="sidebar"', 'id="sbSearch"', 'id="navDash"', 'id="navSettings"', 'href="#/settings"', 'id="sbReview"', 'id="sbRecent"', 'BLACKBOX', 'id="connectionLabel"']) {
     assert.ok(html.indexOf(needle) >= 0, 'sidebar shell should include ' + needle);
   }
   const js = clientJs(html);
@@ -185,8 +185,12 @@ test('the viewer keeps hostile data on safe DOM rendering paths', () => {
 
 test('the viewer ships responsive layouts and the settings page', () => {
   const html = renderPage();
-  for (const needle of ['evidence-drawer', 'Health & privacy', 'blackbox erase --all --yes', '.settings-grid', '@media (max-width: 900px)', '@media (max-width: 1100px)', 'prefers-reduced-motion']) {
+  for (const needle of ['evidence-drawer', 'Health & privacy', 'blackbox erase --all --yes', '.settings-grid', '.readiness-list', '.onboarding-panel', '@media (max-width: 900px)', '@media (max-width: 1100px)', 'prefers-reduced-motion']) {
     assert.ok(html.indexOf(needle) >= 0, 'page should include ' + needle);
+  }
+  const js = clientJs(html);
+  for (const needle of ['/api/setup-status', 'readinessChecklist', 'Finish connecting Blackbox', 'Raw evidence stays on this computer by default.']) {
+    assert.ok(js.indexOf(needle) >= 0, 'first-run readiness should include ' + needle);
   }
   assert.match(html, /Welcome back/);
   assert.match(html, /blackbox\.displayName/);

@@ -64,6 +64,14 @@ test('daemon: recording, read API, and the security gauntlet', async () => {
     assert.ok(privacyBody.storage_bytes > 0);
     assert.equal(privacy.body.includes('test-token'), false, 'privacy API must never expose collector credentials');
 
+    const setup = await req(TEST_PORT, 'GET', '/api/setup-status');
+    assert.equal(setup.status, 200);
+    const setupBody = JSON.parse(setup.body);
+    assert.equal(typeof setupBody.ready, 'boolean');
+    assert.ok(Array.isArray(setupBody.checks));
+    assert.ok(Array.isArray(setupBody.adapters));
+    assert.equal(setup.body.includes('test-token'), false, 'readiness API must never expose collector credentials');
+
     // ---- the read-only investigation graph remains available as a deterministic projection ----
     const trace = await req(TEST_PORT, 'GET', '/api/session/SESS1/trace?depth=2');
     assert.equal(trace.status, 200);
@@ -98,6 +106,24 @@ test('daemon: recording, read API, and the security gauntlet', async () => {
     // ---- an unknown path 404s ----
     const missing = await req(TEST_PORT, 'GET', '/api/nope');
     assert.equal(missing.status, 404);
+  } finally {
+    await daemon.close();
+    rmSync(home, { recursive: true, force: true });
+    delete process.env.BLACKBOX_HOME;
+  }
+});
+
+test('daemon port 0 reports the actual OS-assigned loopback port', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bb-daemon-ephemeral-'));
+  process.env.BLACKBOX_HOME = home;
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ token: 'test-token-ephemeral' }));
+  const { startDaemon } = require('../dist/daemon.js');
+  const daemon = await startDaemon({ db: join(home, 't.db'), port: 0, logFile: join(home, 'd.log') });
+  try {
+    assert.ok(daemon.port > 0);
+    const health = await req(daemon.port, 'GET', '/health');
+    assert.equal(health.status, 200);
+    assert.equal(JSON.parse(health.body).port, daemon.port);
   } finally {
     await daemon.close();
     rmSync(home, { recursive: true, force: true });
