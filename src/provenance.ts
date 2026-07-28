@@ -122,6 +122,16 @@ export interface SessionStory {
   counts: { turns: number; steps: number; files: number; commits: number };
   reconciliation: ReconSummary | null; // R2 — populated by read-api.sessionStory
   blast_radius?: BlastRadius | null; // read-only rollup — populated by read-api.sessionStory
+  intent?: IntentSummary | null; // stated-vs-observed — populated by read-api.sessionStory
+}
+
+/** Stated-narrative-vs-observed-actions divergence for the session. `coverage` is
+ *  carried verbatim so the UI can state what the comparison could NOT see (no
+ *  narrative, truncated narrative, and always: thinking is encrypted). */
+export interface IntentSummary {
+  finding_count: number;
+  findings: { type: string; kind: string; value: string; prompt_id: string; seq?: number; note: string }[];
+  coverage: { reasoning_available: boolean; turns_analyzed: number; turns_skipped: number; turns_truncated: number; thinking_encrypted: boolean } | null;
 }
 
 /** The session's reach: the KINDS of secret the redactor caught (aws-access-key,

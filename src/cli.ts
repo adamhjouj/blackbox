@@ -15,6 +15,7 @@ import { reindexAll, search } from './search';
 import { normalizeAndCapture } from './normalize';
 import { persistReconciliation } from './reconcile';
 import { buildForensicReport, buildReport, defaultReportSession } from './report';
+import { INTENT_VERSION, persistIntent } from './intent';
 import { ensureKeypair, loadPublicKey, loadWatermark, signHead } from './sign';
 import { backfill, computeSession, rescoreSession } from './risk-engine';
 import { isKnownRuleset, KNOWN_RULESETS, RULESET_VERSION, rulesFingerprint, type RulesetVersion } from './risk-rules';
@@ -201,6 +202,7 @@ Chain & custody:
   blackbox anchor --to <target>  Set the external anchor (file:<path> | git:<repo> | https://<url>) and emit a
                                  receipt now; also: anchor verify | anchor push
   blackbox reconcile             Cross-check hooks vs git ground truth (--session, --check for details)
+  blackbox intent                Cross-check the agent's stated narrative vs what it actually did (--session)
   blackbox rescore               Recompute the risk layer (--session, --ruleset, --check, --prune <v>)
   blackbox prune                 Age out mutation content (--older-than 30d); keeps events, hashes, and verify
   blackbox erase --all --yes     Permanently delete the entire local Blackbox data directory
@@ -1072,6 +1074,35 @@ function cmdBlast(args: Args): number {
   }
 }
 
+/** Recompute stated-narrative-vs-observed-actions divergence for a session. */
+function cmdIntent(args: Args): number {
+  const store = new Store(resolveDb(args.db));
+  try {
+    const sid = args.session ?? defaultReportSession(store);
+    if (!sid) {
+      console.error('intent: no sessions recorded (pass --session)');
+      return 2;
+    }
+    const a = persistIntent(store, sid, new Date().toISOString());
+    const c = a.coverage;
+    console.log(`Intent divergence — session ${sid.slice(0, 12)} (${INTENT_VERSION})`);
+    if (!c.reasoning_available) {
+      console.log('  no narrative captured for this session — nothing to compare (not a finding).');
+      return 0;
+    }
+    console.log(`  ${c.turns_analyzed} turn(s) analyzed · ${c.turns_skipped} skipped (no narrative) · ${c.turns_truncated} truncated`);
+    if (!a.findings.length) {
+      console.log('  no divergence — every risk-relevant action was named in the agent’s stated narrative.');
+      return 0;
+    }
+    for (const f of a.findings) console.log(`  [${f.type}] ${f.kind}: ${f.value}${f.seq !== undefined ? ` (seq ${f.seq})` : ''}`);
+    console.log('\n  Note: Claude Code encrypts thinking, so this compares the agent’s STATED text only.');
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
 function cmdReport(args: Args): number {
   const store = new Store(resolveDb(args.db));
   try {
@@ -1164,6 +1195,8 @@ async function main(): Promise<number> {
       return cmdBlast(args);
     case 'report':
       return cmdReport(args);
+    case 'intent':
+      return cmdIntent(args);
     case 'head':
       return cmdHead(args);
     case 'file':

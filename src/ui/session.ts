@@ -162,6 +162,8 @@ function renderOverview() {
   // 04 · CAN YOU TRUST THIS RECORD — one slim integrity strip.
   const verify = S.verify;
   const recon = story.reconciliation;
+  const intent = story.intent;
+  const intentCov = intent && intent.coverage;
   const completeness = recon && recon.coverage && recon.coverage.completeness;
   const trust = h('section', { className: 'panel' });
   const stripRow = h('div', { className: 'trust-strip' });
@@ -176,6 +178,11 @@ function renderOverview() {
       h('span', { className: 'trust-v' + (pair.bad ? ' bad' : ''), textContent: pair.v }),
       h('span', { className: 'trust-k', textContent: pair.k })));
   });
+  if (intentCov && intentCov.reasoning_available) {
+    stripRow.append(h('span', { className: 'trust-pair' },
+      h('span', { className: 'trust-v' + (intent.finding_count ? ' bad' : ''), textContent: String(intent.finding_count || 0) }),
+      h('span', { className: 'trust-k', textContent: 'stated vs observed' })));
+  }
   if (completeness) {
     const pct = Math.round(Number(completeness.coverage_ratio || 0) * 100);
     const wrap = h('span', { className: 'capture-wrap' },
@@ -192,6 +199,9 @@ function renderOverview() {
     : 'Git reconciliation unavailable — uncorroborated: ' + String(recon.coverage && recon.coverage.reason || 'no baseline'));
   else notes.push('No git reconciliation was recorded');
   if (completeness) notes.push(completeness.recorded + ' of ' + completeness.transcript_tool_uses + ' tool calls recorded');
+  if (intentCov && intentCov.reasoning_available) notes.push(intent.finding_count
+    ? intent.finding_count + ' action' + (intent.finding_count === 1 ? '' : 's') + ' the agent did not state across ' + intentCov.turns_analyzed + ' turn' + (intentCov.turns_analyzed === 1 ? '' : 's')
+    : 'Every risk-relevant action was named in the agent stated narrative');
   stripRow.append(h('span', { className: 'trust-note', textContent: notes.join(' · ') + '.' }));
   trust.append(stripRow);
   if (recon && (recon.findings || []).length) {
@@ -208,6 +218,24 @@ function renderOverview() {
     });
     details.append(list);
     trust.append(details);
+  }
+  // Stated vs observed. The honest limit is rendered WITH the findings, never in a
+  // tooltip: Claude Code encrypts thinking, so this compares stated text only.
+  if (intent && (intent.findings || []).length) {
+    const iDetails = h('details', { className: 'trust-findings' }, h('summary', { textContent: 'Show stated-vs-observed divergence' }));
+    const iList = h('div', { className: 'find-list' });
+    (intent.findings || []).forEach(function(finding, index) {
+      iList.append(h('button', { className: 'find-row', type: 'button', onclick: function() { if (finding.seq != null) openEvidence(finding.seq); } },
+        h('span', { className: 'find-num', textContent: pad2(index + 1) }),
+        h('span', { className: 'find-dot', 'aria-hidden': 'true' }),
+        h('span', { style: 'min-width:0' },
+          h('span', { className: 'find-title', textContent: String(finding.kind || '') + ' ' + String(finding.value || '') }),
+          h('span', { className: 'find-sub', textContent: finding.note })),
+        h('span', { className: 'find-count', textContent: String(finding.type || 'finding').replace(/_/g, ' ') })));
+    });
+    iDetails.append(iList);
+    iDetails.append(h('p', { className: 'find-sub', textContent: 'Claude Code stores thinking encrypted, so this compares only what the agent stated in its text for the turn — a finding means it did not say it did this, not that it hid a thought.' }));
+    trust.append(iDetails);
   }
   stack.append(trust);
   return stack;

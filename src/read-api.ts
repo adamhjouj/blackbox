@@ -1,7 +1,8 @@
 import { actionSummary, explainEvent } from './explain';
 import { safeParse } from './json';
 import { buildTrace, ALL_DEPTH, type TraceView } from './graph';
-import { buildStory, type EventDetail, type SessionStory } from './provenance';
+import { INTENT_VERSION } from './intent';
+import { buildStory, type EventDetail, type IntentSummary, type SessionStory } from './provenance';
 import { RECON_VERSION, type Coverage, type Discrepancy } from './reconcile';
 import { recoverSessionTurns, sessionTitleFromTranscript } from './transcript';
 import { ALWAYS_SHOW_ANNOTATIONS, ANNOTATION_FLAGS, KNOWN_RULESETS, RISK_FLAGS, RULESET_VERSION, rulesetNum, type FlagId, type RulesetVersion } from './risk-rules';
@@ -359,6 +360,17 @@ export function sessionStory(store: Store, sessionId: string): SessionStory {
       finding_count: recon.finding_count,
       findings: safeArray<Discrepancy>(recon.findings),
       coverage: safeParse<Coverage>(recon.coverage, { corroborated: recon.corroborated === 1, reason: null, files_on_disk: 0, hook_files: 0, truncated: false }),
+    };
+  }
+
+  // Stated vs observed: the agent's narrative for each turn joined against what it
+  // actually did. Persisted at SessionEnd; absent until `blackbox intent` has run.
+  const intent = store.sessionIntent(sessionId, INTENT_VERSION);
+  if (intent) {
+    story.intent = {
+      finding_count: intent.finding_count,
+      findings: safeArray<IntentSummary['findings'][number]>(intent.findings),
+      coverage: safeParse<IntentSummary['coverage']>(intent.coverage),
     };
   }
 

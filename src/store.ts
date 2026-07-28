@@ -171,6 +171,24 @@ CREATE TABLE IF NOT EXISTS session_reconciliation (
 );
 `;
 
+/**
+ * Intent divergence — the agent's STATED narrative joined against its OBSERVED
+ * actions. A third re-derivable interpretation alongside risk and reconciliation;
+ * deliberately NOT part of the risk score, and never hashed.
+ */
+const INTENT_SCHEMA = `
+CREATE TABLE IF NOT EXISTS session_intent (
+  session_id      TEXT    NOT NULL,
+  intent_version  TEXT    NOT NULL,
+  finding_count   INTEGER NOT NULL,
+  findings        TEXT    NOT NULL,
+  coverage        TEXT    NOT NULL,
+  last_seq        INTEGER NOT NULL,
+  computed_at     TEXT    NOT NULL,
+  PRIMARY KEY (session_id, intent_version)
+);
+`;
+
 // R8.2 corpus search — a re-derivable FTS5 index (never hashed; rebuildable like
 // the risk layer). `text` is FTS-indexed; the rest are UNINDEXED payload columns.
 // A one-row meta table tracks the incremental watermark. verify() never reads
@@ -245,6 +263,17 @@ export interface SessionReconciliationRow {
   computed_at: string;
 }
 
+/** A session's stated-vs-observed divergence findings (re-derivable, un-hashed). */
+export interface SessionIntentRow {
+  session_id: string;
+  intent_version: string;
+  finding_count: number;
+  findings: string; // JSON Divergence[]
+  coverage: string; // JSON IntentCoverage
+  last_seq: number;
+  computed_at: string;
+}
+
 export interface SessionSummary {
   session_id: string;
   events: number;
@@ -313,6 +342,7 @@ export class Store {
     this.db.exec(BLOB_SCHEMA);
     this.db.exec(SIG_SCHEMA);
     this.db.exec(RECON_SCHEMA);
+    this.db.exec(INTENT_SCHEMA);
     this.db.exec(SEARCH_SCHEMA);
     this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
@@ -673,6 +703,25 @@ export class Store {
         .prepare('SELECT * FROM session_reconciliation WHERE session_id = ? AND ruleset_version = ?')
         .get(sessionId, ruleset) as SessionReconciliationRow | undefined) ?? null
     );
+  }
+
+  // ---- intent divergence (derived, un-hashed) ------------------------------
+
+  intentUpsert(r: SessionIntentRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO session_intent
+           (session_id, intent_version, finding_count, findings, coverage, last_seq, computed_at)
+         VALUES (@session_id, @intent_version, @finding_count, @findings, @coverage, @last_seq, @computed_at)
+         ON CONFLICT(session_id, intent_version) DO UPDATE SET
+           finding_count=@finding_count, findings=@findings, coverage=@coverage,
+           last_seq=@last_seq, computed_at=@computed_at`,
+      )
+      .run(r);
+  }
+
+  sessionIntent(sessionId: string, version: string): SessionIntentRow | null {
+    return (this.db.prepare('SELECT * FROM session_intent WHERE session_id = ? AND intent_version = ?').get(sessionId, version) as SessionIntentRow | undefined) ?? null;
   }
 
   reconciliationDelete(ruleset: string, sessionId?: string): void {

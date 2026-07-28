@@ -15,6 +15,7 @@ import type { AnchorReceipt } from './anchor';
 import { blastRadius } from './blast';
 import { explainEvent, type Danger } from './explain';
 import { hashString } from './hash';
+import { INTENT_VERSION } from './intent';
 import { safeParse } from './json';
 import { isPre, isPost, sessionCards, sessionName, sessionStory } from './read-api';
 import { RECON_VERSION } from './reconcile';
@@ -336,6 +337,29 @@ export function buildForensicReport(store: Store, sessionId: string, opts: Foren
     L.push('Commits:', '');
     for (const c of story.commits) L.push(`- \`${(c.sha ?? '').slice(0, 7)}\` ${c.subject ?? ''}`.trimEnd());
     L.push('');
+  }
+
+  // ── stated vs observed — intent divergence ────────────────────────────────
+  const intent = store.sessionIntent(sessionId, INTENT_VERSION);
+  if (intent) {
+    const cov = safeParse<{ reasoning_available: boolean; turns_analyzed: number; turns_skipped: number; turns_truncated: number }>(intent.coverage);
+    const divs = safeParse<{ type: string; kind: string; value: string; seq?: number; note: string }[]>(intent.findings, []);
+    L.push('## Stated vs observed', '');
+    if (!cov?.reasoning_available) {
+      L.push('No narrative was captured for this session — nothing to compare.', '');
+    } else {
+      L.push(`${cov.turns_analyzed} turn(s) compared · ${cov.turns_skipped} skipped (no narrative) · ${cov.turns_truncated} truncated.`, '');
+      if (!divs.length) {
+        L.push('Every risk-relevant action was named in the agent’s stated narrative.', '');
+      } else {
+        for (const d of divs) L.push(`- **${d.type}** — ${d.kind} \`${d.value}\`${d.seq !== undefined ? ` (seq ${d.seq})` : ''}: ${d.note}`);
+        L.push('');
+      }
+      L.push(
+        '_Honest limit: Claude Code stores `thinking` blocks encrypted-empty, so this compares only what the agent **stated** in its text for the turn — never its reasoning. A finding means the agent did not say it did something, not that it concealed a thought._',
+        '',
+      );
+    }
   }
 
   // ── containment (R8.1 blast radius) — the ordered "what to do now" list ────

@@ -24,6 +24,7 @@ import { fleetOverview } from './fleet';
 import { indexNew, search } from './search';
 import { backfill, RiskEngine, riskRowFrom, sessionRiskRowFrom } from './risk-engine';
 import { RULESET_VERSION } from './risk-rules';
+import { persistIntent } from './intent';
 import { ensureKeypair, isSignableBoundary, signHead, writeWatermark, type Keypair } from './sign';
 import { Store } from './store';
 import type { BlackboxEvent } from './types';
@@ -331,6 +332,14 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
     } catch (err) {
       log(`reconciliation failed: ${(err as Error).message}`);
     }
+    // Intent divergence (stated narrative vs observed actions) — derived and
+    // un-hashed, in its own try/catch: a failure here must never cost us the
+    // reconciliation above, and neither can fail a recording.
+    try {
+      persistIntent(store, sessionId, new Date().toISOString());
+    } catch (err) {
+      log(`intent analysis failed: ${(err as Error).message}`);
+    }
   };
 
   const recordHook = (body: string, truncated: boolean): void => {
@@ -458,7 +467,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<Daemon> {
             'x-frame-options': 'DENY',
             'x-content-type-options': 'nosniff',
             'content-security-policy':
-              "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+              "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
             'cache-control': 'no-store',
           });
           res.end(renderPage());
