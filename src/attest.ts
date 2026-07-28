@@ -36,7 +36,7 @@ export const SESSION_ATTESTATION_DOMAIN = 'blackbox-session-attestation-v1\n';
 
 type Severity = 'high' | 'medium' | 'low';
 type Outcome = 'attempted' | 'succeeded' | 'failed' | 'unknown';
-type AgentSource = Extract<EventSource, 'claude-code' | 'gemini-cli'>;
+type AgentSource = Extract<EventSource, 'claude-code' | 'gemini-cli' | 'codex-cli'>;
 type ReviewStatus = 'clear' | 'needs_review' | 'reviewed';
 
 export interface CountBySeverity {
@@ -446,7 +446,7 @@ function createSessionAttestationSnapshot(
   }
 
   const sources = [...new Set(events.map((event) => event.source))]
-    .filter((source): source is AgentSource => source === 'claude-code' || source === 'gemini-cli')
+    .filter((source): source is AgentSource => source === 'claude-code' || source === 'gemini-cli' || source === 'codex-cli')
     .sort();
   const findings = aggregateFindings(projection.findings);
   const review = aggregateReview(
@@ -669,7 +669,7 @@ function parseEnvelope(input: string | unknown): SessionAttestationEnvelopeV1 {
   const agentSources = payload.agent_sources;
   if (
     !Array.isArray(agentSources) ||
-    agentSources.some((source) => source !== 'claude-code' && source !== 'gemini-cli') ||
+    agentSources.some((source) => source !== 'claude-code' && source !== 'gemini-cli' && source !== 'codex-cli') ||
     new Set(agentSources).size !== agentSources.length ||
     [...agentSources].sort().some((source, i) => source !== agentSources[i])
   ) {

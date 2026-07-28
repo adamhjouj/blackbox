@@ -7,7 +7,7 @@
  * projection without changing, or bypassing, Blackbox's shared redaction path.
  */
 
-export type AdapterSource = 'claude-code' | 'gemini-cli';
+export type AdapterSource = 'claude-code' | 'gemini-cli' | 'codex-cli';
 
 /** The minimum input contract consumed by src/normalize.ts. */
 export interface NormalizerInput extends Record<string, unknown> {
@@ -21,6 +21,8 @@ export interface NormalizerInput extends Record<string, unknown> {
   error?: unknown;
   cwd?: string;
   _captured_at?: string;
+  /** Explicit adapter outcome override. null means the vendor did not expose enough evidence. */
+  _blackbox_success?: 0 | 1 | null;
   /** Adapter provenance. Kept out of vendor-owned field names such as Gemini's `source`. */
   _blackbox_adapter: AdapterSource;
 }

@@ -36,7 +36,7 @@ export type ActionType =
 
 /** Producer of the normalized event. Nullable on legacy rows so the additive
  * migration preserves every existing event hash byte-for-byte. */
-export type EventSource = 'claude-code' | 'gemini-cli' | 'git' | 'blackbox';
+export type EventSource = 'claude-code' | 'gemini-cli' | 'codex-cli' | 'git' | 'blackbox';
 
 /** A fully persisted event, including its chain fields. */
 export interface BlackboxEvent {

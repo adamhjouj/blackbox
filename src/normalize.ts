@@ -24,6 +24,7 @@ function toPhase(hookEvent: string): Phase {
     case 'Stop':
       return 'stop';
     case 'PreCompact':
+    case 'PostCompact':
       return 'compact';
     case 'Notification':
       return 'notify';
@@ -111,7 +112,11 @@ function toDurationMs(payload: Record<string, unknown>): number | null {
   return null;
 }
 
-function toSuccess(phase: Phase): 0 | 1 | null {
+function toSuccess(phase: Phase, payload: Record<string, unknown>): 0 | 1 | null {
+  if (Object.prototype.hasOwnProperty.call(payload, '_blackbox_success')) {
+    const explicit = payload._blackbox_success;
+    if (explicit === 0 || explicit === 1 || explicit === null) return explicit;
+  }
   if (phase === 'post') return 1;
   if (phase === 'failure') return 0;
   return null;
@@ -242,11 +247,15 @@ export function normalizeAndCapture(
     action_type: action,
     target: toTarget(action, redactedInput),
     agent_id: str('agent_id'),
-    source: payload._blackbox_adapter === 'gemini-cli' ? 'gemini-cli' : 'claude-code',
+    source: payload._blackbox_adapter === 'gemini-cli'
+      ? 'gemini-cli'
+      : payload._blackbox_adapter === 'codex-cli'
+        ? 'codex-cli'
+        : 'claude-code',
     agent_type: str('agent_type') ?? (str('agent_id') ? 'unknown' : 'main'),
     cwd: str('cwd'),
     permission_mode: str('permission_mode'),
-    success: toSuccess(phase),
+    success: toSuccess(phase, payload),
     duration_ms: toDurationMs(payload),
     // Prefer a capture stamp already on the payload (fixtures carry `_captured_at`);
     // real HTTP hooks have none, so fall back to ingest time.
