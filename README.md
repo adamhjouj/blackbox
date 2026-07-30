@@ -12,8 +12,9 @@ Record Claude Code, Gemini CLI, and Codex CLI activity, explain deterministic ri
 [![Node 22 · 24 · 26](https://img.shields.io/badge/node-22%20%C2%B7%2024%20%C2%B7%2026-f2f2f2.svg?labelColor=111)](package.json)
 [![Status: public beta](https://img.shields.io/badge/status-public%20beta-d95454.svg?labelColor=111)](CHANGELOG.md)
 [![Raw evidence: local by default](https://img.shields.io/badge/raw%20evidence-local%20by%20default-f2f2f2.svg?labelColor=111)](#privacy-and-egress)
+[![AARM v1.0](https://img.shields.io/badge/AARM%20v1.0-R2%20·%20R5%20·%20R6%20·%20R8-f2f2f2.svg?labelColor=111)](#standards-alignment)
 
-[Quick start](#quick-start) · [Review before merge](#review-before-merge) · [Attestations](#signed-session-attestations) · [Security model](#security-model)
+[Quick start](#quick-start) · [Review before merge](#review-before-merge) · [Attestations](#signed-session-attestations) · [Security model](#security-model) · [Standards](#standards-alignment)
 
 </div>
 
@@ -261,6 +262,8 @@ See [docs/ATTESTATIONS.md](docs/ATTESTATIONS.md) for payload, verification, priv
 | `blackbox file <path> --session <id>` | Inspect mutation history and retained evidence |
 | `blackbox verify --anchors` | Verify hashes, signatures, watermark, and configured receipts |
 | `blackbox audit --session <id>` | Show what was redacted without revealing the secret |
+| `blackbox intent --session <id>` | Cross-check the agent's stated narrative against what it actually did |
+| `blackbox otel --session <id> --out <file>` | Export the session as OTLP/JSON traces for a SIEM (`--endpoint` posts to a collector) |
 | `blackbox report --session <id>` | Export a deterministic Markdown review |
 | `blackbox report --session <id> --forensic` | Export custody, verification, findings, and a self-manifest |
 | `blackbox attest --session <id> --out <file>` | Export a signed aggregate session attestation |
@@ -290,6 +293,29 @@ See [docs/ATTESTATIONS.md](docs/ATTESTATIONS.md) for payload, verification, priv
 - Attestations are aggregate snapshots. They do not contain enough evidence to reproduce the underlying findings.
 
 Read [SECURITY.md](SECURITY.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before using Blackbox as part of an incident-response or merge-gating process.
+
+## Standards alignment
+
+[AARM v1.0](https://aarm.dev/spec) — *Autonomous Action Runtime Management*, published by the Cloud Security Alliance — is the closest thing this category has to a shared vocabulary. Blackbox is scored against all nine requirements below, including the ones it does not meet.
+
+Blackbox is a recorder, not a runtime gate. It never sits in the execution path, so the two requirements that define an enforcement product are permanent and deliberate gaps. What it does instead is satisfy the *evidentiary* half of the specification more completely than an interception point can.
+
+| # | Requirement | Level | Blackbox |
+| --- | --- | --- | --- |
+| R1 | Pre-execution interception | MUST | **✗ by design** — handlers never block, delay, or break an agent; a recorder failure cannot deny a tool call |
+| R2 | Context accumulation | MUST | **✓ exceeds** — prompts, stated reasoning, tool calls, mutations, and findings in one hash-chained record, corroborated against Git |
+| R3 | Policy evaluation with intent alignment | MUST | **◐ partial** — versioned deterministic rules plus stated-versus-observed alignment, evaluated *after* execution as findings rather than as a gate |
+| R4 | Five authorization decisions | MUST | **✗ by design** — nothing is intercepted, so there is no decision to return |
+| R5 | Tamper-evident receipts | MUST | **✓ exceeds** — a hash chain, Ed25519 checkpoints, an out-of-database watermark, and external signed-head receipts. Receipts commit to actions rather than decisions, because Blackbox makes none |
+| R6 | Identity binding | MUST | **✓** — a signed assertion binds a recorder identity to a session's sequence range and chain head, and `blackbox attest` exports that binding so a received summary can be attributed to a pinned key |
+| R7 | Semantic distance tracking | SHOULD | **◐ partial** — per-turn divergence between the stated narrative and observed actions; no continuous drift metric across long-running operations |
+| R8 | Telemetry export | SHOULD | **✓** — OTLP/JSON export in which every action span carries its chain hash, so a SIEM row can be traced back to a verifiable position in the record |
+| R9 | Least privilege enforcement | SHOULD | **✗ out of scope** — Blackbox brokers no credentials and grants no tool access, so it has nothing to scope |
+
+Two consequences are worth stating plainly:
+
+- **Blackbox is not AARM Core conformant, and will not claim to be.** R1 and R4 require an enforcement point, which is the one thing a passive recorder must never become.
+- **Enforcement and evidence are different jobs.** A guardrail that fails open under load has no record of what it let through. Blackbox is the second job, and it composes with any product doing the first.
 
 ## Privacy and egress
 
