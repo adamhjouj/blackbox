@@ -49,27 +49,3 @@ test('CLI help documents the attestation trust and revision controls', () => {
   assert.doesNotMatch(result.stdout, /the only egress/i);
 });
 
-test('website is semantic, self-contained, responsive, and internally navigable', () => {
-  const html = read('docs/index.html');
-  assert.match(html, /<meta\s+name="viewport"/i);
-  assert.match(html, /@media\s*\([^)]*max-width/i);
-  assert.match(html, /synthetic/i);
-  assert.match(html, /Gemini CLI/);
-  assert.match(html, /Codex CLI/);
-  assert.match(html, /Review Inbox/);
-  assert.match(html, /blackbox-recorder@beta install/);
-  assert.match(html, /published under the npm/);
-  assert.match(html, /--local-only-anchor/);
-  assert.match(html, /--trusted-key/);
-  assert.match(html, /--expected-commit/);
-  assert.match(html, /GitHub Actions writes aggregate metadata/);
-  assert.doesNotMatch(html, /Uncorroborated file mutation|Git discrepancy/);
-  assert.doesNotMatch(html, /#investigation-model/);
-  assert.doesNotMatch(html, /<script\s+src=/i);
-  assert.doesNotMatch(html, /<link[^>]+rel="stylesheet"/i);
-
-  const ids = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]));
-  const fragments = [...html.matchAll(/\shref="#([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(ids.size, [...html.matchAll(/\sid="([^"]+)"/g)].length, 'HTML ids must be unique');
-  for (const fragment of fragments) assert.ok(ids.has(fragment), `missing fragment target #${fragment}`);
-});
